@@ -1,7 +1,7 @@
 [project]
 name = "zarrmony"
 version = "0.1.0"
-description = "Add your description here"
+description = "Convert any bioimage file to OME-Zarr v0.5, preserving metadata."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
@@ -9,5 +9,60 @@ license-files = ["LICENSE"]
 authors = [{ name = "Max Ferrin", email = "ferrin@calicolabs.com" }]
 dependencies = [
     "bioio>=3.3.0",
-    "jupyter>=1.1.1",
+    "bioio-czi>=2.6.1",
+    "bioio-lif>=1.4.2",
+    "bioio-ome-zarr>=3.3.0",
+    "click>=8.3.0",
+    "dask>=2026.3.0",
+    "numpy>=2",
+    "ome-types>=0.6.3",
+    "pydantic>=2.10",
+    "scikit-image>=0.26.0",
+    "xarray>=2025.9.0",
+    "zarr>=3.1.0",
 ]
+
+[project.optional-dependencies]
+gcs = ["gcsfs"]
+s3 = ["s3fs"]
+nd2 = ["bioio-nd2"]
+ome-tiff = ["bioio-ome-tiff"]
+all = ["zarrmony[gcs,s3,nd2,ome-tiff]"]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.14",
+    "pre-commit>=4",
+]
+notebook = [
+    "jupyter>=1.1.1",
+    "ipykernel>=6",
+    "matplotlib>=3.9",
+    "tabulate>=0.9",
+]
+
+[project.scripts]
+zarrmony = "zarrmony.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/ferrinm/zarrmony"
+Issues = "https://github.com/ferrinm/zarrmony/issues"
+Changelog = "https://github.com/ferrinm/zarrmony/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zarrmony"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "-ra"]

@@ -4,7 +4,26 @@ __pycache__/
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
 
 # Virtual environments
 .venv
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+
+# Notebook artifacts
+.ipynb_checkpoints/
+notebooks/.ob-jupyter/
+notebooks/data/
+notebooks/zarrmony_functions.py
+
+# Test artifacts
+tests/_tmp/
+*.ome.zarr/
+
