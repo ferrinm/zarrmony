@@ -2,7 +2,7 @@
 #+subtitle: a general-purpose converter of all bioimage formats to ome-zarr
 #+author: Max Ferrin
 #+email: ferrin@calicolabs.com
-#+last_modified: <2026-05-01 Fri 17:52>
+#+last_modified: <2026-05-01 Fri 17:59>
 #+OPTIONS: toc:t num:nil author:t date:t title:t ^:nil broken-links:mark
 
 * Description
@@ -44,18 +44,27 @@ uv run python -m ipykernel install --user --name="zarrmony" --display-name="Pyth
 uv run jupyter kernelspec list --json > /dev/null
 #+end_src
 
+#+RESULTS:
+:results:
+Installed kernelspec zarrmony in /Users/ferrin/Library/Jupyter/kernels/zarrmony
+:end:
+
 Refresh kernelspecs in emacs:
 #+begin_src emacs-lisp :tangle no
 (jupyter-refresh-kernelspecs)
 #+end_src
+
+#+RESULTS:
+: Refreshing kernelspecs...done
+
 ** Install packages
 #+begin_src bash :results raw drawer
-# Napari is sensitive on arm-based macs; install with pip first
-uv pip install 'napari[all]'
-
-# Install packages (add more as needed)
-uv add matplotlib
+uv add bioio
 #+end_src
+
+#+RESULTS:
+:results:
+:end:
 
 Additional packages can always be installed down the line with ~uv add [package]~
 
@@ -71,6 +80,22 @@ git commit -m "Initial commit from cookiecutter template"
 # Replace 'private' with 'public' if desired
 gh repo create zarrmony --public --source=. --remote=origin --push
 #+end_src
+
+#+RESULTS:
+:results:
+[main (root-commit) 2411c05] Initial commit from cookiecutter template
+ 8 files changed, 2302 insertions(+)
+ create mode 100644 .dir-locals.el
+ create mode 100644 .gitignore
+ create mode 100644 .python-version
+ create mode 100644 README.org
+ create mode 100644 pyproject.toml
+ create mode 100644 uv.lock
+ create mode 100644 zarrmony_functions.py
+ create mode 100644 zarrmony_notebook.org
+https://github.com/ferrinm/zarrmony
+branch 'main' set up to track 'origin/main'.
+:end:
 
 This should now be accessible at https://github.com/ferrinm/zarrmony/blob/main/README.org
 
