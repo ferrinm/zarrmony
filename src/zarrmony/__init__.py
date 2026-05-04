@@ -2,4 +2,7 @@
 
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
+from zarrmony.api import convert, inspect
+from zarrmony.metadata.model import UserMetadata
+
+__all__ = ["__version__", "convert", "inspect", "UserMetadata"]

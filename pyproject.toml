@@ -19,7 +19,12 @@ dependencies = [
     "pydantic>=2.10",
     "scikit-image>=0.26.0",
     "xarray>=2025.9.0",
-    "zarr>=3.1.0",
+    # zarr pinned <3.2 because tifffile's tifffile.zarr module imports
+    # RegularChunkGrid from zarr.core.chunk_grids — an internal path that was
+    # removed in zarr 3.2.0. bioio-ome-tiff uses tifffile.aszarr() to read TIFF
+    # data lazily, so anyone reading OME-TIFF input through zarrmony hits this.
+    # Relax once upstream tifffile updates its zarr 3.2+ shims.
+    "zarr>=3.1,<3.2",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +38,7 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.14",
     "pre-commit>=4",
+    "bioio-ome-tiff",
 ]
 notebook = [
     "jupyter>=1.1.1",
