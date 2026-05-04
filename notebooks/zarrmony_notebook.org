@@ -2,7 +2,7 @@
 #+subtitle: a general-purpose converter of all bioimage formats to ome-zarr
 #+author: Max Ferrin
 #+email: ferrin@calicolabs.com
-#+last_modified: <2026-05-01 Fri 17:59>
+#+last_modified: <2026-05-04 Mon 14:20>
 #+OPTIONS: toc:t num:nil author:t date:t title:t ^:nil broken-links:mark
 
 * Description
