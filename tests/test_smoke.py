@@ -1,5 +1,7 @@
 """Smoke tests for the v0.1 scaffolding. Replace with real tests as features land."""
 
+from importlib.metadata import version
+
 from click.testing import CliRunner
 
 import zarrmony
@@ -7,7 +9,7 @@ from zarrmony.cli import app
 
 
 def test_version_set() -> None:
-    assert zarrmony.__version__ == "0.1.0"
+    assert zarrmony.__version__ == version("zarrmony")
 
 
 def test_cli_help_runs() -> None:
