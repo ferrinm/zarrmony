@@ -63,6 +63,17 @@ def _parse_chunk_shape(
     help="JSON file mapping scene_name → metadata dict for per-scene overrides.",
 )
 @click.option(
+    "--layout",
+    type=click.Choice(["per-scene", "bf2raw"]),
+    default="per-scene",
+    show_default=True,
+    help=(
+        "Output shape. 'per-scene' (default) writes one self-describing "
+        "<scene>.ome.zarr store per scene under OUTPUT. 'bf2raw' writes a "
+        "single bioformats2raw.layout bundle with numbered subgroups at OUTPUT."
+    ),
+)
+@click.option(
     "--pyramid-min-size",
     type=int,
     default=256,
@@ -76,7 +87,15 @@ def _parse_chunk_shape(
     metavar="T,C,Z,Y,X",
     help="Override auto chunk shape, comma-separated (e.g. '1,1,1,512,512').",
 )
-@click.option("--force", is_flag=True, help="Overwrite output if it already exists.")
+@click.option(
+    "--force",
+    is_flag=True,
+    help=(
+        "Overwrite output if it already exists. In per-scene mode this is "
+        "checked per store, so existing sibling stores under OUTPUT are left "
+        "alone unless they collide with a scene being written."
+    ),
+)
 @click.option(
     "--permissive",
     is_flag=True,
@@ -92,20 +111,27 @@ def convert_cmd(
     output: str,
     metadata_file: str | None,
     per_scene_metadata: str | None,
+    layout: str,
     pyramid_min_size: int,
     chunk_shape: tuple[int, ...] | None,
     force: bool,
     permissive: bool,
     checksum: bool,
 ) -> None:
-    """Convert INPUT (a bioimage file) to OME-Zarr v0.5 at OUTPUT."""
+    """Convert INPUT (a bioimage file) to OME-Zarr v0.5 at OUTPUT.
+
+    By default OUTPUT is treated as a directory and one self-describing
+    ``<scene>.ome.zarr`` store is written per scene. Pass ``--layout bf2raw``
+    to instead write a single bioformats2raw.layout bundle at OUTPUT.
+    """
     metadata = _load_json(metadata_file)
     per_scene = _load_json(per_scene_metadata)
 
     try:
-        audit = zm_api.convert(
+        result = zm_api.convert(
             input_path=input_path,
             output=output,
+            layout=layout,
             metadata=metadata,
             per_scene_metadata=per_scene,
             pyramid_min_size=pyramid_min_size,
@@ -119,8 +145,14 @@ def convert_cmd(
     except OutputExistsError as e:
         raise click.ClickException(str(e)) from e
 
-    n = len(audit["per_scene"])
-    click.echo(f"Wrote {n} scene{'s' if n != 1 else ''} to {output}", err=True)
+    if layout == "per-scene":
+        n = len(result["stores"])
+        noun = "store" if n == 1 else "stores"
+        click.echo(f"Wrote {n} {noun} to {output}", err=True)
+    else:
+        n = len(result["per_scene"])
+        noun = "scene" if n == 1 else "scenes"
+        click.echo(f"Wrote {n} {noun} to {output} (bf2raw bundle)", err=True)
 
 
 @app.command(name="inspect")

@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import fsspec
 from bioio_ome_zarr.writers import Channel
@@ -24,10 +24,14 @@ from zarrmony.errors import (
 )
 from zarrmony.metadata.channel_colors import colors_for_channels
 from zarrmony.metadata.model import UserMetadata
+from zarrmony.naming import resolve_scene_dirnames
 from zarrmony.readers import get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
-from zarrmony.writers.ome_xml import build_combined_ome_xml
+from zarrmony.writers.ome_xml import build_combined_ome_xml, build_ome_xml_for_scene
+from zarrmony.writers.per_scene import write_per_scene_metadata
 from zarrmony.writers.scene import write_scene
+
+Layout = Literal["per-scene", "bf2raw"]
 
 
 def _validate_metadata(
@@ -53,6 +57,7 @@ def _validate_metadata(
 
 
 def _check_output(output: str | Path, *, force: bool) -> None:
+    """Refuse-or-clobber a single output path (file, dir, or store)."""
     s = str(output)
     fs, path = fsspec.core.url_to_fs(s)
     if not fs.exists(path):
@@ -116,10 +121,27 @@ def _try_get_ome_image(reader: Any, scene_index: int) -> tuple[Image | None, dic
     return ome.images[0], None
 
 
+def _channels_for_scene(
+    reader: Any,
+    channel_colors: dict[str, str] | None,
+) -> list[Channel] | None:
+    channel_names = list(reader.channel_names) if getattr(reader, "channel_names", None) else []
+    if not channel_names:
+        return None
+    colors = colors_for_channels(channel_names, overrides=channel_colors)
+    return [Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)]
+
+
+def _source_xml_filename(input_path: str | Path) -> str:
+    ext = Path(str(input_path)).suffix.lstrip(".").lower()
+    return f"raw.{ext}.xml" if ext else "raw.xml"
+
+
 def convert(
     input_path: str | Path,
     output: str | Path,
     *,
+    layout: Layout = "per-scene",
     metadata: UserMetadata | dict | None = None,
     per_scene_metadata: dict[str, UserMetadata | dict] | None = None,
     pyramid_min_size: int = 256,
@@ -129,12 +151,19 @@ def convert(
     permissive: bool = False,
     checksum: bool = False,
 ) -> dict:
-    """Convert ``input_path`` to OME-Zarr v0.5 with bioformats2raw.layout.
+    """Convert ``input_path`` to OME-Zarr v0.5.
 
-    Returns the audit record that was written to ``attrs.zarrmony`` at the
-    output store's root.
+    By default (``layout='per-scene'``), each scene is written to its own
+    self-describing store at ``<output>/<sanitized_scene_name>.ome.zarr/`` and
+    the return value is ``{"input": ..., "stores": [<per-store audit>, ...]}``.
+
+    With ``layout='bf2raw'``, a single ``bioformats2raw.layout`` store is
+    written at ``output``: per-scene images live in numbered subgroups, with a
+    combined ``OME/METADATA.ome.xml`` and ``OME/series`` listing. The return
+    value is the bundle's audit dict (matching the v0.1.x behavior).
     """
-    started_at = datetime.now().astimezone()
+    if layout not in ("per-scene", "bf2raw"):
+        raise ValueError(f"layout must be 'per-scene' or 'bf2raw' (got {layout!r})")
 
     user_metadata = _validate_metadata(metadata, permissive)
     per_scene_user_metadata: dict[str, dict] = {}
@@ -142,11 +171,168 @@ def convert(
         for scene_name, m in per_scene_metadata.items():
             per_scene_user_metadata[scene_name] = _validate_metadata(m, permissive)
 
-    _check_output(output, force=force)
-
     reader, plugin_name = get_reader(input_path)
     if not reader.scenes:
         raise ZarrmonyError(f"reader returned no scenes for {input_path!s}")
+
+    config = {
+        "layout": layout,
+        "pyramid_min_size": pyramid_min_size,
+        "chunk_shape": list(chunk_shape) if chunk_shape else None,
+        "channel_colors": dict(channel_colors) if channel_colors else None,
+        "force": force,
+        "permissive": permissive,
+        "checksum": checksum,
+    }
+
+    if layout == "bf2raw":
+        return _convert_bf2raw(
+            reader=reader,
+            plugin_name=plugin_name,
+            input_path=input_path,
+            output=output,
+            user_metadata=user_metadata,
+            per_scene_user_metadata=per_scene_user_metadata,
+            pyramid_min_size=pyramid_min_size,
+            chunk_shape=chunk_shape,
+            channel_colors=channel_colors,
+            force=force,
+            checksum=checksum,
+            config=config,
+        )
+    return _convert_per_scene(
+        reader=reader,
+        plugin_name=plugin_name,
+        input_path=input_path,
+        output=output,
+        user_metadata=user_metadata,
+        per_scene_user_metadata=per_scene_user_metadata,
+        pyramid_min_size=pyramid_min_size,
+        chunk_shape=chunk_shape,
+        channel_colors=channel_colors,
+        force=force,
+        checksum=checksum,
+        config=config,
+    )
+
+
+def _convert_per_scene(
+    *,
+    reader: Any,
+    plugin_name: str | None,
+    input_path: str | Path,
+    output: str | Path,
+    user_metadata: dict,
+    per_scene_user_metadata: dict[str, dict],
+    pyramid_min_size: int,
+    chunk_shape: Sequence[int] | None,
+    channel_colors: dict[str, str] | None,
+    force: bool,
+    checksum: bool,
+    config: dict,
+) -> dict:
+    output_str = str(output).rstrip("/")
+    dirnames = resolve_scene_dirnames(reader.scenes)
+    store_paths = [f"{output_str}/{d}.ome.zarr" for d in dirnames]
+
+    # Per-store refuse-overwrite (don't blow away the whole output dir).
+    for sp in store_paths:
+        _check_output(sp, force=force)
+
+    source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
+    source_filename = _source_xml_filename(input_path) if source_xml is not None else None
+
+    store_audits: list[dict] = []
+
+    for scene_index, scene_name in enumerate(reader.scenes):
+        store_path = store_paths[scene_index]
+        started_at = datetime.now().astimezone()
+
+        reader.set_scene(scene_index)
+        channels = _channels_for_scene(reader, channel_colors)
+
+        scene_record = write_scene(
+            reader,
+            scene_index=scene_index,
+            store_path=store_path,
+            pyramid_min_size=pyramid_min_size,
+            chunk_shape=chunk_shape,
+            channels=channels,
+            image_name=scene_name,
+        )
+        scene_record["store_path"] = store_path
+        scene_record["dirname"] = dirnames[scene_index]
+
+        scene_user_md: dict | None = None
+        if scene_name in per_scene_user_metadata:
+            scene_user_md = per_scene_user_metadata[scene_name]
+            scene_record["user_metadata"] = scene_user_md
+
+        ome_image, warning = _try_get_ome_image(reader, scene_index)
+        metadata_warnings: list[dict] = []
+        if warning is not None:
+            metadata_warnings.append(warning)
+            warnings.warn(
+                f"scene {scene_index} ({scene_name}): {warning['error']}",
+                ExtractorWarning,
+                stacklevel=2,
+            )
+            ome_image = _stub_image(scene_index, scene_name, scene_record)
+
+        ome_xml = build_ome_xml_for_scene(ome_image)
+        write_per_scene_metadata(
+            store_path,
+            ome_xml=ome_xml,
+            source_xml=source_xml,
+            source_xml_filename=source_filename,
+        )
+
+        finished_at = datetime.now().astimezone()
+        audit = build_audit_record(
+            input_path=input_path,
+            reader_plugin=plugin_name,
+            config=config,
+            started_at=started_at,
+            finished_at=finished_at,
+            per_scene=[scene_record],
+            metadata_warnings=metadata_warnings,
+            checksum=checksum,
+        )
+        # Effective user_metadata for this store: per-scene override falls back
+        # to the root-level user_metadata.
+        audit["user_metadata"] = scene_user_md if scene_user_md is not None else user_metadata
+        audit["store_path"] = store_path
+        audit["scene_index"] = scene_index
+        audit["scene_name"] = scene_name
+        write_audit_record(store_path, audit)
+        store_audits.append(audit)
+
+    return {
+        "input": str(input_path),
+        "output": output_str,
+        "layout": "per-scene",
+        "stores": store_audits,
+    }
+
+
+def _convert_bf2raw(
+    *,
+    reader: Any,
+    plugin_name: str | None,
+    input_path: str | Path,
+    output: str | Path,
+    user_metadata: dict,
+    per_scene_user_metadata: dict[str, dict],
+    pyramid_min_size: int,
+    chunk_shape: Sequence[int] | None,
+    channel_colors: dict[str, str] | None,
+    force: bool,
+    checksum: bool,
+    config: dict,
+) -> dict:
+    started_at = datetime.now().astimezone()
+
+    _check_output(output, force=force)
 
     output_str = str(output).rstrip("/")
     series_paths: list[str] = []
@@ -158,13 +344,7 @@ def convert(
         scene_path = f"{output_str}/{scene_index}"
 
         reader.set_scene(scene_index)
-        channel_names = list(reader.channel_names) if getattr(reader, "channel_names", None) else []
-        channels: list[Channel] | None = None
-        if channel_names:
-            colors = colors_for_channels(channel_names, overrides=channel_colors)
-            channels = [
-                Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)
-            ]
+        channels = _channels_for_scene(reader, channel_colors)
 
         scene_record = write_scene(
             reader,
@@ -195,10 +375,7 @@ def convert(
 
     ome_xml = build_combined_ome_xml(images)
     source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
-    source_filename: str | None = None
-    if source_xml is not None:
-        ext = Path(str(input_path)).suffix.lstrip(".").lower()
-        source_filename = f"raw.{ext}.xml" if ext else "raw.xml"
+    source_filename = _source_xml_filename(input_path) if source_xml is not None else None
 
     write_bf2raw_wrapper(
         output,
@@ -210,14 +387,6 @@ def convert(
 
     finished_at = datetime.now().astimezone()
 
-    config = {
-        "pyramid_min_size": pyramid_min_size,
-        "chunk_shape": list(chunk_shape) if chunk_shape else None,
-        "channel_colors": dict(channel_colors) if channel_colors else None,
-        "force": force,
-        "permissive": permissive,
-        "checksum": checksum,
-    }
     audit = build_audit_record(
         input_path=input_path,
         reader_plugin=plugin_name,

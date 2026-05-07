@@ -1,9 +1,10 @@
 """OME-XML construction for OME/METADATA.ome.xml.
 
-The bioformats2raw.layout spec requires a combined OME-XML document at
-``OME/METADATA.ome.xml`` describing every image in the collection. Per spec, each
-Image's Pixels MUST use ``<MetadataOnly/>`` (not BinData / TiffData / BinaryOnly)
-because the pixel data lives in the sibling Zarr arrays.
+In per-scene mode each store carries a single-Image OME-XML document; in
+bf2raw mode the wrapper carries one combined OME-XML describing every scene.
+Per the OME-Zarr spec, each Image's Pixels MUST use ``<MetadataOnly/>`` (not
+BinData / TiffData / BinaryOnly) because the pixel data lives in the sibling
+Zarr arrays.
 """
 
 from collections.abc import Iterable
@@ -32,3 +33,8 @@ def build_combined_ome_xml(images: Iterable[Image]) -> str:
     images_list = [normalize_image_for_metadata_only(img) for img in images]
     ome = OME(images=images_list)
     return ome.to_xml()
+
+
+def build_ome_xml_for_scene(image: Image) -> str:
+    """Build a single-Image OME-XML document for one per-scene store."""
+    return build_combined_ome_xml([image])

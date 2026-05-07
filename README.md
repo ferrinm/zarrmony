@@ -2,7 +2,9 @@
 
 Convert any bioimage file to OME-Zarr v0.5, preserving metadata.
 
-Zarrmony reads proprietary microscopy formats (CZI, LIF, ND2, OME-TIFF, ...) via [bioio](https://bioio-devs.github.io/bioio/) and writes them as OME-Zarr v0.5 in the [`bioformats2raw.layout`](https://ngff.openmicroscopy.org/0.5/#bf2raw) shape, with a configurable user-metadata gate, mean-pool pyramid generation, and a full audit trail of the conversion.
+Zarrmony reads proprietary microscopy formats (CZI, LIF, ND2, OME-TIFF, ...) via [bioio](https://bioio-devs.github.io/bioio/) and writes them as OME-Zarr v0.5, with a configurable user-metadata gate, mean-pool pyramid generation, and a full audit trail of the conversion.
+
+By default each scene becomes its own self-describing `<scene>.ome.zarr` store under the output directory. The legacy bundled [`bioformats2raw.layout`](https://ngff.openmicroscopy.org/0.5/#bf2raw) shape is opt-in via `--layout bf2raw` (CLI) or `layout="bf2raw"` (library).
 
 > **Status:** v0.1 in active development. API and metadata schema are not yet stable.
 
@@ -29,7 +31,12 @@ CZI, LIF, and ND2 reader plugins are included by default.
 ### CLI
 
 ```bash
-zarrmony convert input.czi output.ome.zarr --metadata-file metadata.json
+# Per-scene (default): writes one <scene>.ome.zarr store per scene under OUTPUT.
+zarrmony convert input.czi output_dir/ --metadata-file metadata.json
+
+# Bundled bioformats2raw.layout (opt-in): writes a single store at OUTPUT.
+zarrmony convert input.czi output.ome.zarr --layout bf2raw --metadata-file metadata.json
+
 zarrmony inspect input.czi
 zarrmony schema dump > zarrmony-metadata.schema.json
 ```
@@ -39,9 +46,18 @@ zarrmony schema dump > zarrmony-metadata.schema.json
 ```python
 from zarrmony import convert, UserMetadata
 
+# Per-scene (default): returns {"input": ..., "stores": [<per-store audit>, ...]}.
+result = convert(
+    "input.lif",
+    "output_dir/",
+    metadata=UserMetadata(...),
+)
+
+# Bundled: returns the single bundle's audit dict.
 audit = convert(
     "input.lif",
     "output.ome.zarr",
+    layout="bf2raw",
     metadata=UserMetadata(...),
 )
 ```
