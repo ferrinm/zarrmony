@@ -1,7 +1,7 @@
 #+title: zarrmony — opinionated design decisions
 #+author: Max Ferrin
 #+email: ferrin@calicolabs.com
-#+last_modified: <2026-05-04 Mon>
+#+last_modified: <2026-05-07 Thu>
 #+OPTIONS: toc:t num:nil author:t date:t title:t ^:nil broken-links:mark
 
 A zoom-out on the opinionated calls in zarrmony so far. Grouped by theme; each
@@ -32,17 +32,29 @@ call is something we explicitly chose over a defensible alternative.
 
 * On-disk output shape
 
-- *Always emit ~bioformats2raw.layout~*, even for single-scene inputs. Uniform
-  shape > avoiding one extra group level for the common case.
-- *Numbered subgroups* (~0/~, ~1/~, ...) for spec compliance, with scene names
-  preserved via ~OME/series~ strings AND per-scene ~multiscales[0].name~ AND
-  OME-XML ~Image[Name]~. Names live in three places so any reader can find
-  them.
-- *One Zarr store per input file*, not one-store-per-scene. Simplifies the
-  eventual GCS upload as one unit per submission.
-- *Hand-rolled bf2raw wrapper.* Kept ~bioio-ome-zarr~'s ~OMEZarrWriter~ for
-  per-scene writes (already working in the prototype) and added the wrapper
-  layer ourselves rather than switch the writer entirely.
+- *Default: one Zarr store per scene*, written as
+  ~<output>/<scene_name>.ome.zarr/~. A multi-scene input produces N sibling
+  stores under the output directory; a single-scene input produces exactly
+  one. Conversion runs in the cloud next to the proprietary source data, so
+  the upload-as-one-unit argument that previously favored bundling does not
+  apply.
+- *Opt-in bundled layout* via ~layout='bf2raw'~ (CLI: ~--layout bf2raw~).
+  When set, all scenes are written into a single ~bioformats2raw.layout~
+  store with numbered subgroups (~0/~, ~1/~, ...), a top-level
+  ~OME/METADATA.ome.xml~, and an ~OME/series~ list preserving scene names.
+- *Each per-scene store is fully self-describing.* Own
+  ~OME/METADATA.ome.xml~, own ~OME/source/raw.<ext>.xml~ sidecar (the raw
+  vendor XML is duplicated across scenes — small cost, the win is that any
+  one store can be moved or inspected on its own without losing
+  provenance), and its own ~attrs.zarrmony~ audit record at the store root.
+- *Scene name preserved in three places* — the directory name, per-scene
+  ~multiscales[0].name~, and OME-XML ~Image[Name]~ — so any reader can
+  recover it. Sanitized for filesystem safety (slashes/colons/spaces
+  replaced); sanitization collisions fall back to
+  ~<sanitized>__<scene_index>~.
+- *Hand-rolled bf2raw wrapper kept* for the bundled mode.
+  ~bioio-ome-zarr~'s ~OMEZarrWriter~ continues to handle per-scene writes
+  in either layout.
 
 * Pyramid and chunks
 
@@ -62,10 +74,13 @@ call is something we explicitly chose over a defensible alternative.
   flexibility ahead of finalization), exported as JSON Schema for downstream
   consumers. Lands at root ~attrs.zarrmony.user_metadata~.
 - *Source-vendor raw XML*: written as a sibling file at
-  ~OME/source/raw.<ext>.xml~, not stuffed into ~zarr.json~ attrs. Keeps
-  zarr.json lean.
-- *bioio-derived OME-XML*: written to spec-required ~OME/METADATA.ome.xml~.
-  Stub fallback when reader's ~ome_metadata~ raises (the LIF case).
+  ~OME/source/raw.<ext>.xml~ inside each store (per-scene mode duplicates
+  it; bundled mode writes once at the top-level ~OME/~). Not stuffed into
+  ~zarr.json~ attrs. Keeps zarr.json lean.
+- *bioio-derived OME-XML*: written to spec-required ~OME/METADATA.ome.xml~
+  inside each store (one Image element in per-scene mode; N images in
+  bundled mode). Stub fallback when reader's ~ome_metadata~ raises (the
+  LIF case).
 
 * Compliance gate
 
@@ -80,8 +95,9 @@ call is something we explicitly chose over a defensible alternative.
 
 * Audit trail
 
-- *Mandatory* ~attrs.zarrmony~ at root. Required for forensics months later
-  when something looks wrong.
+- *Mandatory* ~attrs.zarrmony~ at the root of every output store (each
+  per-scene store in default mode; the single bundle root in bundled
+  mode). Required for forensics months later when something looks wrong.
 - *Top-level attrs.zarrmony, not attrs.ome.zarrmony* — keeps the spec-defined
   namespace clean.
 - *File size + mtime by default; SHA256 opt-in* via ~--checksum~. Hashing
@@ -136,9 +152,10 @@ call is something we explicitly chose over a defensible alternative.
 
 A few decisions are explicitly known-imperfect and documented as such:
 
-- *~bioformats2raw.layout~ is a "transitional" spec.* We're writing to a
-  deprecation track because it's the best-supported multi-image layout in the
-  wild. Future migration expected.
+- *~bioformats2raw.layout~ is a "transitional" spec.* Now opt-in only
+  (~--layout bf2raw~), but when chosen we're writing to a deprecation
+  track because it's the best-supported multi-image layout in the wild.
+  Future migration expected.
 - *~bioio_lif~'s ~ome_metadata~ is a stub* (raises ~NotImplementedError~).
   LIF outputs have stub OME-XML Image elements; real LIF metadata only lives
   in ~OME/source/raw.lif.xml~.
