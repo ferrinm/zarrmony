@@ -1,0 +1,155 @@
+#+title: zarrmony — opinionated design decisions
+#+author: Max Ferrin
+#+email: ferrin@calicolabs.com
+#+last_modified: <2026-05-04 Mon>
+#+OPTIONS: toc:t num:nil author:t date:t title:t ^:nil broken-links:mark
+
+A zoom-out on the opinionated calls in zarrmony so far. Grouped by theme; each
+call is something we explicitly chose over a defensible alternative.
+
+* Surface and audience
+
+- *Library and CLI both first-class.* Not library-only (rejected because pilot
+  users will run conversions by hand for ~a year before Austin's web server
+  exists); not CLI-only (rejected because the eventual web server will import
+  the library).
+- *Python 3.13 only* for v0.1. Multi-version CI matrix deferred until a
+  deployment target needs older Python.
+- *Designed toward the eventual web-server caller without building for it now.*
+  Public API shape (Pydantic schema, JSON Schema export, audit attrs) is what
+  that caller will need.
+
+* Format coverage strategy
+
+- *Generic-with-overrides*, not pilot-only-formats and not full-plugin
+  discovery. Default path is ~bioio.BioImage~; CZI and LIF have explicit
+  overrides because their defaults are broken in known ways.
+- *CZI uses pylibczirw* (the default), not aicspylibczi. The latter exposes an
+  ~M~ (mosaic) dim that NGFF's axes spec forbids as a 4th spatial axis.
+- *Reject ~M~ in ~normalize_axes~* rather than try to map it to "space" like
+  the prototype did. v0.1 doesn't pretend to be NGFF-compliant when it can't
+  be.
+
+* On-disk output shape
+
+- *Always emit ~bioformats2raw.layout~*, even for single-scene inputs. Uniform
+  shape > avoiding one extra group level for the common case.
+- *Numbered subgroups* (~0/~, ~1/~, ...) for spec compliance, with scene names
+  preserved via ~OME/series~ strings AND per-scene ~multiscales[0].name~ AND
+  OME-XML ~Image[Name]~. Names live in three places so any reader can find
+  them.
+- *One Zarr store per input file*, not one-store-per-scene. Simplifies the
+  eventual GCS upload as one unit per submission.
+- *Hand-rolled bf2raw wrapper.* Kept ~bioio-ome-zarr~'s ~OMEZarrWriter~ for
+  per-scene writes (already working in the prototype) and added the wrapper
+  layer ourselves rather than switch the writer entirely.
+
+* Pyramid and chunks
+
+- *Compute pyramids ourselves with mean-pool*, not the writer's built-in
+  nearest-neighbor. Nearest-neighbor is wrong for fluorescence (aliasing).
+  Cost: subclass ~OMEZarrWriter~ to expose ~initialize()~ + ~write_pyramid()~
+  (touches one private API).
+- *Auto level count with 256 px floor, overridable.* Two-axis decision baked
+  together: smart default + user override. Same pattern for chunk shape.
+- *Pyramid is dtype-preserving.* Each level cast back to source dtype; loses
+  sub-integer precision in the cascade but keeps the Zarr's on-disk dtype
+  consistent.
+
+* Metadata: three sources, three destinations
+
+- *User-supplied metadata*: Pydantic ~UserMetadata~ (with ~extra="allow"~ for
+  flexibility ahead of finalization), exported as JSON Schema for downstream
+  consumers. Lands at root ~attrs.zarrmony.user_metadata~.
+- *Source-vendor raw XML*: written as a sibling file at
+  ~OME/source/raw.<ext>.xml~, not stuffed into ~zarr.json~ attrs. Keeps
+  zarr.json lean.
+- *bioio-derived OME-XML*: written to spec-required ~OME/METADATA.ome.xml~.
+  Stub fallback when reader's ~ome_metadata~ raises (the LIF case).
+
+* Compliance gate
+
+- *Gate lives in zarrmony*, not in upstream callers. The "no Zarr without
+  metadata" promise breaks the moment a second caller exists, and we
+  explicitly chose to support library/CLI use today.
+- *Permissive escape hatch (~--permissive~)* for prototyping. Pragmatic
+  concession given the schema is provisional.
+- *Required field set is provisional.* Microscope + modality only. Will
+  tighten via cross-team design.
+- *Per-scene metadata is opt-in*, not always-applied. Root-level by default.
+
+* Audit trail
+
+- *Mandatory* ~attrs.zarrmony~ at root. Required for forensics months later
+  when something looks wrong.
+- *Top-level attrs.zarrmony, not attrs.ome.zarrmony* — keeps the spec-defined
+  namespace clean.
+- *File size + mtime by default; SHA256 opt-in* via ~--checksum~. Hashing
+  50 GB input is expensive.
+- *Plugin name + plugin version recorded.* When the conversion looks weird
+  later, this is how we'll bisect "is it zarrmony or is it
+  bioio-{czi,lif,...}".
+- *~convert()~ returns the audit dict.* Single source of truth — what's at
+  root attrs is what the function returns.
+
+* Behavioral edges
+
+- *Refuse overwrite by default; ~--force~ to clobber.* Conversion outputs are
+  large and recovery is expensive.
+- *Warn-and-record extractor failures*, not fail-fast and not silent-skip.
+  Failed scenes get stub OME-XML; the failures are persisted in audit attrs
+  so they survive past the terminal session.
+- *Transpose data to canonical ~[t?, c?, z?, y, x]~* rather than reject
+  non-canonical input. Record the transpose in audit attrs so users see what
+  happened.
+- *Channel colors via name-based heuristic* (DAPI→blue, GFP→green, etc.) +
+  palette fallback, with explicit overrides. Not "always white" (prototype)
+  and not "trust OMERO hints from upstream" (unreliable).
+
+* Storage flexibility
+
+- *Accept any fsspec URI from day one.* ~Path~, ~str~, ~gs://~, ~s3://~ all
+  flow through one helper (~_storage.open_root_group~).
+- *~gcsfs~/~s3fs~ as optional extras*, not core deps. Keep the install lean
+  for users on local files.
+- *CI tests local only.* Cloud paths "should work, untested" for v0.1.
+  Spelled out in docs, not hidden.
+
+* Packaging and process
+
+- *~src/zarrmony/~ layout* (PyPA recommendation), not flat. Catches "tests
+  pass from source dir but fail after install" early.
+- *click* for CLI, not typer or argparse. Boring default, matches the
+  bioimage Python ecosystem.
+- *Three subcommands shipped at v0.1* (~convert~, ~inspect~, ~schema dump~),
+  not a single ~zarrmony~ command. Avoids a future ~convert~ subcommand
+  breaking existing usage.
+- *Apache-2.0*, not MIT. Standard for bioimage Python tools.
+- *PyPI from v0.1.0 with trusted publishing*, not "tag-and-go on GitHub until
+  API stabilizes."
+- *Ruff for lint+format. No mypy.* Mypy adds friction in v0.1; revisit when
+  there are multiple contributors.
+- *Keep-a-Changelog from day one.* Zero cost when you're the only
+  contributor; impossible to retrofit.
+
+* Tradeoff acknowledgements
+
+A few decisions are explicitly known-imperfect and documented as such:
+
+- *~bioformats2raw.layout~ is a "transitional" spec.* We're writing to a
+  deprecation track because it's the best-supported multi-image layout in the
+  wild. Future migration expected.
+- *~bioio_lif~'s ~ome_metadata~ is a stub* (raises ~NotImplementedError~).
+  LIF outputs have stub OME-XML Image elements; real LIF metadata only lives
+  in ~OME/source/raw.lif.xml~.
+- *~zarr<3.2~ pin.* tifffile's internal zarr-store integration broke against
+  zarr 3.2. Will relax when tifffile catches up.
+- *bioio normalizes all OME-TIFF input to 5D TCZYX* (inserts singleton Z).
+  Not our behavior, but our outputs reflect it.
+
+* The pattern that runs through all of these
+
+The recurring "smart default + user override" — saw it explicitly twice in
+the design interview (pyramid floor, chunk shape) and applied it everywhere
+afterward (channel colors, metadata gate, force overwrite, audit checksum).
+It's the meta-decision that shapes most of the small-decision answers above.

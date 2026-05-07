@@ -1,6 +1,6 @@
 """Convert any bioimage file to OME-Zarr v0.5, preserving metadata."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.3"
 
 from zarrmony.api import convert, inspect
 from zarrmony.metadata.model import UserMetadata

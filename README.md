@@ -14,16 +14,15 @@ pip install zarrmony
 
 Optional extras:
 
-| Extra | Adds | When you need it |
-|-------|------|------------------|
-| `gcs` | `gcsfs` | Writing output to `gs://` URIs |
-| `s3`  | `s3fs`  | Writing output to `s3://` URIs |
-| `nd2` | `bioio-nd2` | Reading Nikon ND2 input |
-| `ome-tiff` | `bioio-ome-tiff` | Reading OME-TIFF input |
-| `all` | All of the above | |
-| `dev` | pytest, ruff, pre-commit | Contributing |
+| Extra      | Adds                     | When you need it               |
+|------------|--------------------------|--------------------------------|
+| `gcs`      | `gcsfs`                  | Writing output to `gs://` URIs |
+| `s3`       | `s3fs`                   | Writing output to `s3://` URIs |
+| `ome-tiff` | `bioio-ome-tiff`         | Reading OME-TIFF input         |
+| `all`      | All of the above         |                                |
+| `dev`      | pytest, ruff, pre-commit | Contributing                   |
 
-CZI and LIF reader plugins are included by default.
+CZI, LIF, and ND2 reader plugins are included by default.
 
 ## Usage
 

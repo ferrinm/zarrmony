@@ -1,8 +1,8 @@
 """Reader registry: dispatches an input path to the right bioio reader.
 
 Default path is ``bioio.BioImage`` with plugin auto-discovery. Per-format
-overrides (CZI, LIF) bypass that default for known-broken cases. Other formats
-can register overrides at runtime via ``register_override``.
+overrides (CZI, LIF, ND2) bypass that default for known-broken cases. Other
+formats can register overrides at runtime via ``register_override``.
 """
 
 from collections.abc import Callable
@@ -12,12 +12,14 @@ from typing import Any
 from .default import open_default_reader
 from .overrides.czi import open_czi_reader
 from .overrides.lif import open_lif_reader
+from .overrides.nd2 import open_nd2_reader
 
 ReaderFactory = Callable[[str | Path], tuple[Any, str]]
 
 _OVERRIDES: dict[str, ReaderFactory] = {
     ".czi": open_czi_reader,
     ".lif": open_lif_reader,
+    ".nd2": open_nd2_reader,
 }
 
 

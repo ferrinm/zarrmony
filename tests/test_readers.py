@@ -57,6 +57,13 @@ def test_lif_dispatches_to_lif_override() -> None:
     assert plugin == "fake-lif"
 
 
+def test_nd2_dispatches_to_nd2_override() -> None:
+    register_override(".nd2", _fake_factory("nd2"))
+    reader, plugin = get_reader("/tmp/foo.nd2")
+    assert reader.tag == "nd2"
+    assert plugin == "fake-nd2"
+
+
 def test_extension_match_is_case_insensitive() -> None:
     register_override(".czi", _fake_factory("czi"))
     reader, _ = get_reader("/tmp/foo.CZI")

@@ -1,7 +1,7 @@
 """Default reader path: ``bioio.BioImage`` with plugin auto-discovery.
 
 Used for any input format that does not have a registered override. Works for
-OME-TIFF, ND2, and any other format with an installed bioio plugin.
+OME-TIFF and any other format with an installed bioio plugin.
 """
 
 from pathlib import Path

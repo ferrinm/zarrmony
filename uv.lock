@@ -3963,12 +3963,13 @@ wheels = [
 
 [[package]]
 name = "zarrmony"
-version = "0.1.0"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "bioio" },
     { name = "bioio-czi" },
     { name = "bioio-lif" },
+    { name = "bioio-nd2" },
     { name = "bioio-ome-zarr" },
     { name = "click" },
     { name = "dask" },
@@ -3982,7 +3983,6 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "bioio-nd2" },
     { name = "bioio-ome-tiff" },
     { name = "gcsfs" },
     { name = "s3fs" },
@@ -3996,9 +3996,6 @@ dev = [
 ]
 gcs = [
     { name = "gcsfs" },
-]
-nd2 = [
-    { name = "bioio-nd2" },
 ]
 notebook = [
     { name = "ipykernel" },
@@ -4018,7 +4015,7 @@ requires-dist = [
     { name = "bioio", specifier = ">=3.3.0" },
     { name = "bioio-czi", specifier = ">=2.6.1" },
     { name = "bioio-lif", specifier = ">=1.4.2" },
-    { name = "bioio-nd2", marker = "extra == 'nd2'" },
+    { name = "bioio-nd2", specifier = ">=1.7.0" },
     { name = "bioio-ome-tiff", marker = "extra == 'dev'" },
     { name = "bioio-ome-tiff", marker = "extra == 'ome-tiff'" },
     { name = "bioio-ome-zarr", specifier = ">=3.3.0" },
@@ -4040,9 +4037,9 @@ requires-dist = [
     { name = "tabulate", marker = "extra == 'notebook'", specifier = ">=0.9" },
     { name = "xarray", specifier = ">=2025.9.0" },
     { name = "zarr", specifier = ">=3.1,<3.2" },
-    { name = "zarrmony", extras = ["gcs", "s3", "nd2", "ome-tiff"], marker = "extra == 'all'" },
+    { name = "zarrmony", extras = ["gcs", "s3", "ome-tiff"], marker = "extra == 'all'" },
 ]
-provides-extras = ["gcs", "s3", "nd2", "ome-tiff", "all", "dev", "notebook"]
+provides-extras = ["gcs", "s3", "ome-tiff", "all", "dev", "notebook"]
 
 [[package]]
 name = "zict"
