@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-08
+
 ### Added
 
 - Plugin-author guide at `docs/writing-a-reader-plugin.md` covering the
@@ -66,6 +68,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** the `zarrmony.readers.overrides` subpackage is removed;
   imports of `zarrmony.readers.overrides.{czi,lif,nd2}` should move to
   `zarrmony.readers.{czi,lif,nd2}`.
+
+### Migration
+
+Reading pre-0.2 audit records: the old top-level `reader_plugin: str`
+is now `reader_plugin.name`, and the old `reader_plugin_version: str | None`
+is now `reader_plugin.version`. Detect the schema with the new top-level
+`audit_schema_version` field (absent or `1` = legacy flat shape; `2` =
+nested dict).
 
 ## [0.1.4] - 2026-05-07
 
