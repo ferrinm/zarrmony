@@ -29,12 +29,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the latter overrides the plugin's static `distribution` so the catch-all
   default plugin can surface the actual bioio sub-package, e.g.
   `bioio-ome-tiff`).
+- The CZI, LIF, and ND2 built-in readers are now `ReaderPlugin` instances
+  (`czi_plugin`, `lif_plugin`, `nd2_plugin`) registered through the new
+  registry alongside `default_plugin`. They live next to `default.py` at
+  `zarrmony/readers/{czi,lif,nd2}.py` (the `readers/overrides/` subpackage
+  is gone).
 
-### Deprecated
+### Removed
 
-- `zarrmony.readers._OVERRIDES` and `register_override()` remain in place
-  for back-compat but are no longer consulted by zarrmony's own dispatch.
-  They are scheduled for removal in the next slice.
+- **BREAKING:** `zarrmony.readers._OVERRIDES`, `register_override()`,
+  `ReaderFactory`, and the legacy 2-tuple `zarrmony.readers.get_reader()`
+  are gone. There is now exactly one way for a reader to exist in zarrmony:
+  register a `ReaderPlugin` via `zarrmony.readers.plugin.register_plugin()`
+  (or expose one through the `zarrmony.readers` entry-point group). Callers
+  should import `get_reader` from `zarrmony.readers.plugin`.
+- **BREAKING:** the legacy 2-tuple `open_default_reader`,
+  `open_czi_reader`, `open_lif_reader`, `open_nd2_reader` factory functions
+  are removed. Use the corresponding `*_plugin` instances (or call them
+  directly as `plugin.open(path)`) instead.
+- **BREAKING:** the `zarrmony.readers.overrides` subpackage is removed;
+  imports of `zarrmony.readers.overrides.{czi,lif,nd2}` should move to
+  `zarrmony.readers.{czi,lif,nd2}`.
 
 ## [0.1.4] - 2026-05-07
 

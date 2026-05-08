@@ -1,4 +1,4 @@
-"""CZI reader override.
+"""CZI reader plugin.
 
 Uses the default ``pylibczirw`` backend, which auto-stitches mosaic scenes into
 single images. The alternative ``aicspylibczi`` backend exposes the M (tile)
@@ -7,8 +7,8 @@ permitted by the OME-Zarr 0.5 axes spec. If you need per-tile positions or
 timelapse intervals for analysis, they are preserved verbatim in
 ``OME/source/raw.czi.xml`` (the raw vendor metadata).
 
-Exposed as ``czi_plugin`` (a :class:`ReaderPlugin`) and registered in
-``readers/__init__.py`` at zarrmony import time.
+Exposed as ``czi_plugin`` and registered in ``readers/__init__.py`` at zarrmony
+import time.
 """
 
 from pathlib import Path
@@ -34,8 +34,3 @@ czi_plugin = ReaderPlugin(
     distribution="bioio-czi",
     source="builtin",
 )
-
-
-def open_czi_reader(path: str | Path) -> tuple[Any, str]:
-    """Legacy 2-tuple factory kept for the deprecated ``_OVERRIDES`` path."""
-    return Reader(str(path)), "bioio-czi"

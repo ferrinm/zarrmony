@@ -1,10 +1,10 @@
-"""LIF reader override.
+"""LIF reader plugin.
 
 ``BioImage(path)`` for a LIF file only exposes the first scene by default; the
 format-specific ``bioio_lif.Reader`` exposes ``.scenes`` for full iteration.
 
-Exposed as ``lif_plugin`` (a :class:`ReaderPlugin`) and registered in
-``readers/__init__.py`` at zarrmony import time.
+Exposed as ``lif_plugin`` and registered in ``readers/__init__.py`` at zarrmony
+import time.
 """
 
 from pathlib import Path
@@ -30,8 +30,3 @@ lif_plugin = ReaderPlugin(
     distribution="bioio-lif",
     source="builtin",
 )
-
-
-def open_lif_reader(path: str | Path) -> tuple[Any, str]:
-    """Legacy 2-tuple factory kept for the deprecated ``_OVERRIDES`` path."""
-    return Reader(str(path)), "bioio-lif"

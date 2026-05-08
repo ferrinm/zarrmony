@@ -1,12 +1,12 @@
-"""ND2 reader override.
+"""ND2 reader plugin.
 
 Pins the format-specific ``bioio_nd2.Reader`` so ND2 input fails fast at import
 time if the plugin is missing, rather than silently falling through bioio's
 plugin discovery and surfacing as a generic "no reader found" error at convert
 time. The plugin name is also recorded explicitly for the audit trail.
 
-Exposed as ``nd2_plugin`` (a :class:`ReaderPlugin`) and registered in
-``readers/__init__.py`` at zarrmony import time.
+Exposed as ``nd2_plugin`` and registered in ``readers/__init__.py`` at zarrmony
+import time.
 """
 
 from pathlib import Path
@@ -32,8 +32,3 @@ nd2_plugin = ReaderPlugin(
     distribution="bioio-nd2",
     source="builtin",
 )
-
-
-def open_nd2_reader(path: str | Path) -> tuple[Any, str]:
-    """Legacy 2-tuple factory kept for the deprecated ``_OVERRIDES`` path."""
-    return Reader(str(path)), "bioio-nd2"

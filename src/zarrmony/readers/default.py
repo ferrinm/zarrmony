@@ -1,9 +1,9 @@
 """Default reader: ``bioio.BioImage`` with bioio's plugin auto-discovery.
 
-Used for any input that no extension-specific override (CZI, LIF, ND2) claims.
-Exposed as ``default_plugin`` (a :class:`ReaderPlugin`) and registered in
-``readers/__init__.py`` at zarrmony import time. Its ``match()`` returns the
-lowest possible score (0) so any extension-specific plugin outranks it.
+Used for any input that no extension-specific plugin (CZI, LIF, ND2) claims.
+Exposed as ``default_plugin`` and registered in ``readers/__init__.py`` at
+zarrmony import time. Its ``match()`` returns the lowest possible score (0) so
+any extension-specific plugin outranks it.
 
 ``derive_bioio_distribution()`` recovers the actual underlying bioio
 sub-package (``bioio-ome-tiff``, etc.) from an opened ``BioImage`` so the
@@ -46,9 +46,3 @@ def derive_bioio_distribution(reader: Any) -> str | None:
         return module.split(".")[0].replace("_", "-")
     except (AttributeError, IndexError):
         return None
-
-
-def open_default_reader(path: str | Path) -> tuple[Any, str]:
-    """Legacy 2-tuple factory kept for the deprecated ``_OVERRIDES`` path."""
-    img = BioImage(str(path))
-    return img, derive_bioio_distribution(img) or "bioio"
