@@ -20,6 +20,17 @@ from zarrmony.errors import (
     MetadataValidationError,
     OutputExistsError,
 )
+from zarrmony.readers.plugin import ReaderPlugin
+
+
+def _fake_plugin(name: str = "bioio-fake") -> ReaderPlugin:
+    return ReaderPlugin(
+        name=name,
+        match=lambda _p: 100,
+        open=lambda _p: object(),
+        distribution=name,
+        source="builtin",
+    )
 
 
 @pytest.fixture
@@ -27,7 +38,8 @@ def patched_reader(monkeypatch: pytest.MonkeyPatch):
     """Patch ``zarrmony.api.get_reader`` to return a configurable FakeReader."""
 
     def installer(reader: FakeReader, plugin: str = "bioio-fake"):
-        monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin))
+        plugin_obj = _fake_plugin(plugin)
+        monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin_obj, 100))
 
     return installer
 
@@ -92,7 +104,10 @@ def test_per_scene_writes_audit_with_user_metadata(tmp_path: Path, patched_reade
     assert len(result["stores"]) == 1
     audit = result["stores"][0]
     assert audit["version"]
-    assert audit["reader_plugin"] == "bioio-fake"
+    assert audit["reader_plugin"]["name"] == "bioio-fake"
+    assert audit["reader_plugin"]["distribution"] == "bioio-fake"
+    assert audit["reader_plugin"]["source"] == "builtin"
+    assert audit["reader_plugin"]["match_score"] == 100
     assert audit["user_metadata"]["microscope"] == "Axioscan"
     assert audit["user_metadata"]["objective"] == "20x"
     assert audit["config"]["pyramid_min_size"] == 8
@@ -313,7 +328,10 @@ def test_inspect_returns_scene_summary(tmp_path: Path, patched_reader) -> None:
 
     info = inspect("/tmp/x.lif")
 
-    assert info["plugin"] == "bioio-fake"
+    assert info["reader_plugin"]["name"] == "bioio-fake"
+    assert info["reader_plugin"]["distribution"] == "bioio-fake"
+    assert info["reader_plugin"]["source"] == "builtin"
+    assert info["reader_plugin"]["match_score"] == 100
     assert info["n_scenes"] == 2
     assert [s["name"] for s in info["scenes"]] == ["alpha", "beta"]
     assert info["scenes"][0]["dims"] == ["T", "C", "Y", "X"]

@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from tests.conftest import FakeReader
 from zarrmony import api as api_module
 from zarrmony.cli import app
+from zarrmony.readers.plugin import ReaderPlugin
 
 
 @pytest.fixture
@@ -19,7 +20,14 @@ def runner() -> CliRunner:
 @pytest.fixture
 def patched_reader(monkeypatch: pytest.MonkeyPatch):
     def installer(reader: FakeReader, plugin: str = "bioio-fake") -> None:
-        monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin))
+        plugin_obj = ReaderPlugin(
+            name=plugin,
+            match=lambda _p: 100,
+            open=lambda _p: object(),
+            distribution=plugin,
+            source="builtin",
+        )
+        monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin_obj, 100))
 
     return installer
 

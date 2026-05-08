@@ -170,8 +170,10 @@ def inspect_cmd(input_path: str, as_json: bool) -> None:
         click.echo(json.dumps(info, indent=2, default=str))
         return
 
+    rp = info["reader_plugin"]
+    plugin_str = rp["distribution"] or rp["name"]
     click.echo(f"Input:  {info['input_path']}")
-    click.echo(f"Plugin: {info['plugin']}")
+    click.echo(f"Plugin: {plugin_str}")
     click.echo(f"Scenes: {info['n_scenes']}")
     for s in info["scenes"]:
         dims_str = "".join(s["dims"])

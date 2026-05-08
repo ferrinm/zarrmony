@@ -4,11 +4,26 @@ from pathlib import Path
 import zarr
 
 from zarrmony import __version__
-from zarrmony.audit import build_audit_record, write_audit_record
+from zarrmony.audit import AUDIT_SCHEMA_VERSION, build_audit_record, write_audit_record
+from zarrmony.readers.plugin import ReaderPlugin
 
 
 def _ts(s: str) -> datetime:
     return datetime.fromisoformat(s).replace(tzinfo=UTC)
+
+
+def _fake_plugin(
+    name: str = "bioio-czi",
+    distribution: str | None = "bioio-czi",
+    source: str = "builtin",
+) -> ReaderPlugin:
+    return ReaderPlugin(
+        name=name,
+        match=lambda _p: 100,
+        open=lambda _p: object(),
+        distribution=distribution,
+        source=source,  # type: ignore[arg-type]
+    )
 
 
 def test_build_audit_record_minimum_keys(tmp_path: Path) -> None:
@@ -17,14 +32,19 @@ def test_build_audit_record_minimum_keys(tmp_path: Path) -> None:
 
     audit = build_audit_record(
         input_path=src,
-        reader_plugin="bioio-czi",
+        reader_plugin=_fake_plugin(),
+        match_score=100,
         config={"pyramid_min_size": 256},
         started_at=_ts("2026-05-02T10:00:00"),
         finished_at=_ts("2026-05-02T10:01:30"),
     )
 
+    assert audit["audit_schema_version"] == AUDIT_SCHEMA_VERSION
     assert audit["version"] == __version__
-    assert audit["reader_plugin"] == "bioio-czi"
+    assert audit["reader_plugin"]["name"] == "bioio-czi"
+    assert audit["reader_plugin"]["distribution"] == "bioio-czi"
+    assert audit["reader_plugin"]["source"] == "builtin"
+    assert audit["reader_plugin"]["match_score"] == 100
     assert audit["input"]["path"].endswith("input.czi")
     assert audit["input"]["size_bytes"] == 1024
     assert "mtime_iso" in audit["input"]
@@ -32,6 +52,8 @@ def test_build_audit_record_minimum_keys(tmp_path: Path) -> None:
     assert audit["config"] == {"pyramid_min_size": 256}
     assert audit["per_scene"] == []
     assert audit["metadata_warnings"] == []
+    # Flat fields removed.
+    assert "reader_plugin_version" not in audit
 
 
 def test_build_audit_record_with_checksum(tmp_path: Path) -> None:
@@ -40,7 +62,8 @@ def test_build_audit_record_with_checksum(tmp_path: Path) -> None:
 
     audit = build_audit_record(
         input_path=src,
-        reader_plugin="bioio-lif",
+        reader_plugin=_fake_plugin(name="bioio-lif", distribution="bioio-lif"),
+        match_score=100,
         config={},
         started_at=_ts("2026-05-02T10:00:00"),
         finished_at=_ts("2026-05-02T10:00:10"),
@@ -52,18 +75,42 @@ def test_build_audit_record_with_checksum(tmp_path: Path) -> None:
     assert audit["input"]["sha256"] == expected
 
 
-def test_build_audit_record_unknown_reader_plugin(tmp_path: Path) -> None:
+def test_build_audit_record_unknown_distribution_yields_null_version(tmp_path: Path) -> None:
     src = tmp_path / "x.czi"
     src.write_bytes(b"")
     audit = build_audit_record(
         input_path=src,
-        reader_plugin="not-a-real-package",
+        reader_plugin=_fake_plugin(name="not-a-real-package", distribution="not-a-real-package"),
+        match_score=100,
         config={},
         started_at=_ts("2026-05-02T10:00:00"),
         finished_at=_ts("2026-05-02T10:00:01"),
     )
-    assert audit["reader_plugin"] == "not-a-real-package"
-    assert audit["reader_plugin_version"] is None
+    assert audit["reader_plugin"]["name"] == "not-a-real-package"
+    assert audit["reader_plugin"]["distribution"] == "not-a-real-package"
+    assert audit["reader_plugin"]["version"] is None
+
+
+def test_build_audit_record_distribution_override_wins(tmp_path: Path) -> None:
+    """The catch-all default plugin has distribution=None at registration; the
+    audit caller injects the dynamically-resolved distribution explicitly.
+    """
+    src = tmp_path / "x.tif"
+    src.write_bytes(b"")
+    plugin = _fake_plugin(name="bioio", distribution=None)
+
+    audit = build_audit_record(
+        input_path=src,
+        reader_plugin=plugin,
+        match_score=0,
+        distribution="bioio-ome-tiff",
+        config={},
+        started_at=_ts("2026-05-02T10:00:00"),
+        finished_at=_ts("2026-05-02T10:00:01"),
+    )
+    assert audit["reader_plugin"]["name"] == "bioio"
+    assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
+    assert audit["reader_plugin"]["match_score"] == 0
 
 
 def test_build_audit_record_includes_per_scene_and_warnings(tmp_path: Path) -> None:
@@ -74,14 +121,37 @@ def test_build_audit_record_includes_per_scene_and_warnings(tmp_path: Path) -> N
     audit = build_audit_record(
         input_path=src,
         reader_plugin=None,
+        match_score=None,
         config={},
         started_at=_ts("2026-05-02T10:00:00"),
         finished_at=_ts("2026-05-02T10:00:01"),
         per_scene=per_scene,
         metadata_warnings=warnings,
     )
+    assert audit["reader_plugin"] is None
     assert audit["per_scene"] == per_scene
     assert audit["metadata_warnings"] == warnings
+
+
+def test_build_audit_record_reader_plugin_has_exact_keys(tmp_path: Path) -> None:
+    """Pin the new reader_plugin dict shape per ADR-0001 / Q7."""
+    src = tmp_path / "x.czi"
+    src.write_bytes(b"")
+    audit = build_audit_record(
+        input_path=src,
+        reader_plugin=_fake_plugin(),
+        match_score=100,
+        config={},
+        started_at=_ts("2026-05-02T10:00:00"),
+        finished_at=_ts("2026-05-02T10:00:01"),
+    )
+    assert set(audit["reader_plugin"].keys()) == {
+        "name",
+        "version",
+        "source",
+        "distribution",
+        "match_score",
+    }
 
 
 def test_write_audit_record_to_zarr(tmp_path: Path) -> None:
@@ -90,8 +160,15 @@ def test_write_audit_record_to_zarr(tmp_path: Path) -> None:
     zarr.create_group(str(out), zarr_format=3)
 
     audit = {
+        "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "version": __version__,
-        "reader_plugin": "bioio-czi",
+        "reader_plugin": {
+            "name": "bioio-czi",
+            "version": None,
+            "source": "builtin",
+            "distribution": "bioio-czi",
+            "match_score": 100,
+        },
         "config": {"force": True},
     }
     write_audit_record(out, audit)

@@ -44,7 +44,11 @@ def test_per_scene_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     assert result["layout"] == "per-scene"
     assert len(result["stores"]) == 1
     audit = result["stores"][0]
-    assert audit["reader_plugin"] == "bioio-ome-tiff"
+    assert audit["reader_plugin"]["name"] == "bioio"
+    assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
+    assert audit["reader_plugin"]["source"] == "builtin"
+    assert audit["reader_plugin"]["match_score"] == 0
+    assert audit["audit_schema_version"] == 2
     assert audit["input"]["size_bytes"] > 0
     assert audit["user_metadata"]["microscope"] == "FakeScope"
 
@@ -147,7 +151,9 @@ def test_bf2raw_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
 
     audit = convert(str(src), out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=32)
 
-    assert audit["reader_plugin"] == "bioio-ome-tiff"
+    assert audit["reader_plugin"]["name"] == "bioio"
+    assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
+    assert audit["audit_schema_version"] == 2
     assert len(audit["per_scene"]) == 1
 
     with open(out / "zarr.json") as f:

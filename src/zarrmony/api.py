@@ -25,7 +25,8 @@ from zarrmony.errors import (
 from zarrmony.metadata.channel_colors import colors_for_channels
 from zarrmony.metadata.model import UserMetadata
 from zarrmony.naming import resolve_scene_dirnames
-from zarrmony.readers import get_reader
+from zarrmony.readers.default import derive_bioio_distribution
+from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import build_combined_ome_xml, build_ome_xml_for_scene
 from zarrmony.writers.per_scene import write_per_scene_metadata
@@ -137,6 +138,16 @@ def _source_xml_filename(input_path: str | Path) -> str:
     return f"raw.{ext}.xml" if ext else "raw.xml"
 
 
+def _resolve_distribution(reader: Any, plugin: ReaderPlugin) -> str | None:
+    """Return the effective bioio distribution name for the audit record.
+
+    For format-specific plugins (CZI/LIF/ND2) ``plugin.distribution`` is set.
+    For the catch-all default plugin it is ``None``; introspect the opened
+    ``BioImage`` to recover the actual sub-package (e.g. ``bioio-ome-tiff``).
+    """
+    return plugin.distribution if plugin.distribution else derive_bioio_distribution(reader)
+
+
 def convert(
     input_path: str | Path,
     output: str | Path,
@@ -171,9 +182,10 @@ def convert(
         for scene_name, m in per_scene_metadata.items():
             per_scene_user_metadata[scene_name] = _validate_metadata(m, permissive)
 
-    reader, plugin_name = get_reader(input_path)
+    reader, plugin, match_score = get_reader(input_path)
     if not reader.scenes:
         raise ZarrmonyError(f"reader returned no scenes for {input_path!s}")
+    distribution = _resolve_distribution(reader, plugin)
 
     config = {
         "layout": layout,
@@ -188,7 +200,9 @@ def convert(
     if layout == "bf2raw":
         return _convert_bf2raw(
             reader=reader,
-            plugin_name=plugin_name,
+            plugin=plugin,
+            match_score=match_score,
+            distribution=distribution,
             input_path=input_path,
             output=output,
             user_metadata=user_metadata,
@@ -202,7 +216,9 @@ def convert(
         )
     return _convert_per_scene(
         reader=reader,
-        plugin_name=plugin_name,
+        plugin=plugin,
+        match_score=match_score,
+        distribution=distribution,
         input_path=input_path,
         output=output,
         user_metadata=user_metadata,
@@ -219,7 +235,9 @@ def convert(
 def _convert_per_scene(
     *,
     reader: Any,
-    plugin_name: str | None,
+    plugin: ReaderPlugin,
+    match_score: int | None,
+    distribution: str | None,
     input_path: str | Path,
     output: str | Path,
     user_metadata: dict,
@@ -290,7 +308,9 @@ def _convert_per_scene(
         finished_at = datetime.now().astimezone()
         audit = build_audit_record(
             input_path=input_path,
-            reader_plugin=plugin_name,
+            reader_plugin=plugin,
+            match_score=match_score,
+            distribution=distribution,
             config=config,
             started_at=started_at,
             finished_at=finished_at,
@@ -318,7 +338,9 @@ def _convert_per_scene(
 def _convert_bf2raw(
     *,
     reader: Any,
-    plugin_name: str | None,
+    plugin: ReaderPlugin,
+    match_score: int | None,
+    distribution: str | None,
     input_path: str | Path,
     output: str | Path,
     user_metadata: dict,
@@ -389,7 +411,9 @@ def _convert_bf2raw(
 
     audit = build_audit_record(
         input_path=input_path,
-        reader_plugin=plugin_name,
+        reader_plugin=plugin,
+        match_score=match_score,
+        distribution=distribution,
         config=config,
         started_at=started_at,
         finished_at=finished_at,
@@ -406,9 +430,11 @@ def _convert_bf2raw(
 def inspect(input_path: str | Path) -> dict:
     """Return a summary of ``input_path``'s scenes without converting.
 
-    Used for pre-flight inspection before kicking off a slow conversion.
+    Used for pre-flight inspection before kicking off a slow conversion. The
+    ``reader_plugin`` field mirrors the audit record's nested shape.
     """
-    reader, plugin = get_reader(input_path)
+    reader, plugin, match_score = get_reader(input_path)
+    distribution = _resolve_distribution(reader, plugin)
     scenes_info = []
     for i, name in enumerate(reader.scenes):
         reader.set_scene(i)
@@ -439,7 +465,12 @@ def inspect(input_path: str | Path) -> dict:
         )
     return {
         "input_path": str(input_path),
-        "plugin": plugin,
+        "reader_plugin": {
+            "name": plugin.name,
+            "source": plugin.source,
+            "distribution": distribution,
+            "match_score": match_score,
+        },
         "n_scenes": len(reader.scenes),
         "scenes": scenes_info,
     }

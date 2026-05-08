@@ -1,13 +1,15 @@
 """Audit-trail metadata for converted Zarrs.
 
 Every conversion writes ``attrs["zarrmony"]`` at the root of the output store,
-recording: zarrmony version, reader plugin used (and its version), the input
-file's path / size / mtime / optional SHA256, the conversion config the user
-passed, started/finished timestamps, per-scene records returned by
-``write_scene``, and any extractor-failure warnings.
+recording: zarrmony version, the winning reader plugin (name, distribution,
+source, version, match score), the input file's path / size / mtime / optional
+SHA256, the conversion config the user passed, started/finished timestamps,
+per-scene records returned by ``write_scene``, and any extractor-failure
+warnings.
 
 Stored as a top-level ``attrs.zarrmony`` (not under ``attrs.ome``) to keep the
-spec-defined namespace clean.
+spec-defined namespace clean. ``audit_schema_version`` is bumped whenever this
+record's shape changes.
 """
 
 from __future__ import annotations
@@ -21,6 +23,9 @@ from typing import Any
 
 from zarrmony import __version__
 from zarrmony._storage import open_root_group
+from zarrmony.readers.plugin import ReaderPlugin
+
+AUDIT_SCHEMA_VERSION = 2
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:
@@ -49,10 +54,31 @@ def _try_pkg_version(pkg: str) -> str | None:
         return None
 
 
+def _reader_plugin_record(
+    plugin: ReaderPlugin | None,
+    match_score: int | None,
+    distribution: str | None,
+) -> dict[str, Any] | None:
+    if plugin is None:
+        return None
+    # Caller-supplied distribution wins (lets the catch-all default plugin
+    # surface the actual bioio sub-package, e.g. ``bioio-ome-tiff``).
+    actual_distribution = distribution if distribution is not None else plugin.distribution
+    return {
+        "name": plugin.name,
+        "version": _try_pkg_version(actual_distribution) if actual_distribution else None,
+        "source": plugin.source,
+        "distribution": actual_distribution,
+        "match_score": match_score,
+    }
+
+
 def build_audit_record(
     *,
     input_path: str | Path,
-    reader_plugin: str | None,
+    reader_plugin: ReaderPlugin | None,
+    match_score: int | None = None,
+    distribution: str | None = None,
     config: dict[str, Any],
     started_at: datetime,
     finished_at: datetime,
@@ -60,11 +86,17 @@ def build_audit_record(
     metadata_warnings: list[dict[str, Any]] | None = None,
     checksum: bool = False,
 ) -> dict[str, Any]:
-    """Assemble the audit-record dict that gets written to ``attrs.zarrmony``."""
+    """Assemble the audit-record dict written to ``attrs.zarrmony``.
+
+    ``distribution`` overrides ``reader_plugin.distribution`` for the audit
+    record only; pass it when the plugin's static ``distribution`` field is
+    ``None`` (e.g. the catch-all default plugin) and the caller has dynamically
+    resolved the actual underlying bioio sub-package.
+    """
     return {
+        "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "version": __version__,
-        "reader_plugin": reader_plugin,
-        "reader_plugin_version": _try_pkg_version(reader_plugin) if reader_plugin else None,
+        "reader_plugin": _reader_plugin_record(reader_plugin, match_score, distribution),
         "input": _file_forensics(input_path, checksum=checksum),
         "config": config,
         "conversion_started_at": started_at.isoformat(),
