@@ -1,9 +1,9 @@
-"""Tests for the reader plugin registry.
+"""Tests for the built-in reader plugins (matchers + import-time registration).
 
-The actual format-specific ``Reader`` constructors (bioio_lif.Reader,
-bioio_czi.Reader) require real LIF/CZI fixture files. We test the matchers
-directly (cheap, side-effect-free predicates) and exercise dispatch end-to-end
-with fake ``ReaderPlugin`` instances registered in an isolated registry.
+The registry contract itself (dispatch, ties, entry points, error handling)
+lives in ``test_plugin_registry.py``. This file focuses on the format-specific
+matchers and the integration check that the real built-in registry resolves
+each extension to the correct plugin.
 """
 
 from collections.abc import Iterator
@@ -17,35 +17,11 @@ from zarrmony.readers import lif as lif_mod
 from zarrmony.readers import nd2 as nd2_mod
 from zarrmony.readers import plugin as plugin_mod
 from zarrmony.readers.plugin import (
-    NoMatchingPluginError,
     ReaderPlugin,
     get_reader,
     list_plugins,
     register_plugin,
-    unregister_plugin,
 )
-
-
-class _Fake:
-    def __init__(self, path: str | Path, tag: str) -> None:
-        self.path = str(path)
-        self.tag = tag
-
-
-def _fake_plugin(
-    name: str,
-    *,
-    score: int | None = 100,
-    tag: str | None = None,
-) -> ReaderPlugin:
-    tag = tag or name
-    return ReaderPlugin(
-        name=name,
-        match=lambda _p: score,
-        open=lambda p: _Fake(p, tag),
-        distribution=None,
-        source="runtime",
-    )
 
 
 @pytest.fixture(autouse=True)
@@ -97,75 +73,24 @@ def test_uri_style_paths_extract_extension() -> None:
     assert czi_mod._match_czi(Path("gs://my-bucket/folder/sample.czi")) == 100
 
 
-# --- Dispatch (uses fake plugins in an isolated registry) ----------------
+# --- Built-in dispatch end-to-end ----------------------------------------
 
 
-def test_get_reader_returns_highest_score(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(plugin_mod, "_PLUGINS", {})
-    monkeypatch.setattr(plugin_mod, "_ENTRY_POINTS_LOADED", True)
-    register_plugin(_fake_plugin("low", score=10))
-    register_plugin(_fake_plugin("high", score=50))
-
-    reader, plugin, score = get_reader("/tmp/anything.xyz")
-    assert reader.tag == "high"
-    assert plugin.name == "high"
-    assert score == 50
+class _Sentinel:
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
 
 
-def test_equal_score_resolves_to_first_registered(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(plugin_mod, "_PLUGINS", {})
-    monkeypatch.setattr(plugin_mod, "_ENTRY_POINTS_LOADED", True)
-    register_plugin(_fake_plugin("first", score=100))
-    register_plugin(_fake_plugin("second", score=100))
-
-    _reader, plugin, _ = get_reader("/tmp/anything.xyz")
-    assert plugin.name == "first"
-
-
-def test_no_match_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(plugin_mod, "_PLUGINS", {})
-    monkeypatch.setattr(plugin_mod, "_ENTRY_POINTS_LOADED", True)
-    register_plugin(_fake_plugin("nope", score=None))
-
-    with pytest.raises(NoMatchingPluginError):
-        get_reader("/tmp/anything.xyz")
-
-
-def test_matcher_that_raises_is_treated_as_no_match(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(plugin_mod, "_PLUGINS", {})
-    monkeypatch.setattr(plugin_mod, "_ENTRY_POINTS_LOADED", True)
-
-    def _boom(_p: Path) -> int | None:
-        raise RuntimeError("matcher exploded")
-
-    bad = ReaderPlugin(
-        name="explosive",
-        match=_boom,
-        open=lambda _p: object(),
-        source="runtime",
-    )
-    register_plugin(bad)
-    register_plugin(_fake_plugin("safe", score=5))
-
-    _reader, plugin, score = get_reader("/tmp/foo.xyz")
-    assert plugin.name == "safe"
-    assert score == 5
-
-
-def test_builtin_extension_dispatch_with_real_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_builtin_extension_dispatch_with_real_registry() -> None:
     """Replace each built-in's ``open`` with a sentinel and confirm dispatch
     walks the real registry to the right plugin per extension. The real
     matchers run; only ``open`` is faked so we don't need real fixture files.
     """
     sentinels = {
-        "bioio": _Fake("/tmp/x.tif", "default"),
-        "bioio-czi": _Fake("/tmp/x.czi", "czi"),
-        "bioio-lif": _Fake("/tmp/x.lif", "lif"),
-        "bioio-nd2": _Fake("/tmp/x.nd2", "nd2"),
+        "bioio": _Sentinel("default"),
+        "bioio-czi": _Sentinel("czi"),
+        "bioio-lif": _Sentinel("lif"),
+        "bioio-nd2": _Sentinel("nd2"),
     }
     for name, sentinel in sentinels.items():
         original = plugin_mod._PLUGINS[name]
@@ -189,23 +114,3 @@ def test_builtin_extension_dispatch_with_real_registry(
         assert plugin.name == expected_name, path
         assert score == expected_score, path
         assert reader is sentinels[expected_name], path
-
-
-# --- Registry hygiene -----------------------------------------------------
-
-
-def test_register_plugin_rejects_duplicate_name() -> None:
-    register_plugin(_fake_plugin("dupe"))
-    with pytest.raises(ValueError, match="already registered"):
-        register_plugin(_fake_plugin("dupe"))
-
-
-def test_register_plugin_replace_overrides_existing() -> None:
-    register_plugin(_fake_plugin("dupe", tag="first"))
-    register_plugin(_fake_plugin("dupe", tag="second"), replace=True)
-    reader, _winner, _ = get_reader("/tmp/whatever.xyz")
-    assert reader.tag == "second"
-
-
-def test_unregister_plugin_is_noop_for_unknown_name() -> None:
-    unregister_plugin("never-existed")  # must not raise

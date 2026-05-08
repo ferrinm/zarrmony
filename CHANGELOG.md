@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Direct contract tests for the reader plugin registry
+  (`tests/test_plugin_registry.py`) covering duplicate registration,
+  matcher-exception resilience, score-tie ordering, the entry-point loader
+  (success, failed load, wrong type, name collision), and
+  `NoMatchingPluginError` message contents. Pulls `readers/plugin.py`
+  coverage to 100% and runs without any bioio fixture files.
+
 ## [0.2.0] - 2026-05-08
 
 ### Added
