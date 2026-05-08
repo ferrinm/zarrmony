@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Plugin-author guide at `docs/writing-a-reader-plugin.md` covering the
+  Reader Protocol, matcher score conventions, entry-point registration,
+  the `zarrmony-<vendor>` distribution naming convention, and a
+  registry-isolation pattern for tests. Linked from the README under a
+  new "Extending zarrmony" section.
 - Direct contract tests for the reader plugin registry
   (`tests/test_plugin_registry.py`) covering duplicate registration,
   matcher-exception resilience, score-tie ordering, the entry-point loader

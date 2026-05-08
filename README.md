@@ -62,6 +62,13 @@ audit = convert(
 )
 ```
 
+## Extending zarrmony
+
+Add support for a new bioimage format by writing a reader plugin. See
+[**Writing a zarrmony reader plugin**](./docs/writing-a-reader-plugin.md)
+for the Reader Protocol, matcher conventions, entry-point registration,
+and a worked example.
+
 ## License
 
 Apache-2.0. See [LICENSE](./LICENSE).
