@@ -24,7 +24,7 @@ from tests.conftest import FakeReader
 from zarrmony import api as api_module
 from zarrmony import convert
 from zarrmony.audit import AUDIT_SCHEMA_VERSION
-from zarrmony.errors import PlateLayoutError
+from zarrmony.errors import LayoutMismatchError, PlateLayoutError
 from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
 from zarrmony.readers.plugin import ReaderPlugin
 from zarrmony.writers.plate import validate_plate_layout, write_plate
@@ -172,9 +172,25 @@ def test_plate_rejects_per_scene_metadata(tmp_path: Path, patched_reader) -> Non
         )
 
 
-def test_plate_requires_reader_plate_layout(tmp_path: Path, patched_reader) -> None:
+def test_plate_against_flat_reader_raises_layout_mismatch(tmp_path: Path, patched_reader) -> None:
+    """Forcing layout='plate' against a flat reader is a dispatch-matrix error."""
     flat_reader = FakeReader(scenes=["s0"], dims="TCYX", shape=(1, 1, 16, 16))
     patched_reader(flat_reader)
+    with pytest.raises(LayoutMismatchError, match="layout_hint='flat'"):
+        convert(
+            "/tmp/fake.czi",
+            tmp_path / "out.ome.zarr",
+            layout="plate",
+            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
+        )
+
+
+def test_plate_reader_missing_plate_layout_raises(tmp_path: Path, patched_reader) -> None:
+    """Defensive: a reader claiming layout_hint='plate' but with plate_layout=None."""
+    misconfigured = FakeReader(
+        scenes=["s0"], dims="TCYX", shape=(1, 1, 16, 16), layout_hint="plate"
+    )
+    patched_reader(misconfigured)
     with pytest.raises(Exception, match="reader.plate_layout"):
         convert(
             "/tmp/fake.czi",

@@ -14,6 +14,7 @@ See ADR-0004 for the design rationale and rejected alternatives.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from bioio_ome_zarr.writers import Channel
 from ome_types.model import Image
 
 from zarrmony._storage import open_root_group
-from zarrmony.errors import PlateLayoutError
+from zarrmony.errors import LayoutDowngradeWarning, PlateLayoutError
 from zarrmony.metadata.channel_colors import colors_for_channels
 from zarrmony.readers.plate import PlateField, PlateLayout
 from zarrmony.writers.scene import write_scene
@@ -190,6 +191,20 @@ def write_plate(
     free of any specific builder import-time dependency.
     """
     validate_plate_layout(plate_layout, n_scenes=len(reader.scenes))
+
+    referenced = {f.scene_index for f in plate_layout.fields}
+    unreferenced = [i for i in range(len(reader.scenes)) if i not in referenced]
+    if unreferenced:
+        preview = unreferenced[:5]
+        suffix = "" if len(unreferenced) <= 5 else f", ... ({len(unreferenced) - 5} more)"
+        warnings.warn(
+            f"{len(unreferenced)} scene(s) in reader.scenes are not referenced "
+            f"by any PlateField and will not be written to the plate "
+            f"(scene indices: {preview}{suffix}). To include them, add the "
+            f"corresponding PlateField entries to plate_layout.fields.",
+            LayoutDowngradeWarning,
+            stacklevel=2,
+        )
 
     store_str = _normalize_store_path(store_path).rstrip("/")
     well_groups = _group_fields_by_well(plate_layout)

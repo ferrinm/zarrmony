@@ -64,15 +64,16 @@ def _parse_chunk_shape(
 )
 @click.option(
     "--layout",
-    type=click.Choice(["per-scene", "bf2raw", "plate"]),
-    default="per-scene",
+    type=click.Choice(["auto", "per-scene", "bf2raw", "plate"]),
+    default="auto",
     show_default=True,
     help=(
-        "Output shape. 'per-scene' (default) writes one self-describing "
-        "<scene>.ome.zarr store per scene under OUTPUT. 'bf2raw' writes a "
-        "single bioformats2raw.layout bundle with numbered subgroups at OUTPUT. "
-        "'plate' writes an OME-NGFF HCS plate store at OUTPUT (requires the "
-        "reader to expose plate_layout)."
+        "Output shape. 'auto' (default) picks the writer from the reader's "
+        "layout_hint: flat readers write per-scene, plate-shaped readers write "
+        "a plate. 'per-scene' writes one self-describing <scene>.ome.zarr per "
+        "scene under OUTPUT. 'bf2raw' writes a single bioformats2raw.layout "
+        "bundle with numbered subgroups at OUTPUT. 'plate' writes an OME-NGFF "
+        "HCS plate store at OUTPUT (requires a plate-shaped reader)."
     ),
 )
 @click.option(
@@ -122,9 +123,10 @@ def convert_cmd(
 ) -> None:
     """Convert INPUT (a bioimage file) to OME-Zarr v0.5 at OUTPUT.
 
-    By default OUTPUT is treated as a directory and one self-describing
-    ``<scene>.ome.zarr`` store is written per scene. Pass ``--layout bf2raw``
-    to instead write a single bioformats2raw.layout bundle at OUTPUT.
+    By default (``--layout auto``) the writer is picked from the reader's
+    ``layout_hint``: flat readers write one self-describing
+    ``<scene>.ome.zarr`` per scene under OUTPUT, plate-shaped readers write
+    a single OME-NGFF HCS plate store at OUTPUT.
     """
     metadata = _load_json(metadata_file)
     per_scene = _load_json(per_scene_metadata)
@@ -147,11 +149,14 @@ def convert_cmd(
     except OutputExistsError as e:
         raise click.ClickException(str(e)) from e
 
-    if layout == "per-scene":
+    # Dispatch on the *resolved* layout the API actually used (so --layout auto
+    # reports what was written, not the user's input).
+    resolved = result.get("layout")
+    if resolved == "per-scene":
         n = len(result["stores"])
         noun = "store" if n == 1 else "stores"
         click.echo(f"Wrote {n} {noun} to {output}", err=True)
-    elif layout == "plate":
+    elif resolved == "plate":
         n = len(result["fields"])
         noun = "field" if n == 1 else "fields"
         click.echo(f"Wrote {n} {noun} to {output} (plate)", err=True)

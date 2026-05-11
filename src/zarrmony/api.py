@@ -18,6 +18,8 @@ from pydantic import ValidationError
 from zarrmony.audit import build_audit_record, write_audit_record
 from zarrmony.errors import (
     ExtractorWarning,
+    LayoutDowngradeWarning,
+    LayoutMismatchError,
     MetadataValidationError,
     OutputExistsError,
     ZarrmonyError,
@@ -33,7 +35,42 @@ from zarrmony.writers.per_scene import write_per_scene_metadata
 from zarrmony.writers.plate import write_plate
 from zarrmony.writers.scene import write_scene
 
-Layout = Literal["per-scene", "bf2raw", "plate"]
+Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
+ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
+_VALID_LAYOUTS: tuple[Layout, ...] = ("auto", "per-scene", "bf2raw", "plate")
+
+
+def _resolve_layout(layout: Layout, reader: Any, plugin: ReaderPlugin) -> ResolvedLayout:
+    """Resolve a user-supplied ``layout`` against the reader's ``layout_hint``.
+
+    Implements the ADR-0004 dispatch matrix:
+
+    - ``auto`` + flat reader → ``per-scene``
+    - ``auto`` + plate reader → ``plate``
+    - ``per-scene`` / ``bf2raw`` + plate reader → that flat layout, with a
+      :class:`LayoutDowngradeWarning` (plate metadata is dropped)
+    - ``plate`` + flat reader → :class:`LayoutMismatchError`
+    """
+    layout_hint = getattr(reader, "layout_hint", "flat")
+    if layout == "auto":
+        return "plate" if layout_hint == "plate" else "per-scene"
+    if layout == "plate" and layout_hint != "plate":
+        raise LayoutMismatchError(
+            f"layout='plate' requires a plate-shaped reader, but reader plugin "
+            f"{plugin.name!r} reports layout_hint={layout_hint!r}. Use "
+            f"layout='auto' (the default) to let zarrmony pick the matching "
+            f"writer, or pick layout='per-scene' / 'bf2raw' explicitly."
+        )
+    if layout in ("per-scene", "bf2raw") and layout_hint == "plate":
+        warnings.warn(
+            f"reader plugin {plugin.name!r} is plate-shaped (layout_hint='plate') "
+            f"but layout={layout!r} was requested explicitly; plate metadata "
+            f"(rows, columns, wells, acquisitions) will be dropped from the "
+            f"output. Use layout='auto' (the default) to keep plate structure.",
+            LayoutDowngradeWarning,
+            stacklevel=3,
+        )
+    return layout  # type: ignore[return-value]
 
 
 def _validate_metadata(
@@ -153,7 +190,7 @@ def convert(
     input_path: str | Path,
     output: str | Path,
     *,
-    layout: Layout = "per-scene",
+    layout: Layout = "auto",
     metadata: UserMetadata | dict | None = None,
     per_scene_metadata: dict[str, UserMetadata | dict] | None = None,
     pyramid_min_size: int = 256,
@@ -165,28 +202,34 @@ def convert(
 ) -> dict:
     """Convert ``input_path`` to OME-Zarr v0.5.
 
-    By default (``layout='per-scene'``), each scene is written to its own
-    self-describing store at ``<output>/<sanitized_scene_name>.ome.zarr/`` and
-    the return value is ``{"input": ..., "stores": [<per-store audit>, ...]}``.
+    By default (``layout='auto'``), the writer is chosen from the reader's
+    ``layout_hint``: a flat reader writes ``per-scene`` (one self-describing
+    ``<sanitized_scene_name>.ome.zarr`` per scene under ``output``); a
+    plate-shaped reader writes a single OME-NGFF HCS plate store at
+    ``output``. Explicit overrides honor user intent but warn or error per
+    ADR-0004 (forcing ``per-scene`` / ``bf2raw`` against a plate reader emits
+    :class:`~zarrmony.errors.LayoutDowngradeWarning`; forcing ``plate``
+    against a flat reader raises :class:`~zarrmony.errors.LayoutMismatchError`).
 
-    With ``layout='bf2raw'``, a single ``bioformats2raw.layout`` store is
-    written at ``output``: per-scene images live in numbered subgroups, with a
-    combined ``OME/METADATA.ome.xml`` and ``OME/series`` listing. The return
-    value is the bundle's audit dict (matching the v0.1.x behavior).
-
-    With ``layout='plate'``, a single OME-NGFF HCS plate store is written at
-    ``output``: each FOV lands at ``<row>/<column>/<seq_int>/`` and the plate
-    metadata is written as ``attrs.ome.plate`` on the root group. Requires the
-    reader to expose ``plate_layout`` (see ADR-0004). The return value is the
-    plate's audit dict, using the schema-3 ``fields`` + ``plate`` shape.
+    Per-scene return shape: ``{"input": ..., "stores": [<per-store audit>, ...]}``.
+    The ``bf2raw`` and ``plate`` shapes return the single bundle's audit dict;
+    plate audits use the schema-3 ``fields`` + ``plate`` keys.
     """
-    if layout not in ("per-scene", "bf2raw", "plate"):
-        raise ValueError(f"layout must be 'per-scene', 'bf2raw', or 'plate' (got {layout!r})")
+    if layout not in _VALID_LAYOUTS:
+        raise ValueError(f"layout must be one of {list(_VALID_LAYOUTS)} (got {layout!r})")
 
     user_metadata = _validate_metadata(metadata, permissive)
+
+    reader, plugin, match_score = get_reader(input_path)
+    if not reader.scenes:
+        raise ZarrmonyError(f"reader returned no scenes for {input_path!s}")
+    distribution = _resolve_distribution(reader, plugin)
+
+    effective_layout = _resolve_layout(layout, reader, plugin)
+
     per_scene_user_metadata: dict[str, dict] = {}
     if per_scene_metadata:
-        if layout == "plate":
+        if effective_layout == "plate":
             raise ValueError(
                 "per_scene_metadata is not supported in plate mode "
                 "(per-well metadata lands in a follow-up slice; see ADR-0004)"
@@ -194,13 +237,8 @@ def convert(
         for scene_name, m in per_scene_metadata.items():
             per_scene_user_metadata[scene_name] = _validate_metadata(m, permissive)
 
-    reader, plugin, match_score = get_reader(input_path)
-    if not reader.scenes:
-        raise ZarrmonyError(f"reader returned no scenes for {input_path!s}")
-    distribution = _resolve_distribution(reader, plugin)
-
     config = {
-        "layout": layout,
+        "layout": effective_layout,
         "pyramid_min_size": pyramid_min_size,
         "chunk_shape": list(chunk_shape) if chunk_shape else None,
         "channel_colors": dict(channel_colors) if channel_colors else None,
@@ -209,7 +247,7 @@ def convert(
         "checksum": checksum,
     }
 
-    if layout == "plate":
+    if effective_layout == "plate":
         return _convert_plate(
             reader=reader,
             plugin=plugin,
@@ -225,7 +263,7 @@ def convert(
             checksum=checksum,
             config=config,
         )
-    if layout == "bf2raw":
+    if effective_layout == "bf2raw":
         return _convert_bf2raw(
             reader=reader,
             plugin=plugin,

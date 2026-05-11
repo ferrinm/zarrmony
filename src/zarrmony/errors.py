@@ -27,6 +27,29 @@ class PlateLayoutError(ZarrmonyError):
     """
 
 
+class LayoutMismatchError(ZarrmonyError):
+    """Explicit ``layout='plate'`` was passed against a non-plate-shaped reader.
+
+    Raised by ``convert()`` when the user forces plate output but the reader's
+    ``layout_hint`` is not ``"plate"`` (typically ``"flat"``). The flat→plate
+    direction has no source of plate structure to invent, so the request is
+    rejected. Use ``layout='auto'`` (the default) to let zarrmony pick the
+    matching writer for the reader's shape.
+    """
+
+
+class LayoutDowngradeWarning(UserWarning):
+    """Plate-shaped metadata is being dropped from the output.
+
+    Emitted by ``convert()`` when an explicit ``layout='per-scene'`` or
+    ``layout='bf2raw'`` is passed against a plate-shaped reader (the writer
+    runs but plate-level metadata — rows, columns, wells, acquisitions — is
+    discarded). Also emitted by ``writers.plate`` when ``reader.scenes``
+    contains scenes not referenced by any ``PlateField`` (those scenes are
+    not written to the plate store).
+    """
+
+
 class ExtractorWarning(UserWarning):
     """A bioio metadata extractor failed during conversion.
 
