@@ -70,15 +70,15 @@ loses fidelity for the missing piece.
 | `metadata` | No `OME/source/raw.<format>.xml` is written. Anything that serialises with `str()` works; native `OME`, `Element`, or `str` skip the round-trip. |
 | `close()` | Skipped. Implement it if your reader holds non-GC resources (file handles, network sessions). zarrmony's intent is to call this in a `finally` block once it lands ([ADR-0001](./adr/0001-reader-plugin-architecture.md)); writing it now is forward-compatible. |
 
-### Reserved: `layout_hint`
+### `layout_hint` and `plate_layout`
 
-`layout_hint: Literal["flat", "plate"]` is reserved for future HCS Plate
-writer dispatch ([ADR-0002](./adr/0002-layout-hint-reservation.md)). Plate-
-shaped readers (Phenix and similar) should set it to `"plate"` from day one;
-the writer ignores it in v0.2 and falls back to flat per-scene output. Once
-HCS lands, the same plugin starts producing plate-shaped output without
-modification. Flat-image readers can leave the attribute unset (the Protocol
-default is `"flat"`).
+`layout_hint: Literal["flat", "plate"]` drives the default
+`layout="auto"` dispatch in `convert()` and the CLI: `"flat"` → per-scene
+writer, `"plate"` → HCS plate writer. Flat-image readers can leave the
+attribute unset (the Protocol default is `"flat"`). Plate-shaped readers
+(Phenix and similar) set `layout_hint = "plate"` and additionally populate
+`plate_layout: PlateLayout | None` with the structured plate shape — see
+§9 below for the full plate-reader contract.
 
 ## 3. Writing the matcher
 
@@ -379,3 +379,196 @@ def test_convert_myformat_end_to_end(tmp_path, isolated_registry):
 
 Keep your fixture small (a few KB if possible). Vendor SDKs often have a
 "create empty file with N×M×C×Z×T axes" helper — use it.
+
+## 9. Writing a plate-shaped reader
+
+If your format describes a high-content-screening plate (multiple wells,
+multiple fields per well — Phenix, Operetta, ImageXpress, etc.), opt into
+the HCS plate writer instead of producing one-image-per-scene flat output.
+Set `layout_hint = "plate"` and populate `plate_layout` with a
+`PlateLayout` describing the rows, columns, fields-of-view, and
+acquisitions. Under `--layout auto` (the default), zarrmony then writes a
+single OME-NGFF 0.5 [`plate`](https://ngff.openmicroscopy.org/0.5/#hcs-layout)
+store at the output path. See [ADR-0004](./adr/0004-plate-output-design.md)
+for the design rationale.
+
+### The `PlateLayout` dataclass
+
+```python
+from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
+
+plate_layout = PlateLayout(
+    name="experiment-2026-05-11",
+    rows=["A", "B", "C", "D", "E", "F", "G", "H"],          # every physical row
+    columns=[f"{c:02d}" for c in range(1, 13)],              # every physical column
+    acquisitions=[Acquisition(id=1, name="baseline")],       # 0 or 1 acquisition (v1)
+    fields=[
+        PlateField(scene_index=0, row="B", column="04", field_name="F001", acquisition_id=1),
+        PlateField(scene_index=1, row="B", column="04", field_name="F002", acquisition_id=1),
+        PlateField(scene_index=2, row="C", column="05", field_name="F001", acquisition_id=1),
+        # ...
+    ],
+)
+```
+
+The dataclasses are also re-exported from `zarrmony.readers.plugin` for
+convenience. `PlateLayout`, `PlateField`, and `Acquisition` are all
+`@dataclass(frozen=True)`.
+
+### Field semantics and the structural rules zarrmony enforces
+
+Zarrmony validates the `PlateLayout` before any pixels are written; a
+violation raises `PlateLayoutError` (from `zarrmony.errors`). The rules:
+
+- **Every `PlateField.row` must appear in `PlateLayout.rows`**, and every
+  `PlateField.column` in `PlateLayout.columns`. List every *physical* row
+  and column even when only some are imaged — sparse-plate semantics are
+  the reader's responsibility (a 96-well plate with six imaged wells still
+  declares `rows=["A".."H"]` and `columns=["01".."12"]`).
+- **`scene_index` must be a valid index into `reader.scenes`**, and must
+  be unique across all fields (a duplicate would silently double-write the
+  same source data into two different well paths).
+- **No two `PlateField` entries may produce the same well path.** Within a
+  well, fields are written to sequential integer paths (`<row>/<col>/0`,
+  `<row>/<col>/1`, …) in the order they appear in `plate_layout.fields`.
+- **`acquisition_id`, when set, must point at a declared `Acquisition.id`**.
+- **At most one `Acquisition`** in v1 (multi-acquisition is reserved for v2;
+  see ADR-0004 §Considered Options).
+
+If `reader.scenes` contains scenes that no `PlateField` references,
+zarrmony emits a `LayoutDowngradeWarning` and skips them — useful to
+detect when an adapter forgets to expose some FOVs.
+
+### `field_name` is vendor-native, not the on-disk path
+
+`PlateField.field_name` is the **vendor's human-readable label** (e.g.
+Phenix's `F001`, `F002`). It is preserved in the audit record and used as
+the multiscales `name` for that FOV's image. It is **not** the on-disk
+directory: zarrmony assigns sequential integer paths (`0`, `1`, …) per
+well so well groups satisfy the OME-NGFF requirement that field paths be
+sortable as integers. If you need to round-trip vendor labels back from
+the converted store, read `attrs.zarrmony.audit.fields[i].field_name` or
+the multiscales `name`.
+
+### `convert()` consumes `plate_layout` directly
+
+There is no string-parsing fallback. If you populate `plate_layout`, the
+plate writer uses it; if you leave it `None`, zarrmony cannot dispatch to
+plate even when `layout_hint="plate"`. Building the layout once, in your
+adapter, against the vendor's own well/field tables is the source of
+truth.
+
+### v1 limits and when to fall back to flat
+
+The v1 plate writer is **single-acquisition, single-plate**. If your input
+violates either:
+
+- **Multiple acquisitions**: degrade gracefully today by exposing only one
+  acquisition's worth of fields and emitting a warning, OR set
+  `layout_hint = "flat"` so callers get per-scene output. Don't try to
+  pack multiple acquisitions into one `PlateLayout` — the writer asserts
+  `len(acquisitions) <= 1`.
+- **Multiple physical plates per input**: `plate_layout` is a single
+  `PlateLayout`, not a list. Either expose just the first plate (with a
+  warning) or set `layout_hint = "flat"`. The choice is the adapter's,
+  not zarrmony's.
+
+In both cases, picking `layout_hint = "flat"` for now means callers get
+one `<scene>.ome.zarr` per FOV under the output directory — full pixel
+fidelity, no plate metadata. Users can also force this on a per-call
+basis with `layout="per-scene"` (a `LayoutDowngradeWarning` will fire to
+flag that the plate metadata is being dropped).
+
+### Helpers exposed for adapters
+
+For adapters and downstream tooling that need to validate user input
+against a `PlateLayout`:
+
+- **`zarrmony.writers.plate.parse_well_key(key)`** splits a compact well
+  key like `"B04"` or `"AA01"` into `(row, col)`. Casing and zero-padding
+  are preserved verbatim — caller validates against the plate's
+  canonical spellings.
+- **`zarrmony.writers.plate.resolve_per_well_metadata(d, plate_layout)`**
+  parses a user-supplied `{"B04": {...}, ...}` dict into the
+  `(row, col) -> dict` shape the writer consumes, validating every key
+  against the plate's canonical rows/columns.
+- **`zarrmony.writers.plate.summarize_plate_layout(plate_layout)`**
+  returns the OME-NGFF `plate`-shaped summary dict (no I/O), mirroring
+  the on-disk `attrs.ome.plate` and the audit `plate` block. Used by
+  `inspect()` to surface plate context before a conversion runs.
+
+### Worked example shape
+
+A minimal plate-shaped adapter:
+
+```python
+from pathlib import Path
+from typing import Any
+
+from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
+from zarrmony.readers.plugin import ReaderPlugin
+
+
+class MyPlateReader:
+    layout_hint = "plate"
+
+    def __init__(self, path: Path):
+        self._sdk = VendorSDK.open(str(path))
+        # Order scenes so PlateField.scene_index points back into this list.
+        self.scenes = [fov.id for fov in self._sdk.iter_fovs()]
+        self.plate_layout = self._build_plate_layout()
+        self._active = 0
+
+    def _build_plate_layout(self) -> PlateLayout:
+        plate = self._sdk.plate
+        return PlateLayout(
+            name=plate.name,
+            rows=[r.label for r in plate.rows],
+            columns=[c.label for c in plate.columns],
+            acquisitions=[Acquisition(id=1, name=self._sdk.acquisition_name)],
+            fields=[
+                PlateField(
+                    scene_index=i,
+                    row=fov.well.row,
+                    column=fov.well.column,
+                    field_name=fov.label,
+                    acquisition_id=1,
+                )
+                for i, fov in enumerate(self._sdk.iter_fovs())
+            ],
+        )
+
+    def set_scene(self, index: int) -> None:
+        self._active = index
+
+    @property
+    def xarray_dask_data(self):
+        return self._sdk.read_fov_lazy(self._active)
+
+    @property
+    def physical_pixel_sizes(self):
+        return self._sdk.iter_fovs()[self._active].pixel_sizes
+
+    def close(self) -> None:
+        self._sdk.close()
+
+
+def _match_myplate(path: Path) -> int | None:
+    return 100 if path.is_dir() and (path / "plate.xml").is_file() else None
+
+
+def _open_myplate(path: Path) -> Any:
+    return MyPlateReader(path)
+
+
+myplate_plugin = ReaderPlugin(
+    name="zarrmony-myplate",
+    match=_match_myplate,
+    open=_open_myplate,
+    distribution="zarrmony-myplate",
+    source="entry_point",
+)
+```
+
+For a real adapter, see the `zarrmony-phenix` package (tracked in
+issue #13).

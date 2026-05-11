@@ -31,8 +31,17 @@ CZI, LIF, and ND2 reader plugins are included by default.
 ### CLI
 
 ```bash
-# Per-scene (default): writes one <scene>.ome.zarr store per scene under OUTPUT.
+# Auto (default): dispatches on the reader's layout_hint.
+#   flat readers (CZI, LIF, ND2, OME-TIFF) → per-scene stores under OUTPUT
+#   plate-shaped readers (e.g. zarrmony-phenix) → a single HCS plate store at OUTPUT
 zarrmony convert input.czi output_dir/ --metadata-file metadata.json
+
+# Force per-scene (one <scene>.ome.zarr store per scene under OUTPUT).
+zarrmony convert input.czi output_dir/ --layout per-scene --metadata-file metadata.json
+
+# Force HCS plate (one <plate>.ome.zarr store at OUTPUT). Requires a
+# plate-shaped reader; flat readers raise LayoutMismatchError.
+zarrmony convert phenix-acquisition/ output.ome.zarr --layout plate --metadata-file metadata.json
 
 # Bundled bioformats2raw.layout (opt-in): writes a single store at OUTPUT.
 zarrmony convert input.czi output.ome.zarr --layout bf2raw --metadata-file metadata.json
@@ -46,7 +55,9 @@ zarrmony schema dump > zarrmony-metadata.schema.json
 ```python
 from zarrmony import convert, UserMetadata
 
-# Per-scene (default): returns {"input": ..., "stores": [<per-store audit>, ...]}.
+# Auto (default): for a flat reader, returns {"input": ..., "stores": [...]};
+# for a plate-shaped reader, returns the single plate audit dict (schema 3,
+# with "fields" and a top-level "plate" block). Switch on audit["layout"].
 result = convert(
     "input.lif",
     "output_dir/",
@@ -59,6 +70,15 @@ audit = convert(
     "output.ome.zarr",
     layout="bf2raw",
     metadata=UserMetadata(...),
+)
+
+# HCS plate: writes one OME-NGFF plate store at OUTPUT.
+audit = convert(
+    "phenix-acquisition/",
+    "output.ome.zarr",
+    layout="plate",
+    metadata=UserMetadata(...),
+    per_well_metadata={"B04": {"treatment": "control"}, "C05": {"treatment": "drug-X"}},
 )
 ```
 
