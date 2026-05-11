@@ -338,3 +338,42 @@ def test_inspect_returns_scene_summary(tmp_path: Path, patched_reader) -> None:
     assert info["scenes"][0]["channel_names"] == ["DAPI", "GFP"]
     assert info["scenes"][0]["shape"] == (1, 2, 256, 256)
     assert info["scenes"][0]["dtype"] == "uint16"
+    # Flat reader: no plate_layout key (additive, non-breaking).
+    assert "plate_layout" not in info
+
+
+def test_inspect_includes_plate_layout_for_plate_reader(tmp_path: Path, patched_reader) -> None:
+    from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
+
+    plate_layout = PlateLayout(
+        name="synthetic-2x2",
+        rows=["A", "B"],
+        columns=["01", "02"],
+        acquisitions=[Acquisition(id=1, name="acq", maximumfieldcount=1)],
+        fields=[
+            PlateField(scene_index=0, row="A", column="01", field_name="A01-f0", acquisition_id=1),
+            PlateField(scene_index=1, row="A", column="02", field_name="A02-f0", acquisition_id=1),
+            PlateField(scene_index=2, row="B", column="01", field_name="B01-f0", acquisition_id=1),
+        ],
+    )
+    reader = FakeReader(
+        scenes=["s0", "s1", "s2"],
+        dims="TCYX",
+        shape=(1, 1, 16, 16),
+        layout_hint="plate",
+        plate_layout=plate_layout,
+    )
+    patched_reader(reader, plugin="bioio-fake-plate")
+
+    info = inspect("/tmp/x.czi")
+
+    assert "plate_layout" in info
+    pl = info["plate_layout"]
+    assert pl["name"] == "synthetic-2x2"
+    assert pl["rows"] == [{"name": "A"}, {"name": "B"}]
+    assert pl["columns"] == [{"name": "01"}, {"name": "02"}]
+    assert pl["acquisitions"] == [{"id": 1, "name": "acq", "maximumfieldcount": 1}]
+    assert pl["field_count"] == 1
+    # 3 wells imaged out of a 2x2 = 4-well plate.
+    assert len(pl["wells"]) == 3
+    assert sorted(w["path"] for w in pl["wells"]) == ["A/01", "A/02", "B/01"]

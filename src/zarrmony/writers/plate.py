@@ -162,6 +162,18 @@ def _channels_for_current_scene(
     return [Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)]
 
 
+def summarize_plate_layout(plate_layout: PlateLayout) -> dict[str, Any]:
+    """Return the OME-NGFF ``plate``-shaped summary of ``plate_layout`` (no writes).
+
+    Mirrors the on-disk ``attrs.ome.plate`` and audit ``plate`` shape, derived
+    purely from the layout (no pixel I/O). Used by :func:`zarrmony.inspect` to
+    surface plate context before a conversion runs.
+    """
+    well_groups = _group_fields_by_well(plate_layout)
+    well_paths = [(r, c, len(fields)) for (r, c, fields) in well_groups]
+    return _build_plate_attr(plate_layout, well_paths)
+
+
 def _build_plate_attr(
     plate_layout: PlateLayout, well_paths: list[tuple[str, str, int]]
 ) -> dict[str, Any]:
@@ -354,6 +366,7 @@ def _audit_plate_attr(
 __all__ = [
     "parse_well_key",
     "resolve_per_well_metadata",
+    "summarize_plate_layout",
     "validate_plate_layout",
     "write_plate",
 ]

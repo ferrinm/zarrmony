@@ -32,7 +32,7 @@ from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import build_combined_ome_xml, build_ome_xml_for_scene
 from zarrmony.writers.per_scene import write_per_scene_metadata
-from zarrmony.writers.plate import resolve_per_well_metadata, write_plate
+from zarrmony.writers.plate import resolve_per_well_metadata, summarize_plate_layout, write_plate
 from zarrmony.writers.scene import write_scene
 
 Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
@@ -630,7 +630,7 @@ def inspect(input_path: str | Path) -> dict:
                 ),
             }
         )
-    return {
+    info: dict[str, Any] = {
         "input_path": str(input_path),
         "reader_plugin": {
             "name": plugin.name,
@@ -641,3 +641,7 @@ def inspect(input_path: str | Path) -> dict:
         "n_scenes": len(reader.scenes),
         "scenes": scenes_info,
     }
+    plate_layout = getattr(reader, "plate_layout", None)
+    if getattr(reader, "layout_hint", "flat") == "plate" and plate_layout is not None:
+        info["plate_layout"] = summarize_plate_layout(plate_layout)
+    return info

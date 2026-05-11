@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `inspect()` returns an additive top-level `plate_layout` key when the reader
+  exposes one (`layout_hint == "plate"` and `plate_layout is not None`). The
+  value mirrors the audit's `plate` block (`name`, `rows`, `columns`,
+  `wells`, `acquisitions`, `field_count`). Flat-reader callers see the
+  existing return shape unchanged (no new keys).
+- `zarrmony inspect` CLI prints a one-line plate summary header before the
+  per-scene table when a plate layout is present, e.g.
+  `Plate: "synthetic-2x2" — 3/4 wells imaged, 1 field per well, 1 acquisition`.
+- `zarrmony.writers.plate.summarize_plate_layout(plate_layout)` helper exposes
+  the plate-attr-shaped summary builder (no I/O) for plugin authors and
+  external tooling.
+
 ## [0.3.1] - 2026-05-11
 
 ### Added

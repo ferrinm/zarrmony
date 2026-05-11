@@ -254,6 +254,50 @@ def test_inspect_json_output(tmp_path: Path, runner: CliRunner, patched_reader) 
     assert parsed["scenes"][0]["name"] == "only"
 
 
+def test_inspect_text_output_omits_plate_header_for_flat_reader(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["only"], dims="YX", shape=(64, 64))
+    patched_reader(reader)
+
+    result = runner.invoke(app, ["inspect", "/tmp/x.lif"])
+    assert result.exit_code == 0
+    assert "Plate:" not in result.output
+
+
+def test_inspect_text_output_prints_plate_header_for_plate_reader(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
+
+    plate_layout = PlateLayout(
+        name="synthetic-2x2",
+        rows=["A", "B"],
+        columns=["01", "02"],
+        acquisitions=[Acquisition(id=1, name="acq", maximumfieldcount=1)],
+        fields=[
+            PlateField(scene_index=0, row="A", column="01", field_name="A01-f0", acquisition_id=1),
+            PlateField(scene_index=1, row="A", column="02", field_name="A02-f0", acquisition_id=1),
+            PlateField(scene_index=2, row="B", column="01", field_name="B01-f0", acquisition_id=1),
+        ],
+    )
+    reader = FakeReader(
+        scenes=["s0", "s1", "s2"],
+        dims="TCYX",
+        shape=(1, 1, 16, 16),
+        layout_hint="plate",
+        plate_layout=plate_layout,
+    )
+    patched_reader(reader, plugin="bioio-fake-plate")
+
+    result = runner.invoke(app, ["inspect", "/tmp/x.czi"])
+    assert result.exit_code == 0, result.output
+    assert 'Plate: "synthetic-2x2"' in result.output
+    assert "3/4 wells imaged" in result.output
+    assert "1 field per well" in result.output
+    assert "1 acquisition" in result.output
+
+
 # ---------- schema dump ----------
 
 

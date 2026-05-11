@@ -33,6 +33,23 @@ def _load_json(path: str | None) -> Any:
     return json.loads(Path(path).read_text())
 
 
+def _format_plate_summary(plate: dict[str, Any]) -> str:
+    """One-liner summary of an inspect() plate_layout block."""
+    name = plate.get("name") or "(unnamed)"
+    n_wells_imaged = len(plate.get("wells", []))
+    n_total = len(plate.get("rows", [])) * len(plate.get("columns", []))
+    fields_per_well = plate.get("field_count", 0)
+    n_acquisitions = len(plate.get("acquisitions", []))
+    well_word = "well" if n_wells_imaged == 1 else "wells"
+    field_word = "field" if fields_per_well == 1 else "fields"
+    acq_word = "acquisition" if n_acquisitions == 1 else "acquisitions"
+    return (
+        f'Plate: "{name}" — {n_wells_imaged}/{n_total} {well_word} imaged, '
+        f"{fields_per_well} {field_word} per well, "
+        f"{n_acquisitions} {acq_word}"
+    )
+
+
 def _parse_chunk_shape(
     ctx: click.Context, param: click.Parameter, value: str | None
 ) -> tuple[int, ...] | None:
@@ -185,6 +202,8 @@ def inspect_cmd(input_path: str, as_json: bool) -> None:
     plugin_str = rp["distribution"] or rp["name"]
     click.echo(f"Input:  {info['input_path']}")
     click.echo(f"Plugin: {plugin_str}")
+    if "plate_layout" in info:
+        click.echo(_format_plate_summary(info["plate_layout"]))
     click.echo(f"Scenes: {info['n_scenes']}")
     for s in info["scenes"]:
         dims_str = "".join(s["dims"])
