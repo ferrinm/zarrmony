@@ -27,7 +27,12 @@ from zarrmony.audit import AUDIT_SCHEMA_VERSION
 from zarrmony.errors import LayoutMismatchError, PlateLayoutError
 from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
 from zarrmony.readers.plugin import ReaderPlugin
-from zarrmony.writers.plate import validate_plate_layout, write_plate
+from zarrmony.writers.plate import (
+    parse_well_key,
+    resolve_per_well_metadata,
+    validate_plate_layout,
+    write_plate,
+)
 
 
 def _fake_plugin(name: str = "bioio-fake-plate") -> ReaderPlugin:
@@ -162,7 +167,7 @@ def test_plate_end_to_end_writes_spec_conformant_store(tmp_path: Path, patched_r
 def test_plate_rejects_per_scene_metadata(tmp_path: Path, patched_reader) -> None:
     reader = _synthetic_plate_reader()
     patched_reader(reader)
-    with pytest.raises(ValueError, match="per_scene_metadata is not supported"):
+    with pytest.raises(ValueError, match="per_well_metadata"):
         convert(
             "/tmp/fake.czi",
             tmp_path / "out.ome.zarr",
@@ -281,3 +286,127 @@ def test_writer_validates_before_any_pixel_write(tmp_path: Path) -> None:
             pyramid_min_size=8,
         )
     assert not out.exists()
+
+
+# ---------- per_well_metadata: key parsing ----------
+
+
+def test_parse_well_key_single_letter_row() -> None:
+    assert parse_well_key("B04") == ("B", "04")
+
+
+def test_parse_well_key_double_letter_row() -> None:
+    """1536-well plates extend rows past Z (AA, AB, ...)."""
+    assert parse_well_key("AA01") == ("AA", "01")
+    assert parse_well_key("AF24") == ("AF", "24")
+
+
+def test_parse_well_key_rejects_non_alpha_digit_shape() -> None:
+    with pytest.raises(ValueError, match="not a valid alpha\\+digit coordinate"):
+        parse_well_key("B-04")
+    with pytest.raises(ValueError, match="not a valid alpha\\+digit coordinate"):
+        parse_well_key("04")
+    with pytest.raises(ValueError, match="not a valid alpha\\+digit coordinate"):
+        parse_well_key("B")
+    with pytest.raises(ValueError, match="not a valid alpha\\+digit coordinate"):
+        parse_well_key("")
+
+
+def test_resolve_per_well_metadata_rejects_lowercase() -> None:
+    """Casing must match the plate's canonical row spelling."""
+    layout = _synthetic_2x2_layout()
+    with pytest.raises(ValueError, match="'b01'"):
+        resolve_per_well_metadata({"b01": {}}, layout)
+
+
+def test_resolve_per_well_metadata_rejects_padding_mismatch() -> None:
+    """Zero-padding from the plate is the source of truth — 'B1' != 'B01'."""
+    layout = _synthetic_2x2_layout()  # columns=["01", "02"]
+    with pytest.raises(ValueError, match="'A1'"):
+        resolve_per_well_metadata({"A1": {}}, layout)
+
+
+def test_resolve_per_well_metadata_rejects_unknown_well() -> None:
+    layout = _synthetic_2x2_layout()  # rows=["A","B"], columns=["01","02"]
+    with pytest.raises(ValueError, match="'C03'"):
+        resolve_per_well_metadata({"C03": {}}, layout)
+
+
+def test_resolve_per_well_metadata_returns_row_col_tuples() -> None:
+    layout = _synthetic_2x2_layout()
+    resolved = resolve_per_well_metadata({"B02": {"k": "v"}}, layout)
+    assert resolved == {("B", "02"): {"k": "v"}}
+
+
+# ---------- per_well_metadata: end-to-end persistence ----------
+
+
+def test_per_well_metadata_round_trip(tmp_path: Path, patched_reader) -> None:
+    """Override on B02 lands on disk + audit; A01 has no zarrmony attrs."""
+    reader = _synthetic_plate_reader()
+    patched_reader(reader)
+    out = tmp_path / "plate.ome.zarr"
+
+    audit = convert(
+        "/tmp/fake.czi",
+        out,
+        layout="plate",
+        metadata={"microscope": "Axioscan", "modality": "fluorescence"},
+        per_well_metadata={
+            "B02": {"microscope": "B02-scope", "modality": "B02-mode", "study": "treated"}
+        },
+        pyramid_min_size=8,
+    )
+
+    # On disk: B02's well group carries attrs.zarrmony.user_metadata.
+    with open(out / "B" / "02" / "zarr.json") as f:
+        b02_zj = json.load(f)
+    assert b02_zj["attributes"]["zarrmony"]["user_metadata"]["microscope"] == "B02-scope"
+    assert b02_zj["attributes"]["zarrmony"]["user_metadata"]["study"] == "treated"
+    # OME well block is unchanged (spec-clean).
+    assert b02_zj["attributes"]["ome"]["well"]["images"] == [{"path": "0", "acquisition": 1}]
+
+    # Wells without an override do not get a zarrmony attrs block.
+    with open(out / "A" / "01" / "zarr.json") as f:
+        a01_zj = json.load(f)
+    assert "zarrmony" not in a01_zj["attributes"]
+
+    # Audit's plate.wells[i] carries user_metadata only for the overridden well.
+    audit_wells = {w["path"]: w for w in audit["plate"]["wells"]}
+    assert audit_wells["B/02"]["user_metadata"]["microscope"] == "B02-scope"
+    assert "user_metadata" not in audit_wells["A/01"]
+
+    # On-disk attrs.ome.plate stays spec-clean (no user_metadata leak).
+    with open(out / "zarr.json") as f:
+        root_zj = json.load(f)
+    on_disk_wells = {w["path"]: w for w in root_zj["attributes"]["ome"]["plate"]["wells"]}
+    assert "user_metadata" not in on_disk_wells["B/02"]
+
+
+def test_per_well_metadata_unknown_well_raises_before_writing(
+    tmp_path: Path, patched_reader
+) -> None:
+    reader = _synthetic_plate_reader()
+    patched_reader(reader)
+    out = tmp_path / "plate.ome.zarr"
+    with pytest.raises(ValueError, match="'Z99'"):
+        convert(
+            "/tmp/fake.czi",
+            out,
+            layout="plate",
+            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
+            per_well_metadata={"Z99": {"microscope": "x", "modality": "y"}},
+        )
+    assert not out.exists()
+
+
+def test_per_well_metadata_rejected_outside_plate_mode(tmp_path: Path, patched_reader) -> None:
+    flat_reader = FakeReader(scenes=["s0"], dims="TCYX", shape=(1, 1, 16, 16))
+    patched_reader(flat_reader)
+    with pytest.raises(ValueError, match="per_well_metadata is only supported in plate mode"):
+        convert(
+            "/tmp/fake.czi",
+            tmp_path / "out.ome.zarr",
+            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
+            per_well_metadata={"A01": {"microscope": "x", "modality": "y"}},
+        )

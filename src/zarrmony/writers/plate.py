@@ -14,6 +14,7 @@ See ADR-0004 for the design rationale and rejected alternatives.
 
 from __future__ import annotations
 
+import re
 import warnings
 from collections.abc import Sequence
 from pathlib import Path
@@ -30,6 +31,49 @@ from zarrmony.readers.plate import PlateField, PlateLayout
 from zarrmony.writers.scene import write_scene
 
 NGFF_VERSION = "0.5"
+
+_WELL_KEY_RE = re.compile(r"([A-Za-z]+)(\d+)")
+
+
+def parse_well_key(key: str) -> tuple[str, str]:
+    """Split a compact well key like ``"B04"`` or ``"AA01"`` into ``(row, col)``.
+
+    Casing and zero-padding are preserved verbatim — caller validates against
+    the plate's canonical row/column spellings (so ``"b04"`` or ``"B4"`` will
+    fail downstream membership checks against an upper/zero-padded plate).
+    """
+    m = _WELL_KEY_RE.fullmatch(key)
+    if m is None:
+        raise ValueError(
+            f"well key {key!r} is not a valid alpha+digit coordinate "
+            f"(expected leading letters + trailing digits, e.g. 'B04', 'AA12')"
+        )
+    return m.group(1), m.group(2)
+
+
+def resolve_per_well_metadata(
+    per_well_metadata: dict[str, dict],
+    plate_layout: PlateLayout,
+) -> dict[tuple[str, str], dict]:
+    """Parse user-supplied well-keyed metadata into ``(row, col) -> dict``.
+
+    Each key is split via :func:`parse_well_key` and validated against the
+    plate's canonical rows/columns (zero-padding from the plate is the source
+    of truth). Unknown wells raise ``ValueError`` naming the offending key.
+    """
+    rows = set(plate_layout.rows)
+    cols = set(plate_layout.columns)
+    resolved: dict[tuple[str, str], dict] = {}
+    for key, m in per_well_metadata.items():
+        row, col = parse_well_key(key)
+        if row not in rows or col not in cols:
+            raise ValueError(
+                f"per_well_metadata key {key!r} does not match any well in the "
+                f"plate layout (rows={plate_layout.rows!r}, "
+                f"columns={plate_layout.columns!r})"
+            )
+        resolved[(row, col)] = m
+    return resolved
 
 
 def _normalize_store_path(store_path: str | Path) -> str:
@@ -174,6 +218,7 @@ def write_plate(
     pyramid_min_size: int = 256,
     chunk_shape: Sequence[int] | None = None,
     channel_colors: dict[str, str] | None = None,
+    per_well_user_metadata: dict[tuple[str, str], dict] | None = None,
     ome_image_for_field: Any = None,
     ome_xml_builder: Any = None,
     source_xml: str | None = None,
@@ -181,7 +226,15 @@ def write_plate(
 ) -> tuple[list[dict], dict]:
     """Validate ``plate_layout``, write every FOV, and emit plate-level metadata.
 
-    Returns ``(field_records, plate_attr)`` for the audit caller.
+    Returns ``(field_records, audit_plate)`` for the audit caller. The
+    on-disk ``attrs.ome.plate`` block stays spec-clean; ``audit_plate``
+    additionally carries ``wells[i].user_metadata`` for any well that had a
+    ``per_well_user_metadata`` override applied.
+
+    ``per_well_user_metadata`` is a ``(row, col) -> dict`` map (caller is
+    responsible for parsing user-facing keys via :func:`resolve_per_well_metadata`
+    so this writer never sees the user's key syntax). Each override lands in
+    that well group's ``attrs.zarrmony.user_metadata`` on disk.
 
     ``ome_image_for_field`` is an optional callable
     ``(scene_index, scene_record) -> ome_types.model.Image`` invoked once per
@@ -250,6 +303,7 @@ def write_plate(
     root = open_root_group(store_str, mode="a")
     root.attrs["ome"] = {"version": NGFF_VERSION, "plate": plate_attr}
 
+    well_overrides = per_well_user_metadata or {}
     for row, column, well_fields in well_groups:
         # Row group: structural only — no attrs per spec.
         root.require_group(row)
@@ -258,6 +312,8 @@ def write_plate(
             "version": NGFF_VERSION,
             "well": _build_well_attr(well_fields),
         }
+        if (row, column) in well_overrides:
+            well_group.attrs["zarrmony"] = {"user_metadata": well_overrides[(row, column)]}
 
     if ome_xml_builder is not None and images:
         ome_xml = ome_xml_builder(images)
@@ -268,7 +324,36 @@ def write_plate(
             raise ValueError("source_xml_filename is required when source_xml is provided")
         _write_text(f"{store_str}/OME/source/{source_xml_filename}", source_xml)
 
-    return field_records, plate_attr
+    audit_plate = _audit_plate_attr(plate_attr, well_overrides)
+    return field_records, audit_plate
 
 
-__all__ = ["validate_plate_layout", "write_plate"]
+def _audit_plate_attr(
+    plate_attr: dict[str, Any],
+    well_overrides: dict[tuple[str, str], dict],
+) -> dict[str, Any]:
+    """Audit-facing copy of ``plate_attr`` enriched with per-well overrides.
+
+    The on-disk ``attrs.ome.plate`` stays spec-clean; the audit's ``plate.wells``
+    additionally carries a ``user_metadata`` field for any well with an override.
+    """
+    if not well_overrides:
+        return plate_attr
+    enriched = {**plate_attr}
+    enriched_wells: list[dict[str, Any]] = []
+    for w in plate_attr["wells"]:
+        row, column = w["path"].split("/", 1)
+        if (row, column) in well_overrides:
+            enriched_wells.append({**w, "user_metadata": well_overrides[(row, column)]})
+        else:
+            enriched_wells.append(w)
+    enriched["wells"] = enriched_wells
+    return enriched
+
+
+__all__ = [
+    "parse_well_key",
+    "resolve_per_well_metadata",
+    "validate_plate_layout",
+    "write_plate",
+]

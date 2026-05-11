@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `convert(per_well_metadata={"B04": {...}, ...})` for plate mode: a dict
+  keyed by compact well coordinate (leading-alpha row + trailing-numeric
+  column, e.g. `"B04"`, `"AA01"` for 1536-well plates). Keys are validated
+  against the plate's canonical `rows`/`columns` (zero-padding from the
+  plate is the source of truth — `"B1"` against a `"01"`-padded plate is
+  rejected). Each override persists to the well group's
+  `attrs.zarrmony.user_metadata` on disk and to the audit's
+  `plate.wells[i].user_metadata` block. The on-disk `attrs.ome.plate`
+  block stays spec-clean.
+- `zarrmony.writers.plate.parse_well_key` and `resolve_per_well_metadata`
+  helpers exposed for plugin authors and downstream tooling that needs to
+  validate well-keyed dicts against a `PlateLayout`.
+
+### Changed
+
+- `per_scene_metadata` rejection in plate mode now points users at
+  `per_well_metadata` (was: a generic "follow-up slice" message).
+
 ## [0.3.0] - 2026-05-11
 
 ### Added

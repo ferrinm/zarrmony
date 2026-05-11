@@ -32,7 +32,7 @@ from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import build_combined_ome_xml, build_ome_xml_for_scene
 from zarrmony.writers.per_scene import write_per_scene_metadata
-from zarrmony.writers.plate import write_plate
+from zarrmony.writers.plate import resolve_per_well_metadata, write_plate
 from zarrmony.writers.scene import write_scene
 
 Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
@@ -193,6 +193,7 @@ def convert(
     layout: Layout = "auto",
     metadata: UserMetadata | dict | None = None,
     per_scene_metadata: dict[str, UserMetadata | dict] | None = None,
+    per_well_metadata: dict[str, UserMetadata | dict] | None = None,
     pyramid_min_size: int = 256,
     chunk_shape: Sequence[int] | None = None,
     channel_colors: dict[str, str] | None = None,
@@ -231,11 +232,29 @@ def convert(
     if per_scene_metadata:
         if effective_layout == "plate":
             raise ValueError(
-                "per_scene_metadata is not supported in plate mode "
-                "(per-well metadata lands in a follow-up slice; see ADR-0004)"
+                "per_scene_metadata is not supported in plate mode; "
+                "use per_well_metadata={'B04': {...}, ...} for per-well overrides"
             )
         for scene_name, m in per_scene_metadata.items():
             per_scene_user_metadata[scene_name] = _validate_metadata(m, permissive)
+
+    per_well_user_metadata: dict[tuple[str, str], dict] = {}
+    if per_well_metadata:
+        if effective_layout != "plate":
+            raise ValueError(
+                "per_well_metadata is only supported in plate mode "
+                f"(got effective layout={effective_layout!r})"
+            )
+        plate_layout = getattr(reader, "plate_layout", None)
+        if plate_layout is None:
+            raise ZarrmonyError(
+                f"per_well_metadata requires reader.plate_layout to be set; "
+                f"got None for {input_path!s}"
+            )
+        validated_per_well = {
+            key: _validate_metadata(m, permissive) for key, m in per_well_metadata.items()
+        }
+        per_well_user_metadata = resolve_per_well_metadata(validated_per_well, plate_layout)
 
     config = {
         "layout": effective_layout,
@@ -256,6 +275,7 @@ def convert(
             input_path=input_path,
             output=output,
             user_metadata=user_metadata,
+            per_well_user_metadata=per_well_user_metadata,
             pyramid_min_size=pyramid_min_size,
             chunk_shape=chunk_shape,
             channel_colors=channel_colors,
@@ -504,6 +524,7 @@ def _convert_plate(
     input_path: str | Path,
     output: str | Path,
     user_metadata: dict,
+    per_well_user_metadata: dict[tuple[str, str], dict],
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
     channel_colors: dict[str, str] | None,
@@ -544,6 +565,7 @@ def _convert_plate(
         pyramid_min_size=pyramid_min_size,
         chunk_shape=chunk_shape,
         channel_colors=channel_colors,
+        per_well_user_metadata=per_well_user_metadata,
         ome_image_for_field=_ome_image_for_field,
         ome_xml_builder=build_combined_ome_xml,
         source_xml=source_xml,
