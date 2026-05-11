@@ -25,7 +25,7 @@ from zarrmony import __version__
 from zarrmony._storage import open_root_group
 from zarrmony.readers.plugin import ReaderPlugin
 
-AUDIT_SCHEMA_VERSION = 2
+AUDIT_SCHEMA_VERSION = 3
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:
@@ -82,7 +82,10 @@ def build_audit_record(
     config: dict[str, Any],
     started_at: datetime,
     finished_at: datetime,
+    layout: str | None = None,
     per_scene: list[dict[str, Any]] | None = None,
+    fields: list[dict[str, Any]] | None = None,
+    plate: dict[str, Any] | None = None,
     metadata_warnings: list[dict[str, Any]] | None = None,
     checksum: bool = False,
 ) -> dict[str, Any]:
@@ -92,18 +95,28 @@ def build_audit_record(
     record only; pass it when the plugin's static ``distribution`` field is
     ``None`` (e.g. the catch-all default plugin) and the caller has dynamically
     resolved the actual underlying bioio sub-package.
+
+    Per ADR-0004, plate-layout audits use ``fields`` + ``plate`` (and omit
+    ``per_scene``); flat-layout audits keep using ``per_scene``. The top-level
+    ``layout`` key is the discriminator consumers switch on.
     """
-    return {
+    record: dict[str, Any] = {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "version": __version__,
+        "layout": layout,
         "reader_plugin": _reader_plugin_record(reader_plugin, match_score, distribution),
         "input": _file_forensics(input_path, checksum=checksum),
         "config": config,
         "conversion_started_at": started_at.isoformat(),
         "conversion_finished_at": finished_at.isoformat(),
-        "per_scene": per_scene or [],
         "metadata_warnings": metadata_warnings or [],
     }
+    if fields is not None or plate is not None:
+        record["fields"] = fields or []
+        record["plate"] = plate or {}
+    else:
+        record["per_scene"] = per_scene or []
+    return record
 
 
 def write_audit_record(store_path: str | Path, audit: dict[str, Any]) -> None:

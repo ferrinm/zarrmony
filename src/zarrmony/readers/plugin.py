@@ -21,6 +21,8 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
+
 log = logging.getLogger(__name__)
 
 ENTRY_POINT_GROUP = "zarrmony.readers"
@@ -36,12 +38,14 @@ class ReaderProtocol(Protocol):
     Required: ``scenes``, ``set_scene``, ``xarray_dask_data``,
     ``physical_pixel_sizes``. Soft-optional (accessed via getattr or
     try/except): ``channel_names``, ``ome_metadata``, ``metadata``, ``close``.
-    ``layout_hint`` is reserved for future HCS plate writer dispatch
-    (see ADR-0002); plate-shaped readers should set it to ``"plate"``.
+    ``layout_hint`` selects the writer (``"flat"`` → per-scene/bf2raw,
+    ``"plate"`` → plate). Plate-shaped readers also populate
+    ``plate_layout`` with the structured plate shape (see ADR-0004).
     """
 
     scenes: list[str]
     layout_hint: LayoutHint
+    plate_layout: PlateLayout | None
 
     def set_scene(self, index: int) -> None: ...
 
@@ -163,8 +167,11 @@ def get_reader(path: str | Path) -> tuple[ReaderProtocol, ReaderPlugin, int]:
 
 __all__ = [
     "ENTRY_POINT_GROUP",
+    "Acquisition",
     "LayoutHint",
     "NoMatchingPluginError",
+    "PlateField",
+    "PlateLayout",
     "PluginSource",
     "ReaderPlugin",
     "ReaderProtocol",

@@ -17,6 +17,16 @@ class OutputExistsError(ZarrmonyError):
     """Refused to overwrite an existing output store. Pass ``force=True`` to overwrite."""
 
 
+class PlateLayoutError(ZarrmonyError):
+    """A reader's :class:`PlateLayout` failed writer-side validation.
+
+    Raised by ``writers.plate`` before any pixels are written when the layout
+    is internally inconsistent (a field references a row/column not in the
+    plate, two fields land on the same well/path, more than one acquisition
+    in v1, etc.). Fail fast — a partially-written plate is worse than no plate.
+    """
+
+
 class ExtractorWarning(UserWarning):
     """A bioio metadata extractor failed during conversion.
 

@@ -30,9 +30,10 @@ from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import build_combined_ome_xml, build_ome_xml_for_scene
 from zarrmony.writers.per_scene import write_per_scene_metadata
+from zarrmony.writers.plate import write_plate
 from zarrmony.writers.scene import write_scene
 
-Layout = Literal["per-scene", "bf2raw"]
+Layout = Literal["per-scene", "bf2raw", "plate"]
 
 
 def _validate_metadata(
@@ -172,13 +173,24 @@ def convert(
     written at ``output``: per-scene images live in numbered subgroups, with a
     combined ``OME/METADATA.ome.xml`` and ``OME/series`` listing. The return
     value is the bundle's audit dict (matching the v0.1.x behavior).
+
+    With ``layout='plate'``, a single OME-NGFF HCS plate store is written at
+    ``output``: each FOV lands at ``<row>/<column>/<seq_int>/`` and the plate
+    metadata is written as ``attrs.ome.plate`` on the root group. Requires the
+    reader to expose ``plate_layout`` (see ADR-0004). The return value is the
+    plate's audit dict, using the schema-3 ``fields`` + ``plate`` shape.
     """
-    if layout not in ("per-scene", "bf2raw"):
-        raise ValueError(f"layout must be 'per-scene' or 'bf2raw' (got {layout!r})")
+    if layout not in ("per-scene", "bf2raw", "plate"):
+        raise ValueError(f"layout must be 'per-scene', 'bf2raw', or 'plate' (got {layout!r})")
 
     user_metadata = _validate_metadata(metadata, permissive)
     per_scene_user_metadata: dict[str, dict] = {}
     if per_scene_metadata:
+        if layout == "plate":
+            raise ValueError(
+                "per_scene_metadata is not supported in plate mode "
+                "(per-well metadata lands in a follow-up slice; see ADR-0004)"
+            )
         for scene_name, m in per_scene_metadata.items():
             per_scene_user_metadata[scene_name] = _validate_metadata(m, permissive)
 
@@ -197,6 +209,22 @@ def convert(
         "checksum": checksum,
     }
 
+    if layout == "plate":
+        return _convert_plate(
+            reader=reader,
+            plugin=plugin,
+            match_score=match_score,
+            distribution=distribution,
+            input_path=input_path,
+            output=output,
+            user_metadata=user_metadata,
+            pyramid_min_size=pyramid_min_size,
+            chunk_shape=chunk_shape,
+            channel_colors=channel_colors,
+            force=force,
+            checksum=checksum,
+            config=config,
+        )
     if layout == "bf2raw":
         return _convert_bf2raw(
             reader=reader,
@@ -314,6 +342,7 @@ def _convert_per_scene(
             config=config,
             started_at=started_at,
             finished_at=finished_at,
+            layout="per-scene",
             per_scene=[scene_record],
             metadata_warnings=metadata_warnings,
             checksum=checksum,
@@ -417,7 +446,85 @@ def _convert_bf2raw(
         config=config,
         started_at=started_at,
         finished_at=finished_at,
+        layout="bf2raw",
         per_scene=per_scene_records,
+        metadata_warnings=metadata_warnings,
+        checksum=checksum,
+    )
+    audit["user_metadata"] = user_metadata
+    write_audit_record(output, audit)
+
+    return audit
+
+
+def _convert_plate(
+    *,
+    reader: Any,
+    plugin: ReaderPlugin,
+    match_score: int | None,
+    distribution: str | None,
+    input_path: str | Path,
+    output: str | Path,
+    user_metadata: dict,
+    pyramid_min_size: int,
+    chunk_shape: Sequence[int] | None,
+    channel_colors: dict[str, str] | None,
+    force: bool,
+    checksum: bool,
+    config: dict,
+) -> dict:
+    plate_layout = getattr(reader, "plate_layout", None)
+    if plate_layout is None:
+        raise ZarrmonyError(
+            f"layout='plate' requires reader.plate_layout to be set; got None for {input_path!s}"
+        )
+
+    started_at = datetime.now().astimezone()
+    _check_output(output, force=force)
+
+    metadata_warnings: list[dict] = []
+
+    def _ome_image_for_field(scene_index: int, scene_record: dict) -> Image:
+        ome_image, warning = _try_get_ome_image(reader, scene_index)
+        if warning is not None:
+            metadata_warnings.append(warning)
+            warnings.warn(
+                f"scene {scene_index} ({scene_record['scene_name']}): {warning['error']}",
+                ExtractorWarning,
+                stacklevel=2,
+            )
+            return _stub_image(scene_index, scene_record["scene_name"], scene_record)
+        return ome_image
+
+    source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
+    source_filename = _source_xml_filename(input_path) if source_xml is not None else None
+
+    field_records, plate_attr = write_plate(
+        reader,
+        store_path=output,
+        plate_layout=plate_layout,
+        pyramid_min_size=pyramid_min_size,
+        chunk_shape=chunk_shape,
+        channel_colors=channel_colors,
+        ome_image_for_field=_ome_image_for_field,
+        ome_xml_builder=build_combined_ome_xml,
+        source_xml=source_xml,
+        source_xml_filename=source_filename,
+    )
+
+    finished_at = datetime.now().astimezone()
+
+    audit = build_audit_record(
+        input_path=input_path,
+        reader_plugin=plugin,
+        match_score=match_score,
+        distribution=distribution,
+        config=config,
+        started_at=started_at,
+        finished_at=finished_at,
+        layout="plate",
+        fields=field_records,
+        plate=plate_attr,
         metadata_warnings=metadata_warnings,
         checksum=checksum,
     )

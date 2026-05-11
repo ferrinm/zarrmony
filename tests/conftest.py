@@ -10,6 +10,8 @@ import xarray as xr
 from ome_types import OME
 from ome_types.model import Image, Pixels, PixelType
 
+from zarrmony.readers.plate import PlateLayout
+
 
 @dataclass
 class FakePhysicalPixelSizes:
@@ -37,6 +39,8 @@ class FakeReader:
         channel_names: Sequence[str] | None = None,
         raw_xml: str | None = "<root>fake source xml</root>",
         ome_metadata_fails: bool = False,
+        layout_hint: str = "flat",
+        plate_layout: PlateLayout | None = None,
     ) -> None:
         self.scenes = tuple(scenes)
         self._dims = dims
@@ -46,6 +50,8 @@ class FakeReader:
         self._channel_names = list(channel_names) if channel_names is not None else []
         self._raw_xml = raw_xml
         self._ome_metadata_fails = ome_metadata_fails
+        self.layout_hint = layout_hint
+        self.plate_layout = plate_layout
 
     @property
     def channel_names(self) -> list[str]:

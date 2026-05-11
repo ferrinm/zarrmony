@@ -64,13 +64,15 @@ def _parse_chunk_shape(
 )
 @click.option(
     "--layout",
-    type=click.Choice(["per-scene", "bf2raw"]),
+    type=click.Choice(["per-scene", "bf2raw", "plate"]),
     default="per-scene",
     show_default=True,
     help=(
         "Output shape. 'per-scene' (default) writes one self-describing "
         "<scene>.ome.zarr store per scene under OUTPUT. 'bf2raw' writes a "
-        "single bioformats2raw.layout bundle with numbered subgroups at OUTPUT."
+        "single bioformats2raw.layout bundle with numbered subgroups at OUTPUT. "
+        "'plate' writes an OME-NGFF HCS plate store at OUTPUT (requires the "
+        "reader to expose plate_layout)."
     ),
 )
 @click.option(
@@ -149,6 +151,10 @@ def convert_cmd(
         n = len(result["stores"])
         noun = "store" if n == 1 else "stores"
         click.echo(f"Wrote {n} {noun} to {output}", err=True)
+    elif layout == "plate":
+        n = len(result["fields"])
+        noun = "field" if n == 1 else "fields"
+        click.echo(f"Wrote {n} {noun} to {output} (plate)", err=True)
     else:
         n = len(result["per_scene"])
         noun = "scene" if n == 1 else "scenes"
