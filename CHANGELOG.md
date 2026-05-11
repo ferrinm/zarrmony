@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-11
+
+### Changed
+
+- Documentation completion for the v0.3 plate output design (issue #12):
+  - `docs/writing-a-reader-plugin.md` gains §9 "Writing a plate-shaped
+    reader" covering `layout_hint="plate"`, the `PlateLayout` /
+    `PlateField` / `Acquisition` dataclasses, the structural validation
+    rules zarrmony enforces (rows/columns membership, `scene_index`
+    uniqueness, no duplicate well paths, `acquisition_id`, single-
+    acquisition v1 limit), `field_name` semantics (vendor-native,
+    preserved in audit + multiscales `name`, NOT the on-disk path), the
+    v1 single-acquisition / single-plate limits and how to fall back to
+    flat output, and the `parse_well_key` / `resolve_per_well_metadata`
+    / `summarize_plate_layout` helpers. The previous "Reserved:
+    `layout_hint`" subsection is rewritten — the hint actively drives
+    `layout="auto"` dispatch as of v0.3.
+  - `README.md` "Usage" examples gain `--layout auto` (the v0.3 default),
+    `--layout plate` (with a `per_well_metadata` example), and a
+    description of the plate-mode return shape, alongside the existing
+    `per-scene` and `bf2raw` examples.
+
 ## [0.3.2] - 2026-05-11
 
 ### Added
