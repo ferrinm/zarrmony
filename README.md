@@ -4,9 +4,9 @@ Convert any bioimage file to OME-Zarr v0.5, preserving metadata.
 
 Zarrmony reads proprietary microscopy formats (CZI, LIF, ND2, OME-TIFF, ...) via [bioio](https://bioio-devs.github.io/bioio/) and writes them as OME-Zarr v0.5, with a configurable user-metadata gate, mean-pool pyramid generation, and a full audit trail of the conversion.
 
-By default each scene becomes its own self-describing `<scene>.ome.zarr` store under the output directory. The legacy bundled [`bioformats2raw.layout`](https://ngff.openmicroscopy.org/0.5/#bf2raw) shape is opt-in via `--layout bf2raw` (CLI) or `layout="bf2raw"` (library).
+By default (`--layout auto`) the writer is chosen from the reader's `layout_hint`: a flat reader writes one self-describing `<scene>.ome.zarr` store per scene under the output directory; a plate-shaped reader writes a single OME-NGFF [HCS plate](https://ngff.openmicroscopy.org/0.5/#hcs-layout) store at the output. The legacy bundled [`bioformats2raw.layout`](https://ngff.openmicroscopy.org/0.5/#bf2raw) shape is opt-in via `--layout bf2raw` (CLI) or `layout="bf2raw"` (library).
 
-> **Status:** v0.1 in active development. API and metadata schema are not yet stable.
+> **Status:** v0.3 in active development. API and metadata schema are not yet stable.
 
 ## Install
 

@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-11
+
+### Added
+
+- `layout="plate"` writer (and `--layout plate`): `convert()` produces a
+  spec-conformant OME-NGFF 0.5 HCS plate store. Each FOV lands at
+  `<plate>/<row>/<column>/<seq_int>/` (sequential int paths assigned per well
+  in field order); plate-level metadata is written to `attrs.ome.plate` on
+  the root group; row groups are structural; well groups carry
+  `attrs.ome.well.images`; a single combined `OME/METADATA.ome.xml` lives at
+  the plate root (no per-FOV sidecars). The `bioformats2raw.layout` marker
+  is intentionally NOT emitted on plate stores. See ADR-0004.
+- `layout="auto"` (the new default): `convert()` and the CLI dispatch on
+  `reader.layout_hint` — `"flat"` → `per-scene`, `"plate"` → `plate`. Explicit
+  overrides still work; see Migration below.
+- `ReaderProtocol.plate_layout: PlateLayout | None`. New
+  `zarrmony.readers.plate` module exposes `PlateLayout`, `PlateField`, and
+  `Acquisition` dataclasses for plate-shaped readers (and re-exported from
+  `zarrmony.readers.plugin`). The `writing-a-reader-plugin.md` guide will
+  grow a "Writing a plate-shaped reader" section in a follow-up slice (#12).
+- `PlateLayoutError` (`writers.plate` validation; raised before any pixel
+  writes when a layout is internally inconsistent), `LayoutMismatchError`
+  (`convert()` raises when explicit `layout='plate'` is passed against a
+  non-plate-shaped reader), and `LayoutDowngradeWarning` (`convert()`
+  emits when explicit `per-scene`/`bf2raw` is passed against a plate-shaped
+  reader; `writers.plate` emits when `reader.scenes` contains scenes
+  unreferenced by any `PlateField`).
+- ADR-0004 (`docs/adr/0004-plate-output-design.md`) documenting the plate
+  output design, including the dispatch matrix, locked decisions, and
+  rejected alternatives.
+
+### Changed
+
+- **BREAKING:** `convert()`'s default `layout` flips from `"per-scene"` to
+  `"auto"`. The CLI default flips from `--layout per-scene` to
+  `--layout auto`. For a flat reader the resolved behavior is unchanged
+  (auto → per-scene); plate-shaped readers now produce a plate store by
+  default instead of being rejected.
+- **BREAKING:** `audit_schema_version` bumps `2 → 3`. Plate-layout audits
+  use a `fields: [...]` list (each entry extends the existing per-scene
+  record with `row`, `column`, `field_path`, `field_name`, `acquisition_id`)
+  and a top-level `plate` block (`name`, `rows`, `columns`, `wells`,
+  `acquisitions`, `field_count`). Flat-layout audits keep using
+  `per_scene: [...]`. Audit consumers switch on the top-level `layout`
+  discriminator to pick the right key.
+- The audit's `config.layout` records the *resolved* layout (what was
+  actually written: `per-scene` / `bf2raw` / `plate`), never `auto`.
+
+### Migration
+
+- **Default layout flip.** If you relied on the old default for a
+  plate-shaped reader (rejected outright in v0.2), the v0.3 default now
+  writes a plate store. To force the old per-scene behavior, pass
+  `layout="per-scene"` explicitly; you'll get a `LayoutDowngradeWarning`
+  noting that plate metadata is being dropped.
+- **Audit schema 3.** Detect with the top-level `audit_schema_version`
+  field. Schema 3 plate audits replace `per_scene` with `fields` and add a
+  top-level `plate` block. Switch on `audit["layout"]` to pick the right
+  key:
+
+  ```python
+  if audit["layout"] == "plate":
+      records = audit["fields"]   # row, column, field_path, ...
+      plate = audit["plate"]      # name, rows, columns, wells, ...
+  else:
+      records = audit["per_scene"]
+  ```
+- **Forcing `layout="plate"` against a flat reader** now raises
+  `LayoutMismatchError` (previously this combination was a generic
+  `ZarrmonyError`). Catch the new type if you depend on the failure mode.
+
 ## [0.2.1] - 2026-05-08
 
 ### Added
