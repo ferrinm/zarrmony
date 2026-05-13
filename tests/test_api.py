@@ -39,7 +39,9 @@ def patched_reader(monkeypatch: pytest.MonkeyPatch):
 
     def installer(reader: FakeReader, plugin: str = "bioio-fake"):
         plugin_obj = _fake_plugin(plugin)
-        monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin_obj, 100))
+        monkeypatch.setattr(
+            api_module, "get_reader", lambda _path: (reader, plugin_obj, 100)
+        )
 
     return installer
 
@@ -61,7 +63,9 @@ def test_per_scene_minimal_lifecycle(tmp_path: Path, patched_reader) -> None:
     patched_reader(reader, plugin="bioio-fake")
     out = tmp_path / "out"
 
-    result = convert("/tmp/fake.lif", out, metadata=_good_metadata(), pyramid_min_size=32)
+    result = convert(
+        "/tmp/fake.lif", out, metadata=_good_metadata(), pyramid_min_size=32
+    )
 
     assert result["layout"] == "per-scene"
     assert len(result["stores"]) == 2
@@ -89,7 +93,9 @@ def test_per_scene_minimal_lifecycle(tmp_path: Path, patched_reader) -> None:
         assert g["0"].shape == (1, 2, 64, 64)
 
 
-def test_per_scene_writes_audit_with_user_metadata(tmp_path: Path, patched_reader) -> None:
+def test_per_scene_writes_audit_with_user_metadata(
+    tmp_path: Path, patched_reader
+) -> None:
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
     out = tmp_path / "out"
@@ -97,7 +103,11 @@ def test_per_scene_writes_audit_with_user_metadata(tmp_path: Path, patched_reade
     result = convert(
         "/tmp/x.czi",
         out,
-        metadata={"microscope": "Axioscan", "modality": "multiplex", "objective": "20x"},
+        metadata={
+            "microscope": "Axioscan",
+            "modality": "multiplex",
+            "objective": "20x",
+        },
         pyramid_min_size=8,
     )
 
@@ -149,17 +159,23 @@ def test_per_scene_refuses_existing_store(tmp_path: Path, patched_reader) -> Non
         convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
 
 
-def test_per_scene_force_overwrites_existing_store(tmp_path: Path, patched_reader) -> None:
+def test_per_scene_force_overwrites_existing_store(
+    tmp_path: Path, patched_reader
+) -> None:
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
     out = tmp_path / "out"
 
     convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
-    result = convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8, force=True)
+    result = convert(
+        "/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8, force=True
+    )
     assert result["stores"][0]["version"]
 
 
-def test_per_scene_does_not_clobber_unrelated_sibling(tmp_path: Path, patched_reader) -> None:
+def test_per_scene_does_not_clobber_unrelated_sibling(
+    tmp_path: Path, patched_reader
+) -> None:
     """A pre-existing sibling store under OUTPUT must survive a fresh per-scene run."""
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
@@ -174,7 +190,9 @@ def test_per_scene_does_not_clobber_unrelated_sibling(tmp_path: Path, patched_re
     assert (sibling / "marker.txt").read_text() == "keep me"
 
 
-def test_per_scene_per_scene_metadata_routes_correctly(tmp_path: Path, patched_reader) -> None:
+def test_per_scene_per_scene_metadata_routes_correctly(
+    tmp_path: Path, patched_reader
+) -> None:
     reader = FakeReader(scenes=["a", "b"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
     out = tmp_path / "out"
@@ -184,7 +202,11 @@ def test_per_scene_per_scene_metadata_routes_correctly(tmp_path: Path, patched_r
         out,
         metadata=_good_metadata(),
         per_scene_metadata={
-            "b": {"microscope": "Axioscan", "modality": "multiplex", "objective": "63x"},
+            "b": {
+                "microscope": "Axioscan",
+                "modality": "multiplex",
+                "objective": "63x",
+            },
         },
         pyramid_min_size=8,
     )
@@ -197,14 +219,20 @@ def test_per_scene_per_scene_metadata_routes_correctly(tmp_path: Path, patched_r
     assert by_name["a"]["user_metadata"].get("objective") is None
 
 
-def test_per_scene_warns_and_records_on_extractor_failure(tmp_path: Path, patched_reader) -> None:
-    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32), ome_metadata_fails=True)
+def test_per_scene_warns_and_records_on_extractor_failure(
+    tmp_path: Path, patched_reader
+) -> None:
+    reader = FakeReader(
+        scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32), ome_metadata_fails=True
+    )
     patched_reader(reader)
     out = tmp_path / "out"
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        result = convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
+        result = convert(
+            "/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8
+        )
 
     extractor_warns = [w for w in caught if issubclass(w.category, ExtractorWarning)]
     assert len(extractor_warns) >= 1
@@ -217,7 +245,9 @@ def test_per_scene_warns_and_records_on_extractor_failure(tmp_path: Path, patche
     assert (store / "OME" / "METADATA.ome.xml").exists()
 
 
-def test_per_scene_writes_source_xml_named_by_input_ext(tmp_path: Path, patched_reader) -> None:
+def test_per_scene_writes_source_xml_named_by_input_ext(
+    tmp_path: Path, patched_reader
+) -> None:
     reader = FakeReader(scenes=["a", "b"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
     out = tmp_path / "out"
@@ -243,7 +273,9 @@ def test_per_scene_omits_source_xml_when_reader_metadata_none(
     assert not (out / "s.ome.zarr" / "OME" / "source").exists()
 
 
-def test_per_scene_sanitizes_scene_names_in_dirnames(tmp_path: Path, patched_reader) -> None:
+def test_per_scene_sanitizes_scene_names_in_dirnames(
+    tmp_path: Path, patched_reader
+) -> None:
     reader = FakeReader(scenes=["a/b", "c d"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
     out = tmp_path / "out"
@@ -301,9 +333,21 @@ def test_bf2raw_refuses_overwrite(tmp_path: Path, patched_reader) -> None:
     patched_reader(reader)
     out = tmp_path / "x.zarr"
 
-    convert("/tmp/x.lif", out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=8)
+    convert(
+        "/tmp/x.lif",
+        out,
+        layout="bf2raw",
+        metadata=_good_metadata(),
+        pyramid_min_size=8,
+    )
     with pytest.raises(OutputExistsError):
-        convert("/tmp/x.lif", out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=8)
+        convert(
+            "/tmp/x.lif",
+            out,
+            layout="bf2raw",
+            metadata=_good_metadata(),
+            pyramid_min_size=8,
+        )
 
 
 def test_unknown_layout_raises(tmp_path: Path, patched_reader) -> None:
@@ -342,7 +386,9 @@ def test_inspect_returns_scene_summary(tmp_path: Path, patched_reader) -> None:
     assert "plate_layout" not in info
 
 
-def test_inspect_includes_plate_layout_for_plate_reader(tmp_path: Path, patched_reader) -> None:
+def test_inspect_includes_plate_layout_for_plate_reader(
+    tmp_path: Path, patched_reader
+) -> None:
     from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
 
     plate_layout = PlateLayout(
@@ -351,9 +397,27 @@ def test_inspect_includes_plate_layout_for_plate_reader(tmp_path: Path, patched_
         columns=["01", "02"],
         acquisitions=[Acquisition(id=1, name="acq", maximumfieldcount=1)],
         fields=[
-            PlateField(scene_index=0, row="A", column="01", field_name="A01-f0", acquisition_id=1),
-            PlateField(scene_index=1, row="A", column="02", field_name="A02-f0", acquisition_id=1),
-            PlateField(scene_index=2, row="B", column="01", field_name="B01-f0", acquisition_id=1),
+            PlateField(
+                scene_index=0,
+                row="A",
+                column="01",
+                field_name="A01-f0",
+                acquisition_id=1,
+            ),
+            PlateField(
+                scene_index=1,
+                row="A",
+                column="02",
+                field_name="A02-f0",
+                acquisition_id=1,
+            ),
+            PlateField(
+                scene_index=2,
+                row="B",
+                column="01",
+                field_name="B01-f0",
+                acquisition_id=1,
+            ),
         ],
     )
     reader = FakeReader(

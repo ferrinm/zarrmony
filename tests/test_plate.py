@@ -49,7 +49,9 @@ def _fake_plugin(name: str = "bioio-fake-plate") -> ReaderPlugin:
 def patched_reader(monkeypatch: pytest.MonkeyPatch):
     def installer(reader: FakeReader, plugin: str = "bioio-fake-plate"):
         plugin_obj = _fake_plugin(plugin)
-        monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin_obj, 100))
+        monkeypatch.setattr(
+            api_module, "get_reader", lambda _path: (reader, plugin_obj, 100)
+        )
 
     return installer
 
@@ -62,10 +64,34 @@ def _synthetic_2x2_layout() -> PlateLayout:
         columns=["01", "02"],
         acquisitions=[Acquisition(id=1, name="acq", maximumfieldcount=1)],
         fields=[
-            PlateField(scene_index=0, row="A", column="01", field_name="A01-f0", acquisition_id=1),
-            PlateField(scene_index=1, row="A", column="02", field_name="A02-f0", acquisition_id=1),
-            PlateField(scene_index=2, row="B", column="01", field_name="B01-f0", acquisition_id=1),
-            PlateField(scene_index=3, row="B", column="02", field_name="B02-f0", acquisition_id=1),
+            PlateField(
+                scene_index=0,
+                row="A",
+                column="01",
+                field_name="A01-f0",
+                acquisition_id=1,
+            ),
+            PlateField(
+                scene_index=1,
+                row="A",
+                column="02",
+                field_name="A02-f0",
+                acquisition_id=1,
+            ),
+            PlateField(
+                scene_index=2,
+                row="B",
+                column="01",
+                field_name="B01-f0",
+                acquisition_id=1,
+            ),
+            PlateField(
+                scene_index=3,
+                row="B",
+                column="02",
+                field_name="B02-f0",
+                acquisition_id=1,
+            ),
         ],
     )
 
@@ -83,7 +109,9 @@ def _synthetic_plate_reader() -> FakeReader:
 # ---------- end-to-end ----------
 
 
-def test_plate_end_to_end_writes_spec_conformant_store(tmp_path: Path, patched_reader) -> None:
+def test_plate_end_to_end_writes_spec_conformant_store(
+    tmp_path: Path, patched_reader
+) -> None:
     reader = _synthetic_plate_reader()
     patched_reader(reader)
     out = tmp_path / "plate.ome.zarr"
@@ -177,7 +205,9 @@ def test_plate_rejects_per_scene_metadata(tmp_path: Path, patched_reader) -> Non
         )
 
 
-def test_plate_against_flat_reader_raises_layout_mismatch(tmp_path: Path, patched_reader) -> None:
+def test_plate_against_flat_reader_raises_layout_mismatch(
+    tmp_path: Path, patched_reader
+) -> None:
     """Forcing layout='plate' against a flat reader is a dispatch-matrix error."""
     flat_reader = FakeReader(scenes=["s0"], dims="TCYX", shape=(1, 1, 16, 16))
     patched_reader(flat_reader)
@@ -190,7 +220,9 @@ def test_plate_against_flat_reader_raises_layout_mismatch(tmp_path: Path, patche
         )
 
 
-def test_plate_reader_missing_plate_layout_raises(tmp_path: Path, patched_reader) -> None:
+def test_plate_reader_missing_plate_layout_raises(
+    tmp_path: Path, patched_reader
+) -> None:
     """Defensive: a reader claiming layout_hint='plate' but with plate_layout=None."""
     misconfigured = FakeReader(
         scenes=["s0"], dims="TCYX", shape=(1, 1, 16, 16), layout_hint="plate"
@@ -353,7 +385,11 @@ def test_per_well_metadata_round_trip(tmp_path: Path, patched_reader) -> None:
         layout="plate",
         metadata={"microscope": "Axioscan", "modality": "fluorescence"},
         per_well_metadata={
-            "B02": {"microscope": "B02-scope", "modality": "B02-mode", "study": "treated"}
+            "B02": {
+                "microscope": "B02-scope",
+                "modality": "B02-mode",
+                "study": "treated",
+            }
         },
         pyramid_min_size=8,
     )
@@ -361,10 +397,14 @@ def test_per_well_metadata_round_trip(tmp_path: Path, patched_reader) -> None:
     # On disk: B02's well group carries attrs.zarrmony.user_metadata.
     with open(out / "B" / "02" / "zarr.json") as f:
         b02_zj = json.load(f)
-    assert b02_zj["attributes"]["zarrmony"]["user_metadata"]["microscope"] == "B02-scope"
+    assert (
+        b02_zj["attributes"]["zarrmony"]["user_metadata"]["microscope"] == "B02-scope"
+    )
     assert b02_zj["attributes"]["zarrmony"]["user_metadata"]["study"] == "treated"
     # OME well block is unchanged (spec-clean).
-    assert b02_zj["attributes"]["ome"]["well"]["images"] == [{"path": "0", "acquisition": 1}]
+    assert b02_zj["attributes"]["ome"]["well"]["images"] == [
+        {"path": "0", "acquisition": 1}
+    ]
 
     # Wells without an override do not get a zarrmony attrs block.
     with open(out / "A" / "01" / "zarr.json") as f:
@@ -379,7 +419,9 @@ def test_per_well_metadata_round_trip(tmp_path: Path, patched_reader) -> None:
     # On-disk attrs.ome.plate stays spec-clean (no user_metadata leak).
     with open(out / "zarr.json") as f:
         root_zj = json.load(f)
-    on_disk_wells = {w["path"]: w for w in root_zj["attributes"]["ome"]["plate"]["wells"]}
+    on_disk_wells = {
+        w["path"]: w for w in root_zj["attributes"]["ome"]["plate"]["wells"]
+    }
     assert "user_metadata" not in on_disk_wells["B/02"]
 
 
@@ -400,10 +442,14 @@ def test_per_well_metadata_unknown_well_raises_before_writing(
     assert not out.exists()
 
 
-def test_per_well_metadata_rejected_outside_plate_mode(tmp_path: Path, patched_reader) -> None:
+def test_per_well_metadata_rejected_outside_plate_mode(
+    tmp_path: Path, patched_reader
+) -> None:
     flat_reader = FakeReader(scenes=["s0"], dims="TCYX", shape=(1, 1, 16, 16))
     patched_reader(flat_reader)
-    with pytest.raises(ValueError, match="per_well_metadata is only supported in plate mode"):
+    with pytest.raises(
+        ValueError, match="per_well_metadata is only supported in plate mode"
+    ):
         convert(
             "/tmp/fake.czi",
             tmp_path / "out.ome.zarr",

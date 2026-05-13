@@ -30,7 +30,9 @@ def test_optional_fields_default_none() -> None:
 
 
 def test_extra_fields_allowed_pre_finalization() -> None:
-    m = UserMetadata(microscope="Thunder", modality="fluorescence", custom_tag="experimental")
+    m = UserMetadata(
+        microscope="Thunder", modality="fluorescence", custom_tag="experimental"
+    )
     dumped = m.model_dump()
     assert dumped["custom_tag"] == "experimental"
 

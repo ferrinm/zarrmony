@@ -17,6 +17,9 @@ wheels/
 htmlcov/
 .mypy_cache/
 
+# Node (for prettier)
+node_modules/
+
 # Notebook artifacts
 .ipynb_checkpoints/
 notebooks/.ob-jupyter/

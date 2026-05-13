@@ -32,7 +32,11 @@ from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import build_combined_ome_xml, build_ome_xml_for_scene
 from zarrmony.writers.per_scene import write_per_scene_metadata
-from zarrmony.writers.plate import resolve_per_well_metadata, summarize_plate_layout, write_plate
+from zarrmony.writers.plate import (
+    resolve_per_well_metadata,
+    summarize_plate_layout,
+    write_plate,
+)
 from zarrmony.writers.scene import write_scene
 
 Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
@@ -40,7 +44,9 @@ ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
 _VALID_LAYOUTS: tuple[Layout, ...] = ("auto", "per-scene", "bf2raw", "plate")
 
 
-def _resolve_layout(layout: Layout, reader: Any, plugin: ReaderPlugin) -> ResolvedLayout:
+def _resolve_layout(
+    layout: Layout, reader: Any, plugin: ReaderPlugin
+) -> ResolvedLayout:
     """Resolve a user-supplied ``layout`` against the reader's ``layout_hint``.
 
     Implements the ADR-0004 dispatch matrix:
@@ -92,7 +98,9 @@ def _validate_metadata(
             return UserMetadata(**metadata).model_dump(exclude_none=False)
         except ValidationError as e:
             raise MetadataValidationError(str(e)) from e
-    raise TypeError(f"metadata must be UserMetadata, dict, or None (got {type(metadata).__name__})")
+    raise TypeError(
+        f"metadata must be UserMetadata, dict, or None (got {type(metadata).__name__})"
+    )
 
 
 def _check_output(output: str | Path, *, force: bool) -> None:
@@ -102,7 +110,9 @@ def _check_output(output: str | Path, *, force: bool) -> None:
     if not fs.exists(path):
         return
     if not force:
-        raise OutputExistsError(f"output already exists: {s} (pass force=True to overwrite)")
+        raise OutputExistsError(
+            f"output already exists: {s} (pass force=True to overwrite)"
+        )
     if fs.isdir(path):
         fs.rm(path, recursive=True)
     else:
@@ -142,7 +152,9 @@ def _stub_image(scene_index: int, name: str, scene_record: dict) -> Image:
     )
 
 
-def _try_get_ome_image(reader: Any, scene_index: int) -> tuple[Image | None, dict | None]:
+def _try_get_ome_image(
+    reader: Any, scene_index: int
+) -> tuple[Image | None, dict | None]:
     try:
         ome = reader.ome_metadata
     except Exception as e:  # noqa: BLE001 — bioio extractors raise heterogeneous errors
@@ -164,11 +176,15 @@ def _channels_for_scene(
     reader: Any,
     channel_colors: dict[str, str] | None,
 ) -> list[Channel] | None:
-    channel_names = list(reader.channel_names) if getattr(reader, "channel_names", None) else []
+    channel_names = (
+        list(reader.channel_names) if getattr(reader, "channel_names", None) else []
+    )
     if not channel_names:
         return None
     colors = colors_for_channels(channel_names, overrides=channel_colors)
-    return [Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)]
+    return [
+        Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)
+    ]
 
 
 def _source_xml_filename(input_path: str | Path) -> str:
@@ -183,7 +199,11 @@ def _resolve_distribution(reader: Any, plugin: ReaderPlugin) -> str | None:
     For the catch-all default plugin it is ``None``; introspect the opened
     ``BioImage`` to recover the actual sub-package (e.g. ``bioio-ome-tiff``).
     """
-    return plugin.distribution if plugin.distribution else derive_bioio_distribution(reader)
+    return (
+        plugin.distribution
+        if plugin.distribution
+        else derive_bioio_distribution(reader)
+    )
 
 
 def convert(
@@ -217,7 +237,9 @@ def convert(
     plate audits use the schema-3 ``fields`` + ``plate`` keys.
     """
     if layout not in _VALID_LAYOUTS:
-        raise ValueError(f"layout must be one of {list(_VALID_LAYOUTS)} (got {layout!r})")
+        raise ValueError(
+            f"layout must be one of {list(_VALID_LAYOUTS)} (got {layout!r})"
+        )
 
     user_metadata = _validate_metadata(metadata, permissive)
 
@@ -252,9 +274,12 @@ def convert(
                 f"got None for {input_path!s}"
             )
         validated_per_well = {
-            key: _validate_metadata(m, permissive) for key, m in per_well_metadata.items()
+            key: _validate_metadata(m, permissive)
+            for key, m in per_well_metadata.items()
         }
-        per_well_user_metadata = resolve_per_well_metadata(validated_per_well, plate_layout)
+        per_well_user_metadata = resolve_per_well_metadata(
+            validated_per_well, plate_layout
+        )
 
     config = {
         "layout": effective_layout,
@@ -344,7 +369,9 @@ def _convert_per_scene(
         _check_output(sp, force=force)
 
     source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
-    source_filename = _source_xml_filename(input_path) if source_xml is not None else None
+    source_filename = (
+        _source_xml_filename(input_path) if source_xml is not None else None
+    )
 
     store_audits: list[dict] = []
 
@@ -407,7 +434,9 @@ def _convert_per_scene(
         )
         # Effective user_metadata for this store: per-scene override falls back
         # to the root-level user_metadata.
-        audit["user_metadata"] = scene_user_md if scene_user_md is not None else user_metadata
+        audit["user_metadata"] = (
+            scene_user_md if scene_user_md is not None else user_metadata
+        )
         audit["store_path"] = store_path
         audit["scene_index"] = scene_index
         audit["scene_name"] = scene_name
@@ -484,7 +513,9 @@ def _convert_bf2raw(
 
     ome_xml = build_combined_ome_xml(images)
     source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
-    source_filename = _source_xml_filename(input_path) if source_xml is not None else None
+    source_filename = (
+        _source_xml_filename(input_path) if source_xml is not None else None
+    )
 
     write_bf2raw_wrapper(
         output,
@@ -556,7 +587,9 @@ def _convert_plate(
         return ome_image
 
     source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
-    source_filename = _source_xml_filename(input_path) if source_xml is not None else None
+    source_filename = (
+        _source_xml_filename(input_path) if source_xml is not None else None
+    )
 
     field_records, plate_attr = write_plate(
         reader,

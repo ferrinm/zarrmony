@@ -16,7 +16,9 @@ def test_write_scene_writes_pyramid_and_metadata(tmp_path) -> None:
     )
     out = tmp_path / "scene.zarr"
 
-    audit = write_scene(reader, scene_index=1, store_path=str(out), pyramid_min_size=128)
+    audit = write_scene(
+        reader, scene_index=1, store_path=str(out), pyramid_min_size=128
+    )
 
     assert audit["scene_index"] == 1
     assert audit["scene_name"] == "scene_b"
@@ -53,7 +55,9 @@ def test_write_scene_single_level_for_small_input(tmp_path) -> None:
     reader = FakeReader(scenes=["s"], dims="YX", shape=(64, 64))
     out = tmp_path / "small.zarr"
 
-    audit = write_scene(reader, scene_index=0, store_path=str(out), pyramid_min_size=256)
+    audit = write_scene(
+        reader, scene_index=0, store_path=str(out), pyramid_min_size=256
+    )
 
     assert audit["level_shapes"] == [[64, 64]]
     g = zarr.open_group(str(out), mode="r")

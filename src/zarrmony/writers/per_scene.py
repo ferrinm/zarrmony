@@ -59,5 +59,7 @@ def write_per_scene_metadata(
     _write_text(f"{store_str}/OME/METADATA.ome.xml", ome_xml)
     if source_xml is not None:
         if source_xml_filename is None:
-            raise ValueError("source_xml_filename is required when source_xml is provided")
+            raise ValueError(
+                "source_xml_filename is required when source_xml is provided"
+            )
         _write_text(f"{store_str}/OME/source/{source_xml_filename}", source_xml)

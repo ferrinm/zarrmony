@@ -81,7 +81,9 @@ def write_bf2raw_wrapper(
 
     if source_xml is not None:
         if source_xml_filename is None:
-            raise ValueError("source_xml_filename is required when source_xml is provided")
+            raise ValueError(
+                "source_xml_filename is required when source_xml is provided"
+            )
         _write_text(
             f"{store_str.rstrip('/')}/OME/source/{source_xml_filename}",
             source_xml,

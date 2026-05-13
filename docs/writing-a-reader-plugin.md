@@ -50,12 +50,12 @@ typing, no inheritance — covering the surface that `convert()` and
 
 ### Required attributes
 
-| Attribute | Type | What zarrmony does with it |
-|-----------|------|----------------------------|
-| `scenes` | `list[str]` | Iterates to enumerate scenes; names are sanitized into per-scene store directory names. |
-| `set_scene(index: int) -> None` | method | Switches the active scene before reading data. Called once per scene. |
-| `xarray_dask_data` | `xarray.DataArray` (dask-backed) | The image array for the current scene. Dimensions should follow OME-Zarr 0.5 axis order; channels named via the `C` coordinate when present. |
-| `physical_pixel_sizes` | object with `.X`, `.Y`, `.Z` floats (microns) | Scale transform written into the multiscales metadata. Mirrors `bioio_base.PhysicalPixelSizes`; `None` on any axis is fine. |
+| Attribute                       | Type                                          | What zarrmony does with it                                                                                                                   |
+| ------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scenes`                        | `list[str]`                                   | Iterates to enumerate scenes; names are sanitized into per-scene store directory names.                                                      |
+| `set_scene(index: int) -> None` | method                                        | Switches the active scene before reading data. Called once per scene.                                                                        |
+| `xarray_dask_data`              | `xarray.DataArray` (dask-backed)              | The image array for the current scene. Dimensions should follow OME-Zarr 0.5 axis order; channels named via the `C` coordinate when present. |
+| `physical_pixel_sizes`          | object with `.X`, `.Y`, `.Z` floats (microns) | Scale transform written into the multiscales metadata. Mirrors `bioio_base.PhysicalPixelSizes`; `None` on any axis is fine.                  |
 
 ### Soft-optional attributes
 
@@ -63,12 +63,12 @@ These are accessed via `getattr` or `try/except`. Omit them and zarrmony falls
 back gracefully — the conversion still produces a valid OME-Zarr; it just
 loses fidelity for the missing piece.
 
-| Attribute | Fallback when missing or raising |
-|-----------|----------------------------------|
-| `channel_names: list[str]` | Channels labelled `C:0`, `C:1`, …; the audit records `channel_names: null`. |
-| `ome_metadata` | A minimal OME `Image` element synthesised from the scene shape; an audit warning records the failure. Return `OME` (from `ome-types`), an `xml.etree.ElementTree.Element`, or an XML string. |
-| `metadata` | No `OME/source/raw.<format>.xml` is written. Anything that serialises with `str()` works; native `OME`, `Element`, or `str` skip the round-trip. |
-| `close()` | Skipped. Implement it if your reader holds non-GC resources (file handles, network sessions). zarrmony's intent is to call this in a `finally` block once it lands ([ADR-0001](./adr/0001-reader-plugin-architecture.md)); writing it now is forward-compatible. |
+| Attribute                  | Fallback when missing or raising                                                                                                                                                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channel_names: list[str]` | Channels labelled `C:0`, `C:1`, …; the audit records `channel_names: null`.                                                                                                                                                                                      |
+| `ome_metadata`             | A minimal OME `Image` element synthesised from the scene shape; an audit warning records the failure. Return `OME` (from `ome-types`), an `xml.etree.ElementTree.Element`, or an XML string.                                                                     |
+| `metadata`                 | No `OME/source/raw.<format>.xml` is written. Anything that serialises with `str()` works; native `OME`, `Element`, or `str` skip the round-trip.                                                                                                                 |
+| `close()`                  | Skipped. Implement it if your reader holds non-GC resources (file handles, network sessions). zarrmony's intent is to call this in a `finally` block once it lands ([ADR-0001](./adr/0001-reader-plugin-architecture.md)); writing it now is forward-compatible. |
 
 ### `layout_hint` and `plate_layout`
 
@@ -94,9 +94,9 @@ priority".
   (`bioio-czi`, `bioio-lif`, `bioio-nd2`) return `100` on a match.
 - **The catch-all default plugin returns 0.** Anything that returns a
   positive score outranks the bioio fallback.
-- **Third-party plugins**: return `≥ 100` if you want to *win* a tie against
+- **Third-party plugins**: return `≥ 100` if you want to _win_ a tie against
   a built-in (e.g. you ship a faster CZI reader); return `< 100` if you want
-  to *defer* to built-ins for files you could also handle. Built-ins register
+  to _defer_ to built-ins for files you could also handle. Built-ins register
   before entry points are walked, so equal scores resolve to the built-in via
   stable sort — installing your plugin can't accidentally hijack CZI.
 
@@ -421,7 +421,7 @@ Zarrmony validates the `PlateLayout` before any pixels are written; a
 violation raises `PlateLayoutError` (from `zarrmony.errors`). The rules:
 
 - **Every `PlateField.row` must appear in `PlateLayout.rows`**, and every
-  `PlateField.column` in `PlateLayout.columns`. List every *physical* row
+  `PlateField.column` in `PlateLayout.columns`. List every _physical_ row
   and column even when only some are imaged — sparse-plate semantics are
   the reader's responsibility (a 96-well plate with six imaged wells still
   declares `rows=["A".."H"]` and `columns=["01".."12"]`).

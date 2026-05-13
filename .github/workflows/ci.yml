@@ -31,8 +31,33 @@ jobs:
       - name: Lint
         run: uv run ruff check
 
-      - name: Format check
-        run: uv run ruff format --check
-
       - name: Test
         run: uv run pytest
+
+  format:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+
+      - name: Sync dev environment
+        run: uv sync --extra dev
+
+      - name: Black check
+        run: uv run black --check .
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install prettier
+        run: npm ci
+
+      - name: Prettier check
+        run: npx prettier --check .

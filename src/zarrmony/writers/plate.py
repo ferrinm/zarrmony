@@ -155,11 +155,15 @@ def _group_fields_by_well(
 def _channels_for_current_scene(
     reader: Any, channel_colors: dict[str, str] | None
 ) -> list[Channel] | None:
-    channel_names = list(reader.channel_names) if getattr(reader, "channel_names", None) else []
+    channel_names = (
+        list(reader.channel_names) if getattr(reader, "channel_names", None) else []
+    )
     if not channel_names:
         return None
     colors = colors_for_channels(channel_names, overrides=channel_colors)
-    return [Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)]
+    return [
+        Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)
+    ]
 
 
 def summarize_plate_layout(plate_layout: PlateLayout) -> dict[str, Any]:
@@ -261,7 +265,9 @@ def write_plate(
     unreferenced = [i for i in range(len(reader.scenes)) if i not in referenced]
     if unreferenced:
         preview = unreferenced[:5]
-        suffix = "" if len(unreferenced) <= 5 else f", ... ({len(unreferenced) - 5} more)"
+        suffix = (
+            "" if len(unreferenced) <= 5 else f", ... ({len(unreferenced) - 5} more)"
+        )
         warnings.warn(
             f"{len(unreferenced)} scene(s) in reader.scenes are not referenced "
             f"by any PlateField and will not be written to the plate "
@@ -325,7 +331,9 @@ def write_plate(
             "well": _build_well_attr(well_fields),
         }
         if (row, column) in well_overrides:
-            well_group.attrs["zarrmony"] = {"user_metadata": well_overrides[(row, column)]}
+            well_group.attrs["zarrmony"] = {
+                "user_metadata": well_overrides[(row, column)]
+            }
 
     if ome_xml_builder is not None and images:
         ome_xml = ome_xml_builder(images)
@@ -333,7 +341,9 @@ def write_plate(
 
     if source_xml is not None:
         if source_xml_filename is None:
-            raise ValueError("source_xml_filename is required when source_xml is provided")
+            raise ValueError(
+                "source_xml_filename is required when source_xml is provided"
+            )
         _write_text(f"{store_str}/OME/source/{source_xml_filename}", source_xml)
 
     audit_plate = _audit_plate_attr(plate_attr, well_overrides)

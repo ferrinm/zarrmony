@@ -17,7 +17,7 @@ pip install zarrmony
 Optional extras:
 
 | Extra      | Adds                     | When you need it               |
-|------------|--------------------------|--------------------------------|
+| ---------- | ------------------------ | ------------------------------ |
 | `gcs`      | `gcsfs`                  | Writing output to `gs://` URIs |
 | `s3`       | `s3fs`                   | Writing output to `s3://` URIs |
 | `ome-tiff` | `bioio-ome-tiff`         | Reading OME-TIFF input         |

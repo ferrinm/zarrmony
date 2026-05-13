@@ -4,7 +4,7 @@ The Reader Protocol declares `layout_hint: Literal["flat", "plate"] = "flat"` ev
 
 ## Considered Options
 
-- **Build HCS Plate output now, in the same milestone as the plugin system.** Rejected: plate output is a *writer* concern, not a *reader* concern. Bundling them conflates two architectural changes, and the writer side (HCS-spec compliance, plate metadata, well aggregation, multi-acquisition support) is at least as much work as the plugin system itself. Ship the plugin system first; ship HCS separately.
+- **Build HCS Plate output now, in the same milestone as the plugin system.** Rejected: plate output is a _writer_ concern, not a _reader_ concern. Bundling them conflates two architectural changes, and the writer side (HCS-spec compliance, plate metadata, well aggregation, multi-acquisition support) is at least as much work as the plugin system itself. Ship the plugin system first; ship HCS separately.
 - **Flatten Phenix to scenes and lose plate semantics entirely.** Rejected: Phenix users would see N independent images instead of "row B col 4 field 2", and downstream tools (napari-ome-zarr, MoBIE) couldn't light up plate-aware UI. Worse, migrating later means re-converting every Phenix dataset produced in the interim.
 - **Add `layout_hint` only when the writer needs it.** Rejected: it's five lines of Protocol surface now vs. a Protocol break (and a forced version bump for every published plugin) later. The cost asymmetry favors reservation.
 

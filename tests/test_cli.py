@@ -27,7 +27,9 @@ def patched_reader(monkeypatch: pytest.MonkeyPatch):
             distribution=plugin,
             source="builtin",
         )
-        monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin_obj, 100))
+        monkeypatch.setattr(
+            api_module, "get_reader", lambda _path: (reader, plugin_obj, 100)
+        )
 
     return installer
 
@@ -52,7 +54,15 @@ def test_convert_per_scene_default_writes_one_store_per_scene(
 
     result = runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "--metadata-file", str(md), "--pyramid-min-size", "8"],
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--metadata-file",
+            str(md),
+            "--pyramid-min-size",
+            "8",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -87,7 +97,8 @@ def test_convert_permissive_bypasses_gate(
     out = tmp_path / "out"
 
     result = runner.invoke(
-        app, ["convert", "/tmp/x.lif", str(out), "--permissive", "--pyramid-min-size", "8"]
+        app,
+        ["convert", "/tmp/x.lif", str(out), "--permissive", "--pyramid-min-size", "8"],
     )
     assert result.exit_code == 0, result.output
     assert (out / "s.ome.zarr" / "zarr.json").exists()
@@ -100,7 +111,9 @@ def test_convert_no_metadata_no_permissive_fails_friendly(
     patched_reader(reader)
     out = tmp_path / "out"
 
-    result = runner.invoke(app, ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"])
+    result = runner.invoke(
+        app, ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"]
+    )
     assert result.exit_code != 0
     assert "Metadata validation failed" in result.output
 
@@ -130,7 +143,9 @@ def test_convert_existing_store_without_force_fails_friendly(
     assert "force" in r2.output.lower()
 
 
-def test_convert_force_overwrites(tmp_path: Path, runner: CliRunner, patched_reader) -> None:
+def test_convert_force_overwrites(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
     md = _write_metadata_file(
@@ -167,7 +182,14 @@ def test_convert_chunk_shape_invalid_format(
 
     result = runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "--permissive", "--chunk-shape", "not,a,number"],
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--permissive",
+            "--chunk-shape",
+            "not,a,number",
+        ],
     )
     assert result.exit_code != 0
     assert "chunk-shape" in result.output
@@ -276,9 +298,27 @@ def test_inspect_text_output_prints_plate_header_for_plate_reader(
         columns=["01", "02"],
         acquisitions=[Acquisition(id=1, name="acq", maximumfieldcount=1)],
         fields=[
-            PlateField(scene_index=0, row="A", column="01", field_name="A01-f0", acquisition_id=1),
-            PlateField(scene_index=1, row="A", column="02", field_name="A02-f0", acquisition_id=1),
-            PlateField(scene_index=2, row="B", column="01", field_name="B01-f0", acquisition_id=1),
+            PlateField(
+                scene_index=0,
+                row="A",
+                column="01",
+                field_name="A01-f0",
+                acquisition_id=1,
+            ),
+            PlateField(
+                scene_index=1,
+                row="A",
+                column="02",
+                field_name="A02-f0",
+                acquisition_id=1,
+            ),
+            PlateField(
+                scene_index=2,
+                row="B",
+                column="01",
+                field_name="B01-f0",
+                acquisition_id=1,
+            ),
         ],
     )
     reader = FakeReader(

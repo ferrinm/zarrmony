@@ -75,12 +75,16 @@ def test_build_audit_record_with_checksum(tmp_path: Path) -> None:
     assert audit["input"]["sha256"] == expected
 
 
-def test_build_audit_record_unknown_distribution_yields_null_version(tmp_path: Path) -> None:
+def test_build_audit_record_unknown_distribution_yields_null_version(
+    tmp_path: Path,
+) -> None:
     src = tmp_path / "x.czi"
     src.write_bytes(b"")
     audit = build_audit_record(
         input_path=src,
-        reader_plugin=_fake_plugin(name="not-a-real-package", distribution="not-a-real-package"),
+        reader_plugin=_fake_plugin(
+            name="not-a-real-package", distribution="not-a-real-package"
+        ),
         match_score=100,
         config={},
         started_at=_ts("2026-05-02T10:00:00"),
