@@ -1,0 +1,16 @@
+# Hand-curated release notes; prettier reflow can mangle them
+CHANGELOG.md
+
+# Legal text; do not reformat
+LICENSE.md
+
+# Build outputs and tooling caches
+dist/
+build/
+htmlcov/
+.venv/
+node_modules/
+
+# Lock files (managed by their tools)
+package-lock.json
+uv.lock
