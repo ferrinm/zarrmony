@@ -5,7 +5,7 @@ Zarrmony's reader system is a unified plugin registry: every reader (built-in or
 ## Considered Options
 
 - **Inherit from `bioio_base.Reader`.** Rejected: zarrmony only consumes ~7 attributes; coupling to bioio's full surface drags in obligations zarrmony doesn't use, and forces non-bioio readers (Phenix) into an inheritance hierarchy that doesn't fit. The `Protocol` makes the actual contract explicit and structural; bioio readers conform automatically via duck typing.
-- **Extension-only dispatch (today's `_OVERRIDES` dict).** Rejected: Phenix input is a *directory* identified by `Index.idx.xml` inside it, not a file extension. Predicate-based matching is required for that and any future directory-shaped formats.
+- **Extension-only dispatch (today's `_OVERRIDES` dict).** Rejected: Phenix input is a _directory_ identified by `Index.idx.xml` inside it, not a file extension. Predicate-based matching is required for that and any future directory-shaped formats.
 - **First-match-wins predicate dispatch.** Rejected: registration order becomes load-bearing, which is fragile under entry-point discovery. Priority scores let a specific plugin (Phenix-TIFF-directory) outrank a generic one (any TIFF) without depending on import order.
 - **Combined `match` + `open` in one call.** Rejected: instantiating every reader to ask "can you handle this?" is expensive (header parsing, file opening). Separated cheap matchers keep `inspect()` fast and let dispatch enumerate candidates without side effects.
 

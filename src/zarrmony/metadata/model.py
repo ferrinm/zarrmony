@@ -44,7 +44,9 @@ class UserMetadata(BaseModel):
     # Optional (acquisition context — destined for Tenaya cross-references)
     study: str | None = Field(None, description="Study identifier.")
     project_code: str | None = Field(None, description="Calico project code.")
-    researcher: str | None = Field(None, description="Researcher who acquired the data.")
+    researcher: str | None = Field(
+        None, description="Researcher who acquired the data."
+    )
 
     # Optional (Zarr-only — deep acquisition parameters)
     detector_gain: float | None = None

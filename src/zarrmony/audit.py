@@ -63,10 +63,14 @@ def _reader_plugin_record(
         return None
     # Caller-supplied distribution wins (lets the catch-all default plugin
     # surface the actual bioio sub-package, e.g. ``bioio-ome-tiff``).
-    actual_distribution = distribution if distribution is not None else plugin.distribution
+    actual_distribution = (
+        distribution if distribution is not None else plugin.distribution
+    )
     return {
         "name": plugin.name,
-        "version": _try_pkg_version(actual_distribution) if actual_distribution else None,
+        "version": (
+            _try_pkg_version(actual_distribution) if actual_distribution else None
+        ),
         "source": plugin.source,
         "distribution": actual_distribution,
         "match_score": match_score,
@@ -104,7 +108,9 @@ def build_audit_record(
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "version": __version__,
         "layout": layout,
-        "reader_plugin": _reader_plugin_record(reader_plugin, match_score, distribution),
+        "reader_plugin": _reader_plugin_record(
+            reader_plugin, match_score, distribution
+        ),
         "input": _file_forensics(input_path, checksum=checksum),
         "config": config,
         "conversion_started_at": started_at.isoformat(),

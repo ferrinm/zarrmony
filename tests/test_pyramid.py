@@ -5,7 +5,9 @@ from zarrmony.writers.pyramid import build_pyramid, compute_level_shapes
 
 
 def test_compute_levels_2048_floor_256() -> None:
-    shapes = compute_level_shapes((1, 4, 2048, 2048), ["T", "C", "Y", "X"], min_size=256)
+    shapes = compute_level_shapes(
+        (1, 4, 2048, 2048), ["T", "C", "Y", "X"], min_size=256
+    )
     assert shapes == [
         (1, 4, 2048, 2048),
         (1, 4, 1024, 1024),
@@ -36,7 +38,9 @@ def test_compute_levels_no_spatial_dims() -> None:
 
 def test_compute_levels_anisotropic_yx() -> None:
     # X (1500) gets to 187 first; level should stop when min(Y//2, X//2) < min_size
-    shapes = compute_level_shapes((1, 1, 4000, 1500), ["T", "C", "Y", "X"], min_size=256)
+    shapes = compute_level_shapes(
+        (1, 1, 4000, 1500), ["T", "C", "Y", "X"], min_size=256
+    )
     assert shapes == [(1, 1, 4000, 1500), (1, 1, 2000, 750), (1, 1, 1000, 375)]
     # next would be (500, 187), 187 < 256, so we stop
 
@@ -68,10 +72,16 @@ def test_build_pyramid_preserves_dtype() -> None:
 
 def test_build_pyramid_preserves_non_spatial_dims() -> None:
     # 5D input — only Y, X get coarsened
-    base_da = da.from_array(np.zeros((1, 2, 1, 8, 8), dtype=np.uint16), chunks=(1, 2, 1, 4, 4))
+    base_da = da.from_array(
+        np.zeros((1, 2, 1, 8, 8), dtype=np.uint16), chunks=(1, 2, 1, 4, 4)
+    )
     levels = build_pyramid(
         base_da,
         ["T", "C", "Z", "Y", "X"],
         [(1, 2, 1, 8, 8), (1, 2, 1, 4, 4), (1, 2, 1, 2, 2)],
     )
-    assert [tuple(lv.shape) for lv in levels] == [(1, 2, 1, 8, 8), (1, 2, 1, 4, 4), (1, 2, 1, 2, 2)]
+    assert [tuple(lv.shape) for lv in levels] == [
+        (1, 2, 1, 8, 8),
+        (1, 2, 1, 4, 4),
+        (1, 2, 1, 2, 2),
+    ]

@@ -34,13 +34,17 @@ def _ome_image_for_scene(scene_index: int, name: str) -> Image:
 
 def test_bf2raw_layout_full_roundtrip(tmp_path: Path) -> None:
     out = tmp_path / "multiscene.ome.zarr"
-    reader = FakeReader(scenes=["scene_a", "scene_b"], dims="TCYX", shape=(1, 1, 32, 32))
+    reader = FakeReader(
+        scenes=["scene_a", "scene_b"], dims="TCYX", shape=(1, 1, 32, 32)
+    )
 
     series_paths: list[str] = []
     images = []
     for i, name in enumerate(reader.scenes):
         scene_dir = out / str(i)
-        write_scene(reader, scene_index=i, store_path=str(scene_dir), pyramid_min_size=8)
+        write_scene(
+            reader, scene_index=i, store_path=str(scene_dir), pyramid_min_size=8
+        )
         series_paths.append(str(i))
         images.append(_ome_image_for_scene(i, name))
 

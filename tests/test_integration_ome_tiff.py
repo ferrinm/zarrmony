@@ -149,7 +149,9 @@ def test_bf2raw_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     )
     out = tmp_path / "out.ome.zarr"
 
-    audit = convert(str(src), out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=32)
+    audit = convert(
+        str(src), out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=32
+    )
 
     assert audit["reader_plugin"]["name"] == "bioio"
     assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
@@ -185,7 +187,9 @@ def test_bf2raw_multi_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     )
     out = tmp_path / "multi.ome.zarr"
 
-    audit = convert(str(src), out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=8)
+    audit = convert(
+        str(src), out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=8
+    )
 
     assert len(audit["per_scene"]) == 3
 

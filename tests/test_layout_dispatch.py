@@ -48,7 +48,9 @@ def _fake_plugin(name: str = "bioio-fake") -> ReaderPlugin:
 def patched_reader(monkeypatch: pytest.MonkeyPatch):
     def installer(reader: FakeReader, plugin: str = "bioio-fake") -> None:
         plugin_obj = _fake_plugin(plugin)
-        monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin_obj, 100))
+        monkeypatch.setattr(
+            api_module, "get_reader", lambda _path: (reader, plugin_obj, 100)
+        )
 
     return installer
 
@@ -90,7 +92,9 @@ def _flat_reader(n_scenes: int = 2) -> FakeReader:
 # ---------- auto resolves to per-scene / plate by reader hint ----------
 
 
-def test_auto_plus_flat_reader_resolves_to_per_scene(tmp_path: Path, patched_reader) -> None:
+def test_auto_plus_flat_reader_resolves_to_per_scene(
+    tmp_path: Path, patched_reader
+) -> None:
     patched_reader(_flat_reader(2))
     result = convert(
         "/tmp/fake.czi",
@@ -104,7 +108,9 @@ def test_auto_plus_flat_reader_resolves_to_per_scene(tmp_path: Path, patched_rea
     assert (tmp_path / "out" / "s1.ome.zarr").exists()
 
 
-def test_auto_plus_plate_reader_resolves_to_plate(tmp_path: Path, patched_reader) -> None:
+def test_auto_plus_plate_reader_resolves_to_plate(
+    tmp_path: Path, patched_reader
+) -> None:
     patched_reader(_plate_reader())
     out = tmp_path / "plate.ome.zarr"
     audit = convert(
@@ -194,7 +200,9 @@ def test_plate_against_flat_reader_message_names_layout_hint(
 # ---------- per-scene/bf2raw + flat reader: silent (no warning) ----------
 
 
-def test_per_scene_against_flat_reader_does_not_warn(tmp_path: Path, patched_reader) -> None:
+def test_per_scene_against_flat_reader_does_not_warn(
+    tmp_path: Path, patched_reader
+) -> None:
     patched_reader(_flat_reader(2))
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
@@ -234,7 +242,9 @@ def test_plate_warns_on_unreferenced_scenes(tmp_path: Path, patched_reader) -> N
         )
 
 
-def test_plate_does_not_warn_when_all_scenes_referenced(tmp_path: Path, patched_reader) -> None:
+def test_plate_does_not_warn_when_all_scenes_referenced(
+    tmp_path: Path, patched_reader
+) -> None:
     patched_reader(_plate_reader())
     out = tmp_path / "plate.ome.zarr"
     with warnings.catch_warnings(record=True) as record:

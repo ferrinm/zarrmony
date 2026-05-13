@@ -106,7 +106,8 @@ def test_matcher_exception_does_not_abort_dispatch(
     assert plugin.name == "safe"
     assert score == 5
     assert any(
-        "explosive" in record.message and "no-match" in record.message for record in caplog.records
+        "explosive" in record.message and "no-match" in record.message
+        for record in caplog.records
     ), caplog.text
 
 
@@ -130,7 +131,9 @@ class _FakeEntryPoint:
     ``_ensure_entry_points_loaded`` consumes (``name`` + ``load()``).
     """
 
-    def __init__(self, name: str, payload: Any, *, raises: BaseException | None = None) -> None:
+    def __init__(
+        self, name: str, payload: Any, *, raises: BaseException | None = None
+    ) -> None:
         self.name = name
         self._payload = payload
         self._raises = raises
@@ -141,7 +144,9 @@ class _FakeEntryPoint:
         return self._payload
 
 
-def _install_fake_entry_points(monkeypatch: pytest.MonkeyPatch, *eps: _FakeEntryPoint) -> None:
+def _install_fake_entry_points(
+    monkeypatch: pytest.MonkeyPatch, *eps: _FakeEntryPoint
+) -> None:
     plugin_mod._ENTRY_POINTS_LOADED = False
 
     def _fake_entry_points(*, group: str) -> list[_FakeEntryPoint]:
@@ -183,7 +188,9 @@ def test_entry_point_loader_warns_and_continues_on_load_failure(
 def test_entry_point_loader_warns_when_payload_is_not_a_reader_plugin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _install_fake_entry_points(monkeypatch, _FakeEntryPoint("bogus", payload="not-a-ReaderPlugin"))
+    _install_fake_entry_points(
+        monkeypatch, _FakeEntryPoint("bogus", payload="not-a-ReaderPlugin")
+    )
 
     with pytest.warns(UserWarning, match="did not yield a ReaderPlugin"):
         list_plugins()

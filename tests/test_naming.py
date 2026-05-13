@@ -30,7 +30,11 @@ def test_sanitize_basic_cases(raw: str, expected: str) -> None:
 
 
 def test_resolve_no_collisions_returns_unsuffixed() -> None:
-    assert resolve_scene_dirnames(["alpha", "beta", "gamma"]) == ["alpha", "beta", "gamma"]
+    assert resolve_scene_dirnames(["alpha", "beta", "gamma"]) == [
+        "alpha",
+        "beta",
+        "gamma",
+    ]
 
 
 def test_resolve_collision_suffixes_all_collisions() -> None:
@@ -39,7 +43,11 @@ def test_resolve_collision_suffixes_all_collisions() -> None:
 
 
 def test_resolve_three_way_collision() -> None:
-    assert resolve_scene_dirnames(["x y", "x_y", "x/y"]) == ["x_y__0", "x_y__1", "x_y__2"]
+    assert resolve_scene_dirnames(["x y", "x_y", "x/y"]) == [
+        "x_y__0",
+        "x_y__1",
+        "x_y__2",
+    ]
 
 
 def test_resolve_empty_names_collide_to_scene() -> None:
@@ -49,7 +57,11 @@ def test_resolve_empty_names_collide_to_scene() -> None:
 def test_resolve_preserves_index_order_independent_of_collision_position() -> None:
     # "alpha" appears at indices 0 and 2 — both should be suffixed with their
     # own index, not a counter.
-    assert resolve_scene_dirnames(["alpha", "beta", "alpha"]) == ["alpha__0", "beta", "alpha__2"]
+    assert resolve_scene_dirnames(["alpha", "beta", "alpha"]) == [
+        "alpha__0",
+        "beta",
+        "alpha__2",
+    ]
 
 
 def test_resolve_handles_empty_list() -> None:

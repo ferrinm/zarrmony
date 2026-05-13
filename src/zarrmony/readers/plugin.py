@@ -114,7 +114,9 @@ def _ensure_entry_points_loaded() -> None:
     for ep in entry_points(group=ENTRY_POINT_GROUP):
         try:
             plugin = ep.load()
-        except Exception as exc:  # noqa: BLE001 — third-party loader errors are heterogeneous
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 — third-party loader errors are heterogeneous
             warnings.warn(
                 f"failed to load zarrmony.readers entry point {ep.name!r}: {exc}",
                 stacklevel=2,

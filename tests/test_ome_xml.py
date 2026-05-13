@@ -1,7 +1,10 @@
 from ome_types import OME, from_xml
 from ome_types.model import Image, Pixels, PixelType, TiffData
 
-from zarrmony.writers.ome_xml import build_combined_ome_xml, normalize_image_for_metadata_only
+from zarrmony.writers.ome_xml import (
+    build_combined_ome_xml,
+    normalize_image_for_metadata_only,
+)
 
 
 def _make_image(idx: int) -> Image:
