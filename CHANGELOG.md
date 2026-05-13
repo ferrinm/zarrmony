@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-05-13
+
+### Changed
+
+- Internal/dev tooling alignment with the Calico
+  `github-template-python-library` template, in preparation for an internal
+  Calico fork (`calicolabs-zarrmony`). No user-facing API changes.
+  - Drop minimum Python version from 3.13 to 3.11; CI matrix now tests
+    both 3.11 and 3.13 across ubuntu and macos.
+  - Switch build backend from `hatchling` to `setuptools` +
+    `setuptools_scm`. Version is now derived from git tags via
+    `dynamic = ["version"]`; `__version__` resolved at runtime via
+    `importlib.metadata.version()`.
+  - Switch Python formatter from `ruff format` to `black` (default
+    settings, line length 88). `ruff` continues to handle linting.
+  - Adopt `prettier` (pinned via `package.json`) for YAML / Markdown /
+    JSON formatting. CI gains a separate `format` job that runs both
+    `black --check` and `npx prettier --check`.
+  - Rename `LICENSE` → `LICENSE.md` and add `©` to the copyright line per
+    Calico external-release policy. `license-files` in pyproject updated.
+  - Add `.github/CODEOWNERS` with `* @ferrinm`.
+  - Add PyPI version, Python version, license, and CI status badges to
+    the README.
+  - Add `INTERNAL_FORK.md` documenting the public/private fork
+    relationship, expected diff at fork time, deliberate template
+    deviations, and the manual sync procedure.
+
 ## [0.3.3] - 2026-05-11
 
 ### Changed
