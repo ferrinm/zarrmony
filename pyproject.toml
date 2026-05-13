@@ -1,11 +1,11 @@
 [project]
 name = "zarrmony"
-version = "0.3.3"
+dynamic = ["version"]
 description = "Convert any bioimage file to OME-Zarr v0.5, preserving metadata."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE.md"]
 authors = [{ name = "Max Ferrin", email = "ferrin@calicolabs.com" }]
 dependencies = [
     "bioio>=3.3.0",
@@ -56,15 +56,17 @@ Issues = "https://github.com/ferrinm/zarrmony/issues"
 Changelog = "https://github.com/ferrinm/zarrmony/blob/main/CHANGELOG.md"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=80", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/zarrmony"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "W"]
