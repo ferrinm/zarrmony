@@ -1,5 +1,10 @@
 # zarrmony
 
+[![PyPI version](https://img.shields.io/pypi/v/zarrmony.svg)](https://pypi.org/project/zarrmony/)
+[![Python versions](https://img.shields.io/pypi/pyversions/zarrmony.svg)](https://pypi.org/project/zarrmony/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE.md)
+[![CI](https://github.com/ferrinm/zarrmony/actions/workflows/ci.yml/badge.svg)](https://github.com/ferrinm/zarrmony/actions/workflows/ci.yml)
+
 Convert any bioimage file to OME-Zarr v0.5, preserving metadata.
 
 Zarrmony reads proprietary microscopy formats (CZI, LIF, ND2, OME-TIFF, ...) via [bioio](https://bioio-devs.github.io/bioio/) and writes them as OME-Zarr v0.5, with a configurable user-metadata gate, mean-pool pyramid generation, and a full audit trail of the conversion.

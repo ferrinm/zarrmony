@@ -1,0 +1,4 @@
+# Default reviewer for all PRs.
+# Internal Calico fork (`calicolabs-zarrmony`) replaces this with
+# `* @calico/sweng-dev @calico/data-eng-dev` per template policy.
+* @ferrinm
