@@ -82,6 +82,7 @@ def write_scene(
     scene_name = reader.scenes[scene_index]
     name = image_name or scene_name
 
+    mosaic_summary = getattr(reader, "mosaic_summary", None)
     xarr = reader.xarray_dask_data
     canonical, axis_record = normalize_axes(xarr)
     dims = list(canonical.dims)
@@ -122,7 +123,7 @@ def write_scene(
     )
     writer.write_pyramid(pyramid)
 
-    return {
+    record = {
         "scene_index": scene_index,
         "scene_name": scene_name,
         "image_name": name,
@@ -132,3 +133,6 @@ def write_scene(
         "channel_count": channel_count,
         "physical_pixel_size": dict(zip(dims, physical_pixel_size, strict=True)),
     }
+    if mosaic_summary is not None:
+        record["mosaic"] = mosaic_summary
+    return record

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `bioio-lif` reader plugin now auto-stitches mosaic-tiled scenes via
+  `mosaic_xarray_dask_data`, mirroring the CZI plugin's stitching behavior.
+  Per-scene audit gains an optional `mosaic` block recording tile count and
+  tile shape when stitching was applied.
+
+### Fixed
+
+- LIF files with mosaic tiling no longer raise `UnsupportedAxesError`. The
+  `M` dimension is collapsed inside the reader plugin before the writer
+  sees the xarray.
+
 ## [0.3.4] - 2026-05-13
 
 ### Changed

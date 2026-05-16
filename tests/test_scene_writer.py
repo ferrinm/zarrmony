@@ -75,3 +75,19 @@ def test_write_scene_returns_audit_record(tmp_path) -> None:
     assert audit["axis_normalization"]["input_dims"] == ["T", "C", "Y", "X"]
     assert audit["axis_normalization"]["output_dims"] == ["T", "C", "Y", "X"]
     assert len(audit["level_shapes"]) == 3
+    assert "mosaic" not in audit
+
+
+def test_write_scene_records_mosaic_summary(tmp_path) -> None:
+    mosaic = {"stitched": True, "tile_count": 12, "tile_shape": {"Y": 5048, "X": 5048}}
+    reader = FakeReader(
+        scenes=["mosaic_scene"],
+        dims="TCYX",
+        shape=(1, 1, 64, 64),
+        mosaic_summary=mosaic,
+    )
+    out = tmp_path / "mosaic.zarr"
+
+    audit = write_scene(reader, scene_index=0, store_path=str(out), pyramid_min_size=8)
+
+    assert audit["mosaic"] == mosaic
