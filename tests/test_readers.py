@@ -139,8 +139,13 @@ class _FakeBioioLifReader:
         scenes_with_m: dict[int, bool],
         tile_count: int = 12,
         tile_yx: tuple[int, int] = (5048, 5048),
+        scene_names: list[str] | None = None,
     ) -> None:
-        self.scenes = tuple(f"scene_{i}" for i in scenes_with_m)
+        if scene_names is not None:
+            assert len(scene_names) == len(scenes_with_m)
+            self.scenes = tuple(scene_names)
+        else:
+            self.scenes = tuple(f"scene_{i}" for i in scenes_with_m)
         self._has_m = scenes_with_m
         self._current = 0
         self._tile_yx = tile_yx
@@ -247,3 +252,63 @@ def test_proxy_forwards_arbitrary_attrs() -> None:
     assert proxy.physical_pixel_sizes == "fake-px"
     proxy.set_scene(0)
     assert inner._current == 0
+
+
+# --- skip_reason: vendor _Merged sibling preference ---------------------
+
+
+def test_skip_reason_none_for_non_mosaic_scene() -> None:
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: False}))
+    proxy.set_scene(0)
+
+    assert proxy.skip_reason is None
+
+
+def test_skip_reason_none_for_mosaic_without_merged_sibling() -> None:
+    # Mosaic scene 'Position 1' with no 'Position 1_Merged' sibling.
+    inner = _FakeBioioLifReader(
+        {0: True, 1: False},
+        scene_names=["Position 1", "AnotherScene"],
+    )
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+    proxy.set_scene(0)
+
+    assert proxy.skip_reason is None
+
+
+def test_skip_reason_set_when_merged_sibling_present() -> None:
+    # Mosaic scene 'Position 1' with vendor-stitched 'Position 1_Merged' sibling.
+    inner = _FakeBioioLifReader(
+        {0: True, 1: False},
+        scene_names=["Position 1", "Position 1_Merged"],
+    )
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+    proxy.set_scene(0)
+
+    reason = proxy.skip_reason
+    assert reason is not None
+    assert "'Position 1_Merged'" in reason
+
+
+def test_skip_reason_does_not_apply_to_the_merged_sibling_itself() -> None:
+    # The merged sibling is NOT a mosaic scene, so it has no skip_reason.
+    inner = _FakeBioioLifReader(
+        {0: True, 1: False},
+        scene_names=["Position 1", "Position 1_Merged"],
+    )
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+    proxy.set_scene(1)
+
+    assert proxy.skip_reason is None
+
+
+def test_skip_reason_requires_exact_suffix_match() -> None:
+    # Different stem ('Other_Merged') does not pair with 'Position 1'.
+    inner = _FakeBioioLifReader(
+        {0: True, 1: False},
+        scene_names=["Position 1", "Other_Merged"],
+    )
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+    proxy.set_scene(0)
+
+    assert proxy.skip_reason is None

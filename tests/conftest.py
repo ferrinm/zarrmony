@@ -42,6 +42,7 @@ class FakeReader:
         layout_hint: str = "flat",
         plate_layout: PlateLayout | None = None,
         mosaic_summary: dict | None = None,
+        skip_reasons: dict[int, str] | None = None,
     ) -> None:
         self.scenes = tuple(scenes)
         self._dims = dims
@@ -54,6 +55,11 @@ class FakeReader:
         self.layout_hint = layout_hint
         self.plate_layout = plate_layout
         self.mosaic_summary = mosaic_summary
+        self._skip_reasons = skip_reasons or {}
+
+    @property
+    def skip_reason(self) -> str | None:
+        return self._skip_reasons.get(self._current_scene)
 
     @property
     def channel_names(self) -> list[str]:

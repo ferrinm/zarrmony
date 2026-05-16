@@ -71,3 +71,16 @@ class MosaicStitchingWarning(UserWarning):
     sibling scene (Leica's ``*_Merged``) when present, or an external
     stitcher (ASHLAR, m2stitch, BigStitcher) otherwise.
     """
+
+
+class MosaicMergedSiblingWarning(UserWarning):
+    """A mosaic scene was skipped because a vendor ``_Merged`` sibling exists.
+
+    Emitted by ``convert()`` when the reader signals (via ``skip_reason``)
+    that the current scene's pixels are already available, pre-stitched, on
+    a sibling scene. Currently triggered by the ``bioio-lif`` plugin when a
+    LIF mosaic scene named ``X`` has a sibling scene named ``X_Merged`` —
+    the merged sibling is written instead, so we avoid the bioio-lif
+    stitcher's 1-pixel-overlap assumption (see
+    :class:`MosaicStitchingWarning`).
+    """

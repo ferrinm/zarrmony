@@ -18,6 +18,7 @@ from zarrmony import convert, inspect
 from zarrmony.errors import (
     ExtractorWarning,
     MetadataValidationError,
+    MosaicMergedSiblingWarning,
     OutputExistsError,
 )
 from zarrmony.readers.plugin import ReaderPlugin
@@ -441,3 +442,32 @@ def test_inspect_includes_plate_layout_for_plate_reader(
     # 3 wells imaged out of a 2x2 = 4-well plate.
     assert len(pl["wells"]) == 3
     assert sorted(w["path"] for w in pl["wells"]) == ["A/01", "A/02", "B/01"]
+
+
+# ---------- skip_reason: mosaic scene with vendor _Merged sibling ----------
+
+
+def test_per_scene_skips_scene_with_skip_reason(tmp_path: Path, patched_reader) -> None:
+    # Scene 0 advertises a skip_reason (e.g. its '_Merged' sibling is scene 1);
+    # only scene 1 should be written, and a MosaicMergedSiblingWarning should fire.
+    reader = FakeReader(
+        scenes=["Position 1", "Position 1_Merged"],
+        dims="TCYX",
+        shape=(1, 1, 32, 32),
+        skip_reasons={0: "vendor-merged sibling 'Position 1_Merged' is present"},
+    )
+    patched_reader(reader, plugin="bioio-fake")
+    out = tmp_path / "out"
+
+    with pytest.warns(MosaicMergedSiblingWarning, match="Position 1_Merged"):
+        result = convert(
+            "/tmp/fake.lif", out, metadata=_good_metadata(), pyramid_min_size=32
+        )
+
+    assert result["layout"] == "per-scene"
+    assert len(result["stores"]) == 1
+    assert result["stores"][0]["scene_name"] == "Position 1_Merged"
+
+    # The skipped scene's store directory must NOT exist.
+    assert not (out / "Position_1.ome.zarr").exists()
+    assert (out / "Position_1_Merged.ome.zarr").is_dir()
