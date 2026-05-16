@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-05-15
+
+### Fixed
+
+- `bioio-lif` reader plugin no longer emits `MosaicStitchingWarning` for
+  mosaic scenes that have a vendor `_Merged` sibling present. The warning
+  text claimed "no vendor-stitched sibling found" — false in that case.
+  `convert()` was unaffected (it short-circuits via `skip_reason` before
+  touching `xarray_dask_data`), but `inspect()` walks every scene and
+  triggered the misleading warning.
+
 ## [0.3.5] - 2026-05-15
 
 ### Added
