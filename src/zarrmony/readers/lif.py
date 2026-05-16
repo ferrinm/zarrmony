@@ -88,19 +88,20 @@ class _MosaicAwareLifReader:
         if "M" not in xarr.dims:
             return xarr
         scene_name = self._inner.scenes[self._inner.current_scene_index]
-        warnings.warn(
-            f"scene {scene_name!r}: bioio-lif is auto-stitching "
-            f"{int(xarr.sizes['M'])} mosaic tiles assuming a 1-pixel "
-            f"inter-tile overlap. The LIF stage XY positions are NOT used. "
-            f"For acquisitions with non-trivial overlap (typical 5–15%), "
-            f"the output has double-coverage stripes at tile seams and is "
-            f"unfit for quantitative analysis at tile boundaries. No "
-            f"vendor-stitched sibling ('{scene_name}{_MERGED_SUFFIX}') was "
-            f"found; consider external stitching (ASHLAR, m2stitch, "
-            f"BigStitcher) if boundary correctness matters.",
-            MosaicStitchingWarning,
-            stacklevel=2,
-        )
+        if self._merged_sibling() is None:
+            warnings.warn(
+                f"scene {scene_name!r}: bioio-lif is auto-stitching "
+                f"{int(xarr.sizes['M'])} mosaic tiles assuming a 1-pixel "
+                f"inter-tile overlap. The LIF stage XY positions are NOT used. "
+                f"For acquisitions with non-trivial overlap (typical 5–15%), "
+                f"the output has double-coverage stripes at tile seams and is "
+                f"unfit for quantitative analysis at tile boundaries. No "
+                f"vendor-stitched sibling ('{scene_name}{_MERGED_SUFFIX}') was "
+                f"found; consider external stitching (ASHLAR, m2stitch, "
+                f"BigStitcher) if boundary correctness matters.",
+                MosaicStitchingWarning,
+                stacklevel=2,
+            )
         return self._inner.mosaic_xarray_dask_data
 
     @property
