@@ -57,3 +57,17 @@ class ExtractorWarning(UserWarning):
     audit attrs (``attrs.zarrmony.metadata_warnings``). Surfaced both as a
     Python warning and as a stderr message at conversion time.
     """
+
+
+class MosaicStitchingWarning(UserWarning):
+    """A reader plugin auto-stitched a mosaic with a known-imprecise stitcher.
+
+    Currently emitted by the ``bioio-lif`` plugin: ``bioio_lif.Reader``'s
+    stitcher hardcodes a 1-pixel inter-tile overlap and ignores the actual
+    stage XY positions stored in the LIF metadata. For acquisitions with
+    non-trivial overlap (the typical 5–15% used for content-aware stitching),
+    the output has double-coverage stripes at every tile seam and is unfit
+    for quantitative analysis at tile boundaries. Prefer a vendor-stitched
+    sibling scene (Leica's ``*_Merged``) when present, or an external
+    stitcher (ASHLAR, m2stitch, BigStitcher) otherwise.
+    """
