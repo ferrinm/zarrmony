@@ -208,6 +208,23 @@ def test_proxy_passes_through_non_mosaic_scene() -> None:
     assert xarr.shape == (1, 1, 1, 64, 64)
 
 
+def test_proxy_does_not_warn_when_merged_sibling_present() -> None:
+    # inspect() walks every scene and accesses xarray_dask_data; the warning
+    # would otherwise lie ("no sibling found") even when the sibling exists.
+    inner = _FakeBioioLifReader(
+        {0: True, 1: False},
+        scene_names=["Position 1", "Position 1_Merged"],
+    )
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+    proxy.set_scene(0)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MosaicStitchingWarning)
+        xarr = proxy.xarray_dask_data
+
+    assert list(xarr.dims) == ["T", "C", "Z", "Y", "X"]
+
+
 def test_proxy_warning_names_scene_and_tile_count() -> None:
     proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}, tile_count=12))
     proxy.set_scene(0)
