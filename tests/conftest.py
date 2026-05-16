@@ -41,6 +41,7 @@ class FakeReader:
         ome_metadata_fails: bool = False,
         layout_hint: str = "flat",
         plate_layout: PlateLayout | None = None,
+        mosaic_summary: dict | None = None,
     ) -> None:
         self.scenes = tuple(scenes)
         self._dims = dims
@@ -52,6 +53,7 @@ class FakeReader:
         self._ome_metadata_fails = ome_metadata_fails
         self.layout_hint = layout_hint
         self.plate_layout = plate_layout
+        self.mosaic_summary = mosaic_summary
 
     @property
     def channel_names(self) -> list[str]:

@@ -7,9 +7,13 @@ each extension to the correct plugin.
 """
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
+import dask.array as da
+import numpy as np
 import pytest
+import xarray as xr
 
 from zarrmony.readers import czi as czi_mod
 from zarrmony.readers import default as default_mod
@@ -114,3 +118,108 @@ def test_builtin_extension_dispatch_with_real_registry() -> None:
         assert plugin.name == expected_name, path
         assert score == expected_score, path
         assert reader is sentinels[expected_name], path
+
+
+# --- _MosaicAwareLifReader proxy ----------------------------------------
+
+
+@dataclass
+class _FakeTileDims:
+    Y: int
+    X: int
+
+
+class _FakeBioioLifReader:
+    """Stand-in for ``bioio_lif.Reader`` exposing the mosaic surface we use."""
+
+    def __init__(
+        self,
+        scenes_with_m: dict[int, bool],
+        tile_count: int = 12,
+        tile_yx: tuple[int, int] = (5048, 5048),
+    ) -> None:
+        self.scenes = tuple(f"scene_{i}" for i in scenes_with_m)
+        self._has_m = scenes_with_m
+        self._current = 0
+        self._tile_yx = tile_yx
+        self._tile_count = tile_count
+        # Sentinel — not relevant to mosaic logic, but verifies forwarding.
+        self.physical_pixel_sizes = "fake-px"
+        self.channel_names = ["DAPI", "GFP"]
+
+    def set_scene(self, idx: int) -> None:
+        self._current = idx
+
+    @property
+    def xarray_dask_data(self) -> xr.DataArray:
+        if self._has_m[self._current]:
+            arr = np.zeros(
+                (self._tile_count, 1, 1, self._tile_yx[0], self._tile_yx[1]),
+                dtype=np.uint16,
+            )
+            return xr.DataArray(da.from_array(arr), dims=["M", "C", "Z", "Y", "X"])
+        arr = np.zeros((1, 1, 1, 64, 64), dtype=np.uint16)
+        return xr.DataArray(da.from_array(arr), dims=["T", "C", "Z", "Y", "X"])
+
+    @property
+    def mosaic_xarray_dask_data(self) -> xr.DataArray:
+        # A stitched view: M collapsed, Y/X grown.
+        stitched_y = self._tile_yx[0] * 4
+        stitched_x = self._tile_yx[1] * 3
+        arr = np.zeros((1, 1, 1, stitched_y, stitched_x), dtype=np.uint16)
+        return xr.DataArray(da.from_array(arr), dims=["T", "C", "Z", "Y", "X"])
+
+    @property
+    def mosaic_tile_dims(self) -> _FakeTileDims:
+        return _FakeTileDims(Y=self._tile_yx[0], X=self._tile_yx[1])
+
+
+def test_proxy_returns_stitched_view_for_mosaic_scene() -> None:
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True, 1: False}))
+    proxy.set_scene(0)
+
+    xarr = proxy.xarray_dask_data
+
+    assert "M" not in xarr.dims
+    assert list(xarr.dims) == ["T", "C", "Z", "Y", "X"]
+
+
+def test_proxy_passes_through_non_mosaic_scene() -> None:
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True, 1: False}))
+    proxy.set_scene(1)
+
+    xarr = proxy.xarray_dask_data
+
+    assert list(xarr.dims) == ["T", "C", "Z", "Y", "X"]
+    assert xarr.shape == (1, 1, 1, 64, 64)
+
+
+def test_proxy_mosaic_summary_for_mosaic_scene() -> None:
+    proxy = lif_mod._MosaicAwareLifReader(
+        _FakeBioioLifReader({0: True}, tile_count=12, tile_yx=(5048, 5048))
+    )
+    proxy.set_scene(0)
+
+    assert proxy.mosaic_summary == {
+        "stitched": True,
+        "tile_count": 12,
+        "tile_shape": {"Y": 5048, "X": 5048},
+    }
+
+
+def test_proxy_mosaic_summary_none_for_non_mosaic_scene() -> None:
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: False}))
+    proxy.set_scene(0)
+
+    assert proxy.mosaic_summary is None
+
+
+def test_proxy_forwards_arbitrary_attrs() -> None:
+    inner = _FakeBioioLifReader({0: True})
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+
+    assert proxy.scenes is inner.scenes
+    assert proxy.channel_names == ["DAPI", "GFP"]
+    assert proxy.physical_pixel_sizes == "fake-px"
+    proxy.set_scene(0)
+    assert inner._current == 0
