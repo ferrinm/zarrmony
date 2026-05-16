@@ -7,12 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MosaicStitchingWarning` (in `zarrmony.errors`) — emitted by the
+  `bioio-lif` reader plugin whenever it auto-stitches a mosaic. The
+  bioio-lif stitcher hardcodes a 1-pixel inter-tile overlap and ignores
+  the LIF metadata's actual stage XY positions; for acquisitions with
+  normal 5–15% overlap the output has double-coverage stripes at every
+  tile seam. The warning text names the scene, the tile count, and
+  recommends a vendor-stitched sibling (e.g. Leica `*_Merged`) or an
+  external stitcher (ASHLAR, m2stitch, BigStitcher) when correctness at
+  tile boundaries matters.
+
 ### Changed
 
 - `bioio-lif` reader plugin now auto-stitches mosaic-tiled scenes via
   `mosaic_xarray_dask_data`, mirroring the CZI plugin's stitching behavior.
   Per-scene audit gains an optional `mosaic` block recording tile count and
   tile shape when stitching was applied.
+- The `mosaic` audit block now also records `stitcher: "bioio-lif"` and
+  `overlap_assumption_px: 1` so downstream consumers can tell which
+  stitcher produced the pixels and what overlap assumption it baked in.
 
 ### Fixed
 

@@ -13,16 +13,29 @@ This mirrors the CZI plugin's approach, which selects the auto-stitching
 ``pylibczirw`` backend for the same reason. Tile-level information (positions,
 per-tile dims) is preserved verbatim in ``OME/source/raw.lif.xml``.
 
+The bioio-lif stitcher is **not content-aware**: it hardcodes a 1-pixel
+inter-tile overlap and ignores the LIF metadata's actual stage XY positions.
+For acquisitions with normal 5–15% overlap, the output has double-coverage
+stripes at every tile seam. We emit a :class:`MosaicStitchingWarning` and
+record the stitcher + overlap assumption in the audit's ``mosaic`` block
+whenever this code path runs, so users can audit and route around it (vendor
+``*_Merged`` siblings or an external stitcher).
+
 Exposed as ``lif_plugin`` and registered in ``readers/__init__.py`` at zarrmony
 import time.
 """
 
+import warnings
 from pathlib import Path
 from typing import Any
 
 from bioio_lif import Reader
 
+from zarrmony.errors import MosaicStitchingWarning
 from zarrmony.readers.plugin import ReaderPlugin
+
+_STITCHER_NAME = "bioio-lif"
+_OVERLAP_ASSUMPTION_PX = 1
 
 
 class _MosaicAwareLifReader:
@@ -41,6 +54,20 @@ class _MosaicAwareLifReader:
     def xarray_dask_data(self) -> Any:
         xarr = self._inner.xarray_dask_data
         if "M" in xarr.dims:
+            scene_name = self._inner.scenes[self._inner.current_scene_index]
+            warnings.warn(
+                f"scene {scene_name!r}: bioio-lif is auto-stitching "
+                f"{int(xarr.sizes['M'])} mosaic tiles assuming a 1-pixel "
+                f"inter-tile overlap. The LIF stage XY positions are NOT used. "
+                f"For acquisitions with non-trivial overlap (typical 5–15%), "
+                f"the output has double-coverage stripes at tile seams and is "
+                f"unfit for quantitative analysis at tile boundaries. Prefer "
+                f"a vendor-stitched sibling (e.g. Leica '*_Merged') when "
+                f"present, or external stitching (ASHLAR, m2stitch, "
+                f"BigStitcher).",
+                MosaicStitchingWarning,
+                stacklevel=2,
+            )
             return self._inner.mosaic_xarray_dask_data
         return xarr
 
@@ -53,6 +80,8 @@ class _MosaicAwareLifReader:
         tile_dims = self._inner.mosaic_tile_dims
         return {
             "stitched": True,
+            "stitcher": _STITCHER_NAME,
+            "overlap_assumption_px": _OVERLAP_ASSUMPTION_PX,
             "tile_count": int(xarr.sizes["M"]),
             "tile_shape": {
                 "Y": int(tile_dims.Y),

@@ -6,6 +6,7 @@ matchers and the integration check that the real built-in registry resolves
 each extension to the correct plugin.
 """
 
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from zarrmony.errors import MosaicStitchingWarning
 from zarrmony.readers import czi as czi_mod
 from zarrmony.readers import default as default_mod
 from zarrmony.readers import lif as lif_mod
@@ -151,6 +153,10 @@ class _FakeBioioLifReader:
         self._current = idx
 
     @property
+    def current_scene_index(self) -> int:
+        return self._current
+
+    @property
     def xarray_dask_data(self) -> xr.DataArray:
         if self._has_m[self._current]:
             arr = np.zeros(
@@ -178,7 +184,8 @@ def test_proxy_returns_stitched_view_for_mosaic_scene() -> None:
     proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True, 1: False}))
     proxy.set_scene(0)
 
-    xarr = proxy.xarray_dask_data
+    with pytest.warns(MosaicStitchingWarning, match="bioio-lif is auto-stitching"):
+        xarr = proxy.xarray_dask_data
 
     assert "M" not in xarr.dims
     assert list(xarr.dims) == ["T", "C", "Z", "Y", "X"]
@@ -188,10 +195,25 @@ def test_proxy_passes_through_non_mosaic_scene() -> None:
     proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True, 1: False}))
     proxy.set_scene(1)
 
-    xarr = proxy.xarray_dask_data
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MosaicStitchingWarning)
+        xarr = proxy.xarray_dask_data
 
     assert list(xarr.dims) == ["T", "C", "Z", "Y", "X"]
     assert xarr.shape == (1, 1, 1, 64, 64)
+
+
+def test_proxy_warning_names_scene_and_tile_count() -> None:
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}, tile_count=12))
+    proxy.set_scene(0)
+
+    with pytest.warns(MosaicStitchingWarning) as captured:
+        _ = proxy.xarray_dask_data
+
+    msg = str(captured[0].message)
+    assert "'scene_0'" in msg
+    assert "12 mosaic tiles" in msg
+    assert "1-pixel" in msg
 
 
 def test_proxy_mosaic_summary_for_mosaic_scene() -> None:
@@ -202,6 +224,8 @@ def test_proxy_mosaic_summary_for_mosaic_scene() -> None:
 
     assert proxy.mosaic_summary == {
         "stitched": True,
+        "stitcher": "bioio-lif",
+        "overlap_assumption_px": 1,
         "tile_count": 12,
         "tile_shape": {"Y": 5048, "X": 5048},
     }
