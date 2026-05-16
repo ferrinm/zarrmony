@@ -21,6 +21,7 @@ from zarrmony.errors import (
     LayoutDowngradeWarning,
     LayoutMismatchError,
     MetadataValidationError,
+    MosaicMergedSiblingWarning,
     OutputExistsError,
     ZarrmonyError,
 )
@@ -380,6 +381,16 @@ def _convert_per_scene(
         started_at = datetime.now().astimezone()
 
         reader.set_scene(scene_index)
+
+        skip_reason = getattr(reader, "skip_reason", None)
+        if skip_reason:
+            warnings.warn(
+                f"scene {scene_index} ({scene_name!r}): {skip_reason}",
+                MosaicMergedSiblingWarning,
+                stacklevel=2,
+            )
+            continue
+
         channels = _channels_for_scene(reader, channel_colors)
 
         scene_record = write_scene(

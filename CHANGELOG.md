@@ -15,16 +15,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the LIF metadata's actual stage XY positions; for acquisitions with
   normal 5–15% overlap the output has double-coverage stripes at every
   tile seam. The warning text names the scene, the tile count, and
-  recommends a vendor-stitched sibling (e.g. Leica `*_Merged`) or an
-  external stitcher (ASHLAR, m2stitch, BigStitcher) when correctness at
-  tile boundaries matters.
+  recommends an external stitcher (ASHLAR, m2stitch, BigStitcher) when
+  no `_Merged` sibling is present and correctness at tile boundaries
+  matters.
+- `MosaicMergedSiblingWarning` (in `zarrmony.errors`) — emitted by
+  `convert()` (per-scene mode) when a LIF mosaic scene is skipped because
+  a sibling scene named `<scene>_Merged` is present. The merged sibling
+  is written instead, so the imprecise auto-stitch is never invoked.
+- `skip_reason` hook on the reader interface (optional). When the active
+  scene's `reader.skip_reason` is non-None, `convert()` (per-scene mode)
+  emits a warning and skips that scene without writing a store.
 
 ### Changed
 
-- `bioio-lif` reader plugin now auto-stitches mosaic-tiled scenes via
-  `mosaic_xarray_dask_data`, mirroring the CZI plugin's stitching behavior.
-  Per-scene audit gains an optional `mosaic` block recording tile count and
-  tile shape when stitching was applied.
+- `bioio-lif` reader plugin now prefers a vendor-stitched sibling scene
+  (Leica's `<scene>_Merged` convention) over its own auto-stitch when
+  one is present in the LIF. The mosaic scene is omitted from output;
+  only the merged sibling is written. When no `_Merged` sibling exists,
+  the plugin falls back to `mosaic_xarray_dask_data` as before, with a
+  `MosaicStitchingWarning`.
+- Per-scene audit gains an optional `mosaic` block recording tile count
+  and tile shape when stitching was applied.
 - The `mosaic` audit block now also records `stitcher: "bioio-lif"` and
   `overlap_assumption_px: 1` so downstream consumers can tell which
   stitcher produced the pixels and what overlap assumption it baked in.
