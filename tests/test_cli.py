@@ -173,6 +173,31 @@ def test_convert_force_overwrites(
     assert r2.exit_code == 0
 
 
+def test_convert_prints_input_and_output_size_lines_per_scene(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
+    patched_reader(reader)
+    src = tmp_path / "in.lif"
+    src.write_bytes(b"\x00" * 4096)
+    md = _write_metadata_file(
+        tmp_path / "md.json", {"microscope": "Axioscan", "modality": "fluorescence"}
+    )
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        ["convert", str(src), str(out), "-m", str(md), "--pyramid-min-size", "8"],
+    )
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    wrote_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Wrote "))
+    input_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Input:"))
+    output_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Output:"))
+    assert wrote_idx < input_idx < output_idx
+    assert "4.0 KB" in lines[input_idx]
+
+
 def test_convert_chunk_shape_invalid_format(
     tmp_path: Path, runner: CliRunner, patched_reader
 ) -> None:
