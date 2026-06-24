@@ -15,6 +15,7 @@ from ome_types import OME
 from ome_types.model import Image, Pixels, PixelType
 from pydantic import ValidationError
 
+from zarrmony import _validate
 from zarrmony.audit import build_audit_record, write_audit_record
 from zarrmony.errors import (
     ExtractorWarning,
@@ -23,6 +24,7 @@ from zarrmony.errors import (
     MetadataValidationError,
     MosaicMergedSiblingWarning,
     OutputExistsError,
+    ValidationWarning,
     ZarrmonyError,
 )
 from zarrmony.metadata.channel_colors import colors_for_channels
@@ -193,6 +195,38 @@ def _source_xml_filename(input_path: str | Path) -> str:
     return f"raw.{ext}.xml" if ext else "raw.xml"
 
 
+def _run_validation(
+    store_path: str | Path,
+    layout: _validate.ResolvedLayout,
+    validate: bool,
+) -> list[dict[str, Any]]:
+    """Validate ``store_path`` if requested and the validator is installed.
+
+    Returns the list of findings (empty on success). Each finding is also
+    surfaced as a :class:`ValidationWarning` so users see it on stderr; the
+    caller threads the list into the audit record's ``validation_warnings``.
+    """
+    if not validate:
+        return []
+    if not _validate.is_available():
+        warnings.warn(
+            "validate=True but the ome-zarr-models extra is not installed; "
+            "skipping post-conversion OME-NGFF validation. "
+            "Install with `pip install zarrmony[validate]` to enable.",
+            ValidationWarning,
+            stacklevel=3,
+        )
+        return []
+    findings = _validate.validate_store(store_path, layout)
+    for f in findings:
+        warnings.warn(
+            f"OME-NGFF validation: {f['kind']} at {f.get('path', store_path)}: {f['error']}",
+            ValidationWarning,
+            stacklevel=3,
+        )
+    return findings
+
+
 def _resolve_distribution(reader: Any, plugin: ReaderPlugin) -> str | None:
     """Return the effective bioio distribution name for the audit record.
 
@@ -221,6 +255,7 @@ def convert(
     force: bool = False,
     permissive: bool = False,
     checksum: bool = False,
+    validate: bool = True,
 ) -> dict:
     """Convert ``input_path`` to OME-Zarr v0.5.
 
@@ -290,6 +325,7 @@ def convert(
         "force": force,
         "permissive": permissive,
         "checksum": checksum,
+        "validate": validate,
     }
 
     if effective_layout == "plate":
@@ -308,6 +344,7 @@ def convert(
             force=force,
             checksum=checksum,
             config=config,
+            validate=validate,
         )
     if effective_layout == "bf2raw":
         return _convert_bf2raw(
@@ -325,6 +362,7 @@ def convert(
             force=force,
             checksum=checksum,
             config=config,
+            validate=validate,
         )
     return _convert_per_scene(
         reader=reader,
@@ -341,6 +379,7 @@ def convert(
         force=force,
         checksum=checksum,
         config=config,
+        validate=validate,
     )
 
 
@@ -360,6 +399,7 @@ def _convert_per_scene(
     force: bool,
     checksum: bool,
     config: dict,
+    validate: bool,
 ) -> dict:
     output_str = str(output).rstrip("/")
     dirnames = resolve_scene_dirnames(reader.scenes)
@@ -429,6 +469,8 @@ def _convert_per_scene(
             source_xml_filename=source_filename,
         )
 
+        validation_findings = _run_validation(store_path, "per-scene", validate)
+
         finished_at = datetime.now().astimezone()
         audit = build_audit_record(
             input_path=input_path,
@@ -443,6 +485,7 @@ def _convert_per_scene(
             metadata_warnings=metadata_warnings,
             checksum=checksum,
         )
+        audit["validation_warnings"] = validation_findings
         # Effective user_metadata for this store: per-scene override falls back
         # to the root-level user_metadata.
         audit["user_metadata"] = (
@@ -478,6 +521,7 @@ def _convert_bf2raw(
     force: bool,
     checksum: bool,
     config: dict,
+    validate: bool,
 ) -> dict:
     started_at = datetime.now().astimezone()
 
@@ -536,6 +580,8 @@ def _convert_bf2raw(
         source_xml_filename=source_filename,
     )
 
+    validation_findings = _run_validation(output, "bf2raw", validate)
+
     finished_at = datetime.now().astimezone()
 
     audit = build_audit_record(
@@ -551,6 +597,7 @@ def _convert_bf2raw(
         metadata_warnings=metadata_warnings,
         checksum=checksum,
     )
+    audit["validation_warnings"] = validation_findings
     audit["user_metadata"] = user_metadata
     write_audit_record(output, audit)
 
@@ -573,6 +620,7 @@ def _convert_plate(
     force: bool,
     checksum: bool,
     config: dict,
+    validate: bool,
 ) -> dict:
     plate_layout = getattr(reader, "plate_layout", None)
     if plate_layout is None:
@@ -616,6 +664,8 @@ def _convert_plate(
         source_xml_filename=source_filename,
     )
 
+    validation_findings = _run_validation(output, "plate", validate)
+
     finished_at = datetime.now().astimezone()
 
     audit = build_audit_record(
@@ -632,6 +682,7 @@ def _convert_plate(
         metadata_warnings=metadata_warnings,
         checksum=checksum,
     )
+    audit["validation_warnings"] = validation_findings
     audit["user_metadata"] = user_metadata
     write_audit_record(output, audit)
 

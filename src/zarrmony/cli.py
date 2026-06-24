@@ -127,6 +127,18 @@ def _parse_chunk_shape(
     is_flag=True,
     help="Include SHA256 of the input file in the audit attrs (slower).",
 )
+@click.option(
+    "--validate/--no-validate",
+    default=True,
+    show_default=True,
+    help=(
+        "Run OME-NGFF v0.5 validation on the written store as a final step. "
+        "Requires the `zarrmony[validate]` extra; if not installed, the "
+        "validator is skipped with a warning. Failures are recorded in the "
+        "audit (`attrs.zarrmony.validation_warnings`) but do not delete the "
+        "output."
+    ),
+)
 def convert_cmd(
     input_path: str,
     output: str,
@@ -138,6 +150,7 @@ def convert_cmd(
     force: bool,
     permissive: bool,
     checksum: bool,
+    validate: bool,
 ) -> None:
     """Convert INPUT (a bioimage file) to OME-Zarr v0.5 at OUTPUT.
 
@@ -161,6 +174,7 @@ def convert_cmd(
             force=force,
             permissive=permissive,
             checksum=checksum,
+            validate=validate,
         )
     except MetadataValidationError as e:
         raise click.ClickException(f"Metadata validation failed:\n{e}") from e
