@@ -276,6 +276,39 @@ def test_inspect_json_output(tmp_path: Path, runner: CliRunner, patched_reader) 
     assert parsed["scenes"][0]["name"] == "only"
 
 
+def test_inspect_text_output_prints_size_line(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["only"], dims="YX", shape=(64, 64))
+    patched_reader(reader)
+    src = tmp_path / "input.lif"
+    src.write_bytes(b"\x00" * 2048)
+
+    result = runner.invoke(app, ["inspect", str(src)])
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    input_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Input:"))
+    plugin_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Plugin:"))
+    size_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Size:"))
+    assert input_idx < size_idx < plugin_idx
+    assert "2.0 KB" in lines[size_idx]
+
+
+def test_inspect_json_output_unchanged_by_size_line(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["only"], dims="YX", shape=(64, 64))
+    patched_reader(reader)
+    src = tmp_path / "input.lif"
+    src.write_bytes(b"\x00" * 16)
+
+    result = runner.invoke(app, ["inspect", str(src), "--json"])
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
+    assert "size_bytes" not in parsed
+    assert "Size" not in result.output
+
+
 def test_inspect_text_output_omits_plate_header_for_flat_reader(
     tmp_path: Path, runner: CliRunner, patched_reader
 ) -> None:
