@@ -173,15 +173,21 @@ def convert_cmd(
     if resolved == "per-scene":
         n = len(result["stores"])
         noun = "store" if n == 1 else "stores"
-        click.echo(f"Wrote {n} {noun} to {output}", err=True)
+        click.echo(f"Wrote {n} {noun} to {output} (per-scene)", err=True)
+        output_bytes = sum(size_on_disk(s["store_path"]) for s in result["stores"])
     elif resolved == "plate":
         n = len(result["fields"])
         noun = "field" if n == 1 else "fields"
         click.echo(f"Wrote {n} {noun} to {output} (plate)", err=True)
+        output_bytes = size_on_disk(output)
     else:
         n = len(result["per_scene"])
         noun = "scene" if n == 1 else "scenes"
         click.echo(f"Wrote {n} {noun} to {output} (bf2raw bundle)", err=True)
+        output_bytes = size_on_disk(output)
+
+    click.echo(f"Input:  {format_bytes(size_on_disk(input_path))}", err=True)
+    click.echo(f"Output: {format_bytes(output_bytes)}", err=True)
 
 
 @app.command(name="inspect")

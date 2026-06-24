@@ -56,6 +56,27 @@ def test_build_audit_record_minimum_keys(tmp_path: Path) -> None:
     assert "reader_plugin_version" not in audit
 
 
+def test_build_audit_record_directory_input_reports_recursive_size(
+    tmp_path: Path,
+) -> None:
+    """Directory-tree inputs (e.g. .zarr stores, multi-file .czi) must report
+    the full recursive byte count, not just the top-level inode size."""
+    src = tmp_path / "input.zarr"
+    (src / "a").mkdir(parents=True)
+    (src / "a" / "leaf.bin").write_bytes(b"x" * 500)
+    (src / "top.bin").write_bytes(b"y" * 1500)
+
+    audit = build_audit_record(
+        input_path=src,
+        reader_plugin=_fake_plugin(),
+        match_score=100,
+        config={},
+        started_at=_ts("2026-05-02T10:00:00"),
+        finished_at=_ts("2026-05-02T10:00:01"),
+    )
+    assert audit["input"]["size_bytes"] == 2000
+
+
 def test_build_audit_record_with_checksum(tmp_path: Path) -> None:
     src = tmp_path / "input.lif"
     src.write_bytes(b"hello world")
