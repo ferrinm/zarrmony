@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `size_on_disk(path)` and `format_bytes(n)` helpers in `zarrmony._storage`.
   Handle single files, local directory trees (recursive), and remote fsspec
   URIs; render byte counts as `2.3 GB` style using powers of 1024.
-- `zarrmony inspect` prints a new `Size:` line between `Input:` and `Plugin:`
-  in human-readable output (JSON output unchanged).
+- `zarrmony.inspect()` adds a `size_bytes` key to its return dict (recursive
+  byte count for the input, computed via `size_on_disk()`); the CLI's
+  `Size:` line and `--json` output both surface it.
 - `zarrmony convert` prints `Input:` / `Output:` size lines to stderr below
   the `Wrote N stores to OUTPUT ...` message.
 - Optional OME-NGFF v0.5 validation as the final step of `convert()`. Wired

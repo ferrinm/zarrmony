@@ -16,6 +16,7 @@ from ome_types.model import Image, Pixels, PixelType
 from pydantic import ValidationError
 
 from zarrmony import _validate
+from zarrmony._storage import size_on_disk
 from zarrmony.audit import build_audit_record, write_audit_record
 from zarrmony.errors import (
     ExtractorWarning,
@@ -727,6 +728,7 @@ def inspect(input_path: str | Path) -> dict:
         )
     info: dict[str, Any] = {
         "input_path": str(input_path),
+        "size_bytes": size_on_disk(input_path),
         "reader_plugin": {
             "name": plugin.name,
             "source": plugin.source,
