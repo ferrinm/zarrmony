@@ -31,11 +31,26 @@ Hardening: the parser is fail-closed. Oversized input, DTDs / entity
 definitions (the "billion laughs" expansion vector), external entities, and any
 malformed or structurally-missing XML all yield ``[]`` — never an exception,
 never an entity expansion, never a hang.
+
+Projections (below :func:`extract_channels`) — :func:`channels_to_omero` and
+:func:`channels_to_ome_channels` — map those identity dicts into the two shapes
+consumers actually read: the OME-XML ``<Channel>`` element (canonical) and the
+omero display ``label``/``color`` (derived). They are deliberately *zarrmony-side*
+and so are allowed the ``ome_types`` + ``zarrmony.metadata.channel_colors``
+dependencies the core forbids itself; those imports are kept local to the
+projections so the bioio-portable core can still be imported and called with the
+standard library alone.
 """
+
+from __future__ import annotations
 
 import math
 import re
 import xml.etree.ElementTree as ET
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ome_types.model import Channel
 
 # Refuse anything larger than this up front. A confocal scene blob is a few
 # hundred KB; 32 MiB is generous headroom while still bounding parse work.
@@ -301,3 +316,116 @@ def extract_channels(scene_xml: str) -> list[dict]:
     except Exception:
         # Any unexpected structural surprise stays fail-closed.
         return []
+
+
+# ---------------------------------------------------------------------------
+# Projections: identity dicts -> the shapes consumers read.
+#
+# These are zarrmony-side, NOT the bioio-portable core, so they are allowed
+# the ``ome_types`` + ``channel_colors`` dependencies ``extract_channels``
+# forbids itself. Those imports stay local to keep the core stdlib-only on
+# import. Each is a small pure function over the dicts ``extract_channels``
+# returns; they degrade per-field (omit/None) rather than inventing values, so
+# garbage or partial input never raises.
+# ---------------------------------------------------------------------------
+
+# A trailing " (...)" parenthetical qualifier on a dye name, e.g. the
+# "(dsDNA bound)" in "DAPI (dsDNA bound)". Anchored to the end so an interior
+# parenthesis in an (unusual) dye name is left intact.
+_TRAILING_PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def _clean_dye(dye: str | None) -> str | None:
+    """Strip a trailing ``" (...)"`` qualifier from a dye name.
+
+    ``"DAPI (dsDNA bound)"`` -> ``"DAPI"``; ``"ALEXA 594"`` -> ``"ALEXA 594"``;
+    ``None`` -> ``None``. Leaves a name with no trailing parenthetical untouched.
+    """
+    if dye is None:
+        return None
+    return _TRAILING_PARENTHETICAL.sub("", dye).strip() or None
+
+
+def _color_for(cleaned_dye: str | None, index: int) -> str:
+    """Heuristic hex color for a (cleaned) dye, palette-fallback by index.
+
+    Imported locally so the bioio-portable core stays stdlib-only on import:
+    ``zarrmony.metadata.channel_colors`` won't exist once ``extract_channels``
+    is lifted into ``bioio-lif``, but these projections stay zarrmony-side.
+    """
+    from zarrmony.metadata.channel_colors import color_for_channel
+
+    return color_for_channel(cleaned_dye or "", index)
+
+
+def _omero_label(
+    cleaned_dye: str | None, excitation_nm: int | float | None
+) -> str | None:
+    """The omero label per the ladder: dye + excitation, then either, then None."""
+    if cleaned_dye and excitation_nm is not None:
+        return f"{cleaned_dye} ({excitation_nm} nm)"
+    if cleaned_dye:
+        return cleaned_dye
+    if excitation_nm is not None:
+        return f"{excitation_nm} nm"
+    return None
+
+
+def channels_to_omero(channels: list[dict]) -> list[dict]:
+    """Project identity dicts into omero display ``{"label", "color"}`` dicts.
+
+    One dict per input channel, in order. ``label`` follows the dye/excitation
+    ladder (``None`` only when neither is known); ``color`` is the cleaned dye's
+    heuristic hex (falling back to the palette by index), so it is always a valid
+    six-hex string even for an unnamed channel.
+    """
+    out: list[dict] = []
+    for index, ch in enumerate(channels):
+        cleaned_dye = _clean_dye(ch.get("dye"))
+        out.append(
+            {
+                "label": _omero_label(cleaned_dye, ch.get("excitation_nm")),
+                "color": _color_for(cleaned_dye, index),
+            }
+        )
+    return out
+
+
+def channels_to_ome_channels(channels: list[dict]) -> list[Channel]:
+    """Project identity dicts into canonical ome_types ``Channel`` elements.
+
+    One ``Channel`` per input channel: ``id=Channel:0:<index>``, ``name`` the
+    cleaned dye, ``fluor`` the full (un-cleaned) dye, excitation/emission with
+    ``nm`` units, and the same hex ``color`` as :func:`channels_to_omero`. Any
+    field whose source is ``None`` is omitted entirely rather than set to a
+    bogus value, so the element never claims wavelengths it doesn't have.
+    """
+    # Local import: the bioio-portable core stays stdlib-only on module import.
+    from ome_types.model import Channel
+
+    out: list[Channel] = []
+    for index, ch in enumerate(channels):
+        cleaned_dye = _clean_dye(ch.get("dye"))
+        fields: dict = {
+            "id": f"Channel:0:{index}",
+            "color": _color_for(cleaned_dye, index),
+        }
+        if cleaned_dye is not None:
+            fields["name"] = cleaned_dye
+        fluor = ch.get("fluor")
+        if fluor is not None:
+            fields["fluor"] = fluor
+
+        excitation = ch.get("excitation_nm")
+        if excitation is not None:
+            fields["excitation_wavelength"] = excitation
+            fields["excitation_wavelength_unit"] = "nm"
+
+        low = ch.get("emission_low_nm")
+        high = ch.get("emission_high_nm")
+        if low is not None and high is not None:
+            fields["emission_wavelength"] = round((low + high) / 2)
+            fields["emission_wavelength_unit"] = "nm"
+
+        out.append(Channel(**fields))
+    return out

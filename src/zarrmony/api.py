@@ -26,6 +26,11 @@ from zarrmony.errors import (
     ZarrmonyError,
 )
 from zarrmony.metadata.channel_colors import colors_for_channels
+from zarrmony.metadata.lif_channels import (
+    channels_to_ome_channels,
+    channels_to_omero,
+    extract_channels,
+)
 from zarrmony.metadata.model import UserMetadata
 from zarrmony.naming import resolve_scene_dirnames
 from zarrmony.readers.default import derive_bioio_distribution
@@ -186,6 +191,81 @@ def _channels_for_scene(
     return [
         Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)
     ]
+
+
+def _scene_channel_count(reader: Any) -> int:
+    """The current scene's C size, from the reader's public xarray surface.
+
+    Mirrors how :func:`inspect` reads dims/sizes (no coupling to writer
+    internals). A scene with no ``C`` dim has one implicit channel.
+    """
+    xarr = reader.xarray_dask_data
+    return int(xarr.sizes["C"]) if "C" in xarr.dims else 1
+
+
+def _lif_scene_channels(reader: Any) -> tuple[list[dict] | None, list[Channel] | None]:
+    """The LIF-vs-other decision, in one place.
+
+    Returns ``(extracted, omero_channels)`` when ``reader`` is a LIF reader
+    (exposes ``scene_root``), its current scene yields channel identities, AND
+    that identity count matches the scene's C size; otherwise ``(None, None)``.
+    ``extracted`` is the raw per-channel identity dicts (handed to
+    :func:`_lif_ome_image` once scene sizes are known); ``omero_channels`` is the
+    display label/color list for :func:`write_scene`. Both projections come from
+    the same vetted extraction, so omero and the OME-XML never disagree.
+
+    The count check matters: the omero block and OME-XML ``Pixels/@SizeC`` must
+    describe the channels the array actually has. If extraction and data
+    disagree (corruption, partial metadata), we decline the projection rather
+    than label a 2-channel image with 7 names.
+
+    Fail-safe: any failure — not a LIF reader, no/garbage scene XML, an empty or
+    count-mismatched extraction, or an unexpected error — returns
+    ``(None, None)`` so callers fall back cleanly to the existing name-based
+    path. Metadata never crashes a conversion.
+    """
+    try:
+        # NB: ``scene_root`` is a *property* on bioio_lif.Reader that RAISES
+        # (ValueError) for ordinary non-plate scenes — the common confocal case —
+        # so it must be read inside the try, not via getattr() (which only
+        # swallows AttributeError). A raise here is a clean fall-back, not a crash.
+        scene_root = getattr(reader, "scene_root", None)
+        if scene_root is None:
+            return None, None
+        scene_xml = ET.tostring(scene_root, encoding="unicode")
+        extracted = extract_channels(scene_xml)
+        if not extracted or len(extracted) != _scene_channel_count(reader):
+            return None, None
+        omero_channels = [
+            Channel(label=o["label"], color=o["color"])
+            for o in channels_to_omero(extracted)
+        ]
+        return extracted, omero_channels
+    except Exception:  # noqa: BLE001 — never break a conversion over metadata
+        return None, None
+
+
+def _lif_ome_image(
+    extracted: list[dict], scene_index: int, name: str, scene_record: dict
+) -> Image | None:
+    """A real per-scene OME ``Image`` carrying the extracted channel identities.
+
+    Sizes come from ``scene_record`` (exactly as :func:`_stub_image` does); the
+    canonical ``<Channel>`` elements come from :func:`channels_to_ome_channels`.
+    ``extracted`` was already count-checked against the scene's C size in
+    :func:`_lif_scene_channels`; the ``SizeC`` assertion here is belt-and-
+    suspenders. Returns ``None`` on any surprise so the caller falls back to the
+    stub Image (with name-based omero, the existing behavior).
+    """
+    try:
+        image = _stub_image(scene_index, name, scene_record)
+        ome_channels = channels_to_ome_channels(extracted)
+        if len(ome_channels) != image.pixels.size_c:
+            return None
+        image.pixels.channels = ome_channels
+        return image
+    except Exception:  # noqa: BLE001 — never break a conversion over metadata
+        return None
 
 
 def _source_xml_filename(input_path: str | Path) -> str:
@@ -391,7 +471,16 @@ def _convert_per_scene(
             )
             continue
 
-        channels = _channels_for_scene(reader, channel_colors)
+        # LIF-vs-other decision in one place: for a LIF scene with extractable
+        # channel identities, drive both omero (label/color) and the canonical
+        # OME-XML <Channel>s from that identity; otherwise fall through to the
+        # existing name-based path. (None, None) for everything non-LIF.
+        lif_extracted, lif_omero_channels = _lif_scene_channels(reader)
+        channels = (
+            lif_omero_channels
+            if lif_omero_channels is not None
+            else _channels_for_scene(reader, channel_colors)
+        )
 
         scene_record = write_scene(
             reader,
@@ -410,16 +499,23 @@ def _convert_per_scene(
             scene_user_md = per_scene_user_metadata[scene_name]
             scene_record["user_metadata"] = scene_user_md
 
-        ome_image, warning = _try_get_ome_image(reader, scene_index)
         metadata_warnings: list[dict] = []
-        if warning is not None:
-            metadata_warnings.append(warning)
-            warnings.warn(
-                f"scene {scene_index} ({scene_name}): {warning['error']}",
-                ExtractorWarning,
-                stacklevel=2,
+        ome_image: Image | None = None
+        if lif_extracted is not None:
+            ome_image = _lif_ome_image(
+                lif_extracted, scene_index, scene_name, scene_record
             )
-            ome_image = _stub_image(scene_index, scene_name, scene_record)
+        if ome_image is None:
+            # Non-LIF, or the LIF Image couldn't be built — existing behavior.
+            ome_image, warning = _try_get_ome_image(reader, scene_index)
+            if warning is not None:
+                metadata_warnings.append(warning)
+                warnings.warn(
+                    f"scene {scene_index} ({scene_name}): {warning['error']}",
+                    ExtractorWarning,
+                    stacklevel=2,
+                )
+                ome_image = _stub_image(scene_index, scene_name, scene_record)
 
         ome_xml = build_ome_xml_for_scene(ome_image)
         write_per_scene_metadata(
