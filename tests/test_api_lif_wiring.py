@@ -4,6 +4,7 @@ The LIF channel-metadata branch must never crash a conversion and must decline
 cleanly on: a non-LIF reader, a ``scene_root`` property that *raises* (the common
 non-plate confocal case in bioio_lif), or a channel-count vs SizeC mismatch.
 """
+
 import xml.etree.ElementTree as ET
 from pathlib import Path
 

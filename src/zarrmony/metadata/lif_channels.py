@@ -130,7 +130,9 @@ def _cp_map(channel_desc: ET.Element) -> dict[str, str]:
         key = prop.find("Key")
         val = prop.find("Value")
         if key is not None and key.text:
-            props[key.text.strip()] = (val.text or "").strip() if val is not None else ""
+            props[key.text.strip()] = (
+                (val.text or "").strip() if val is not None else ""
+            )
     return props
 
 
@@ -215,7 +217,9 @@ def _active_detector_channels(block: ET.Element) -> list[int]:
     return sorted(channels)
 
 
-def _excitation_for(block: ET.Element, physical_channel: int | None) -> int | float | None:
+def _excitation_for(
+    block: ET.Element, physical_channel: int | None
+) -> int | float | None:
     """Excitation line for ``physical_channel`` within one sequence.
 
     Spectral pairing: the i-th lowest active laser drives the i-th lowest active
