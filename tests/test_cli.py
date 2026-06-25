@@ -319,7 +319,7 @@ def test_inspect_text_output_prints_size_line(
     assert "2.0 KB" in lines[size_idx]
 
 
-def test_inspect_json_output_unchanged_by_size_line(
+def test_inspect_json_output_includes_size_bytes(
     tmp_path: Path, runner: CliRunner, patched_reader
 ) -> None:
     reader = FakeReader(scenes=["only"], dims="YX", shape=(64, 64))
@@ -330,8 +330,9 @@ def test_inspect_json_output_unchanged_by_size_line(
     result = runner.invoke(app, ["inspect", str(src), "--json"])
     assert result.exit_code == 0
     parsed = json.loads(result.output)
-    assert "size_bytes" not in parsed
-    assert "Size" not in result.output
+    assert parsed["size_bytes"] == 16
+    # The human-readable "Size:" line is text-only — JSON output shouldn't have it.
+    assert "Size:" not in result.output
 
 
 def test_inspect_text_output_omits_plate_header_for_flat_reader(
