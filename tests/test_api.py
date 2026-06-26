@@ -387,6 +387,32 @@ def test_inspect_returns_scene_summary(tmp_path: Path, patched_reader) -> None:
     assert "plate_layout" not in info
 
 
+def test_inspect_returns_size_bytes_for_file_input(
+    tmp_path: Path, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["only"], dims="YX", shape=(64, 64))
+    patched_reader(reader)
+    src = tmp_path / "in.lif"
+    src.write_bytes(b"\x00" * 2048)
+
+    info = inspect(str(src))
+    assert info["size_bytes"] == 2048
+
+
+def test_inspect_returns_recursive_size_bytes_for_directory_input(
+    tmp_path: Path, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["only"], dims="YX", shape=(64, 64))
+    patched_reader(reader)
+    src = tmp_path / "input.czi"
+    (src / "sub").mkdir(parents=True)
+    (src / "top.bin").write_bytes(b"x" * 100)
+    (src / "sub" / "leaf.bin").write_bytes(b"y" * 900)
+
+    info = inspect(str(src))
+    assert info["size_bytes"] == 1000
+
+
 def test_inspect_includes_plate_layout_for_plate_reader(
     tmp_path: Path, patched_reader
 ) -> None:

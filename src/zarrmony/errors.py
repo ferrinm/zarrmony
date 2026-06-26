@@ -73,6 +73,20 @@ class MosaicStitchingWarning(UserWarning):
     """
 
 
+class ValidationWarning(UserWarning):
+    """The OME-NGFF post-conversion validator flagged a problem with the output.
+
+    Emitted by ``convert()`` when ``validate=True`` (the default if the
+    ``zarrmony[validate]`` extra is installed) and ``ome-zarr-models`` reports
+    a validation error against the v0.5 spec for the written store. Recorded
+    in the audit attrs (``attrs.zarrmony.validation_warnings``). Conversion
+    is *not* failed — the validator has known gaps (the ``omero`` block and
+    the per-series subgroups of a ``bioformats2raw.layout`` bundle are not
+    validated) so deleting the output on a false positive would be worse
+    than letting the user re-inspect.
+    """
+
+
 class MosaicMergedSiblingWarning(UserWarning):
     """A mosaic scene was skipped because a vendor ``_Merged`` sibling exists.
 

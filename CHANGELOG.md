@@ -14,6 +14,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detector are read from the scene metadata and written as OME-XML `<Channel>`
   elements and omero channel labels (e.g. `ALEXA 594 (590 nm)`) instead of
   display-LUT color names (`Blue`, `Gray`, …).
+- `size_on_disk(path)` and `format_bytes(n)` helpers in `zarrmony._storage`.
+  Handle single files, local directory trees (recursive), and remote fsspec
+  URIs; render byte counts as `2.3 GB` style using powers of 1024.
+- `zarrmony.inspect()` adds a `size_bytes` key to its return dict (recursive
+  byte count for the input, computed via `size_on_disk()`); the CLI's
+  `Size:` line and `--json` output both surface it.
+- `zarrmony convert` prints `Input:` / `Output:` size lines to stderr below
+  the `Wrote N stores to OUTPUT ...` message.
+- Optional OME-NGFF v0.5 validation as the final step of `convert()`. Wired
+  via [`ome-zarr-models`](https://github.com/ome-zarr-models/ome-zarr-models-py)
+  (install with `pip install zarrmony[validate]`); enabled by default and
+  toggleable via `convert(..., validate=False)` or `--no-validate`. Findings
+  are recorded in `attrs.zarrmony.validation_warnings` and surfaced via the
+  new `ValidationWarning` class. Output is *not* deleted on validation
+  failure — the validator has known gaps (the `omero` block is not
+  validated) so false-positive deletion would be worse than re-inspecting.
+
+### Changed
+
+- `audit.py:_file_forensics` now uses `size_on_disk()` so directory-tree
+  inputs (`.zarr` stores, multi-file `.czi` series, `.lif` companion dirs)
+  report the full recursive byte count instead of the top-level inode size.
+- `audit_schema_version` bumped to 4 (added top-level `validation_warnings`).
 
 ## [0.3.6] - 2026-05-15
 

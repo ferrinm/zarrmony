@@ -17,6 +17,7 @@ import click
 
 from zarrmony import __version__
 from zarrmony import api as zm_api
+from zarrmony._storage import format_bytes, size_on_disk
 from zarrmony.errors import MetadataValidationError, OutputExistsError
 from zarrmony.metadata.schema import export_schema_json
 
@@ -126,6 +127,18 @@ def _parse_chunk_shape(
     is_flag=True,
     help="Include SHA256 of the input file in the audit attrs (slower).",
 )
+@click.option(
+    "--validate/--no-validate",
+    default=True,
+    show_default=True,
+    help=(
+        "Run OME-NGFF v0.5 validation on the written store as a final step. "
+        "Requires the `zarrmony[validate]` extra; if not installed, the "
+        "validator is skipped with a warning. Failures are recorded in the "
+        "audit (`attrs.zarrmony.validation_warnings`) but do not delete the "
+        "output."
+    ),
+)
 def convert_cmd(
     input_path: str,
     output: str,
@@ -137,6 +150,7 @@ def convert_cmd(
     force: bool,
     permissive: bool,
     checksum: bool,
+    validate: bool,
 ) -> None:
     """Convert INPUT (a bioimage file) to OME-Zarr v0.5 at OUTPUT.
 
@@ -160,6 +174,7 @@ def convert_cmd(
             force=force,
             permissive=permissive,
             checksum=checksum,
+            validate=validate,
         )
     except MetadataValidationError as e:
         raise click.ClickException(f"Metadata validation failed:\n{e}") from e
@@ -172,15 +187,21 @@ def convert_cmd(
     if resolved == "per-scene":
         n = len(result["stores"])
         noun = "store" if n == 1 else "stores"
-        click.echo(f"Wrote {n} {noun} to {output}", err=True)
+        click.echo(f"Wrote {n} {noun} to {output} (per-scene)", err=True)
+        output_bytes = sum(size_on_disk(s["store_path"]) for s in result["stores"])
     elif resolved == "plate":
         n = len(result["fields"])
         noun = "field" if n == 1 else "fields"
         click.echo(f"Wrote {n} {noun} to {output} (plate)", err=True)
+        output_bytes = size_on_disk(output)
     else:
         n = len(result["per_scene"])
         noun = "scene" if n == 1 else "scenes"
         click.echo(f"Wrote {n} {noun} to {output} (bf2raw bundle)", err=True)
+        output_bytes = size_on_disk(output)
+
+    click.echo(f"Input:  {format_bytes(size_on_disk(input_path))}", err=True)
+    click.echo(f"Output: {format_bytes(output_bytes)}", err=True)
 
 
 @app.command(name="inspect")
@@ -201,6 +222,7 @@ def inspect_cmd(input_path: str, as_json: bool) -> None:
     rp = info["reader_plugin"]
     plugin_str = rp["distribution"] or rp["name"]
     click.echo(f"Input:  {info['input_path']}")
+    click.echo(f"Size:   {format_bytes(info['size_bytes'])}")
     click.echo(f"Plugin: {plugin_str}")
     if "plate_layout" in info:
         click.echo(_format_plate_summary(info["plate_layout"]))
