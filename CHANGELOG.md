@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Leica `.lif` **confocal** channel identity is now preserved in the OME-Zarr
+  output: each channel's fluorophore (dye), excitation/emission wavelengths, and
+  detector are read from the scene metadata and written as OME-XML `<Channel>`
+  elements and omero channel labels (e.g. `ALEXA 594 (590 nm)`) instead of
+  display-LUT color names (`Blue`, `Gray`, …).
+
 ## [0.3.6] - 2026-05-15
 
 ### Fixed
