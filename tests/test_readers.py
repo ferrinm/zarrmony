@@ -7,6 +7,7 @@ each extension to the correct plugin.
 """
 
 import warnings
+import xml.etree.ElementTree as ET
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -140,6 +141,7 @@ class _FakeBioioLifReader:
         tile_count: int = 12,
         tile_yx: tuple[int, int] = (5048, 5048),
         scene_names: list[str] | None = None,
+        metadata_xml: str | None = None,
     ) -> None:
         if scene_names is not None:
             assert len(scene_names) == len(scenes_with_m)
@@ -150,9 +152,16 @@ class _FakeBioioLifReader:
         self._current = 0
         self._tile_yx = tile_yx
         self._tile_count = tile_count
+        self._metadata_xml = metadata_xml
         # Sentinel — not relevant to mosaic logic, but verifies forwarding.
         self.physical_pixel_sizes = "fake-px"
         self.channel_names = ["DAPI", "GFP"]
+
+    @property
+    def metadata(self) -> ET.Element | None:
+        if self._metadata_xml is None:
+            return None
+        return ET.fromstring(self._metadata_xml)
 
     def set_scene(self, idx: int) -> None:
         self._current = idx
@@ -258,6 +267,133 @@ def test_proxy_mosaic_summary_none_for_non_mosaic_scene() -> None:
     proxy.set_scene(0)
 
     assert proxy.mosaic_summary is None
+
+
+# --- mosaic_summary: tile positions + intended overlap (issue #34) --------
+
+
+def _mosaic_metadata_xml(
+    *,
+    tiles: list[tuple[int, int, float, float, float]],
+    overlap_x: str | None = "0.10",
+    overlap_y: str | None = "0.10",
+) -> str:
+    """A whole-document LIF metadata tree with a single scene carrying tiles.
+
+    Matches the bioio-lif shape ``find_scene_xml`` keys off: scene XML lives
+    under ``.//Image``. The first ``<Image>`` is the (only) scene's settings.
+    """
+    tile_xml = "".join(
+        f'<Tile FieldX="{fx}" FieldY="{fy}" PosX="{px:.10f}" PosY="{py:.10f}" PosZ="{pz:.10f}" />'
+        for fx, fy, px, py, pz in tiles
+    )
+    overlap_attrs = []
+    if overlap_x is not None:
+        overlap_attrs.append(f'OverlapPercentageX="{overlap_x}"')
+    if overlap_y is not None:
+        overlap_attrs.append(f'OverlapPercentageY="{overlap_y}"')
+    stitching_xml = (
+        f"<StitchingSettings {' '.join(overlap_attrs)} />" if overlap_attrs else ""
+    )
+    return (
+        "<LMSDataContainerHeader><Element><Children><Element><Data><Image>"
+        f'<Attachment Name="TileScanInfo" Application="LAS AF">{tile_xml}</Attachment>'
+        f'<Attachment Name="HardwareSetting">{stitching_xml}</Attachment>'
+        "</Image></Data></Element></Children></Element></LMSDataContainerHeader>"
+    )
+
+
+def test_proxy_mosaic_summary_includes_tiles_and_overlap_when_extractable() -> None:
+    tiles = [
+        (0, 0, 0.0400, 0.0170, 0.0117),
+        (1, 0, 0.0405, 0.0170, 0.0117),
+    ]
+    inner = _FakeBioioLifReader(
+        {0: True},
+        tile_count=2,
+        tile_yx=(512, 512),
+        metadata_xml=_mosaic_metadata_xml(
+            tiles=tiles, overlap_x="0.10", overlap_y="0.15"
+        ),
+    )
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+    proxy.set_scene(0)
+
+    summary = proxy.mosaic_summary
+    assert summary is not None
+    assert summary["intended_overlap_x_pct"] == 10.0
+    assert summary["intended_overlap_y_pct"] == 15.0
+    assert summary["tiles"] == [
+        {
+            "field_x": 0,
+            "field_y": 0,
+            "pos_x_m": 0.04,
+            "pos_y_m": 0.017,
+            "pos_z_m": 0.0117,
+        },
+        {
+            "field_x": 1,
+            "field_y": 0,
+            "pos_x_m": 0.0405,
+            "pos_y_m": 0.017,
+            "pos_z_m": 0.0117,
+        },
+    ]
+    # Original shape preserved.
+    assert summary["tile_count"] == 2
+    assert summary["tile_shape"] == {"Y": 512, "X": 512}
+
+
+def test_proxy_mosaic_summary_omits_tile_keys_when_metadata_absent() -> None:
+    # No metadata XML — extractor declines; the audit falls back to today's shape.
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}))
+    proxy.set_scene(0)
+
+    summary = proxy.mosaic_summary
+    assert summary is not None
+    assert "tiles" not in summary
+    assert "intended_overlap_x_pct" not in summary
+    assert "intended_overlap_y_pct" not in summary
+
+
+# --- MosaicStitchingWarning text: overlap-aware vs generic ----------------
+
+
+def test_proxy_warning_quotes_intended_overlap_when_extractable() -> None:
+    inner = _FakeBioioLifReader(
+        {0: True},
+        tile_count=4,
+        metadata_xml=_mosaic_metadata_xml(
+            tiles=[(0, 0, 0.04, 0.017, 0.0117)],
+            overlap_x="0.10",
+            overlap_y="0.10",
+        ),
+    )
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+    proxy.set_scene(0)
+
+    with pytest.warns(MosaicStitchingWarning) as captured:
+        _ = proxy.xarray_dask_data
+
+    msg = str(captured[0].message)
+    assert "10% intended overlap" in msg
+    assert "1-pixel" in msg
+    # Generic 5–15% fallback wording should NOT appear when the real value is known.
+    assert "5–15%" not in msg
+
+
+def test_proxy_warning_falls_back_to_generic_when_overlap_missing() -> None:
+    # No metadata XML at all — warning uses the existing generic wording.
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}, tile_count=4))
+    proxy.set_scene(0)
+
+    with pytest.warns(MosaicStitchingWarning) as captured:
+        _ = proxy.xarray_dask_data
+
+    msg = str(captured[0].message)
+    assert "5–15%" in msg
+    assert "1-pixel" in msg
+    assert "intended overlap" not in msg
 
 
 def test_proxy_forwards_arbitrary_attrs() -> None:

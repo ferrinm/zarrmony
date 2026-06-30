@@ -399,3 +399,57 @@ def test_per_scene_skips_scene_with_skip_reason(tmp_path: Path, patched_reader) 
     # The skipped scene's store directory must NOT exist.
     assert not (out / "Position_1.ome.zarr").exists()
     assert (out / "Position_1_Merged.ome.zarr").is_dir()
+
+
+# ---------- mosaic audit surfaces tile positions + intended overlap --------
+
+
+def test_per_scene_mosaic_tiles_round_trip_to_audit_attrs(
+    tmp_path: Path, patched_reader
+) -> None:
+    """Issue #34 acceptance: a mosaic conversion's per_scene[0].mosaic carries
+    the extracted ``tiles`` list and ``intended_overlap_*_pct`` values in the
+    on-disk audit attrs (``attrs.zarrmony``).
+    """
+    mosaic_summary = {
+        "stitched": True,
+        "stitcher": "bioio-lif",
+        "overlap_assumption_px": 1,
+        "tile_count": 2,
+        "tile_shape": {"Y": 512, "X": 512},
+        "tiles": [
+            {
+                "field_x": 0,
+                "field_y": 0,
+                "pos_x_m": 0.04,
+                "pos_y_m": 0.017,
+                "pos_z_m": 0.0117,
+            },
+            {
+                "field_x": 1,
+                "field_y": 0,
+                "pos_x_m": 0.0405,
+                "pos_y_m": 0.017,
+                "pos_z_m": 0.0117,
+            },
+        ],
+        "intended_overlap_x_pct": 10.0,
+        "intended_overlap_y_pct": 15.0,
+    }
+    reader = FakeReader(
+        scenes=["mosaic"],
+        dims="TCYX",
+        shape=(1, 1, 64, 64),
+        mosaic_summary=mosaic_summary,
+    )
+    patched_reader(reader, plugin="bioio-lif")
+    out = tmp_path / "out"
+
+    convert("/tmp/fake.lif", out, pyramid_min_size=8)
+
+    with open(out / "mosaic.ome.zarr" / "zarr.json") as f:
+        root = json.load(f)
+    mosaic = root["attributes"]["zarrmony"]["per_scene"][0]["mosaic"]
+    assert mosaic["intended_overlap_x_pct"] == 10.0
+    assert mosaic["intended_overlap_y_pct"] == 15.0
+    assert mosaic["tiles"] == mosaic_summary["tiles"]

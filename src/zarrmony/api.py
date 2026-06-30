@@ -26,6 +26,7 @@ from zarrmony.errors import (
     ValidationWarning,
     ZarrmonyError,
 )
+from zarrmony.metadata._lif_scene import find_scene_xml
 from zarrmony.metadata.channel_colors import colors_for_channels
 from zarrmony.metadata.lif_channels import (
     channels_to_ome_channels,
@@ -175,50 +176,6 @@ def _scene_channel_count(reader: Any) -> int:
     return int(xarr.sizes["C"]) if "C" in xarr.dims else 1
 
 
-def _lif_scene_root_fast(reader: Any) -> ET.Element | None:
-    """The current scene's settings XML via bioio-lif's ``scene_root`` fast path.
-
-    ``scene_root`` is bioio-lif's *plate* row/column locator: it returns the
-    well's ``<Element>`` node for plate scenes but RAISES ``ValueError`` ("Row or
-    column value is missing…") for ordinary non-plate confocal scenes, and may be
-    absent on non-LIF readers. We read it inside a guard so either outcome —
-    raise or ``None`` — is a clean miss, not a crash, letting the caller fall
-    back to the document-order ``<Image>`` locator.
-    """
-    try:
-        return getattr(reader, "scene_root", None)
-    except Exception:  # noqa: BLE001 — a raise here just means "not this path"
-        return None
-
-
-def _lif_scene_image(reader: Any) -> ET.Element | None:
-    """The current scene's ``<Image>`` element from the full LIF XML, fail-safe.
-
-    This is the confocal locator from bioio-lif PR #52: ``reader.metadata`` is
-    the whole-document LIF ``ElementTree``; ``.//Image`` returns the per-scene
-    ``<Image>`` elements in scene order, and ``reader.current_scene_index``
-    selects the one being converted. Each such element carries that scene's
-    ``ChannelDescription`` + ``LDM_Block_Sequential_List`` — exactly what
-    :func:`extract_channels` consumes.
-
-    Every reader-surface access is guarded so no partially-readable reader can
-    raise out of here: missing/``None`` metadata, a metadata object without
-    ``findall``, an empty ``<Image>`` list, and an absent or out-of-range
-    ``current_scene_index`` all return ``None`` (a clean miss). Returns the
-    located element or ``None``; never raises.
-    """
-    metadata = getattr(reader, "metadata", None)
-    if metadata is None or not hasattr(metadata, "findall"):
-        return None
-    images = metadata.findall(".//Image")
-    if not images:
-        return None
-    index = getattr(reader, "current_scene_index", None)
-    if not isinstance(index, int) or not (0 <= index < len(images)):
-        return None
-    return images[index]
-
-
 def _lif_scene_channels(reader: Any) -> tuple[list[dict] | None, list[Channel] | None]:
     """The LIF-vs-other decision, in one place.
 
@@ -230,7 +187,7 @@ def _lif_scene_channels(reader: Any) -> tuple[list[dict] | None, list[Channel] |
     :func:`write_scene`. Both projections come from the same vetted extraction,
     so omero and the OME-XML never disagree.
 
-    Locating the scene XML is two-tier (see the two helpers above):
+    Locating the scene XML is two-tier (see :func:`find_scene_xml`):
 
     1. ``scene_root`` — bioio-lif's plate row/column locator. It works for plate
        wells but RAISES for ordinary non-plate **confocal** scenes, so it is only
@@ -249,18 +206,9 @@ def _lif_scene_channels(reader: Any) -> tuple[list[dict] | None, list[Channel] |
     path. Metadata never crashes a conversion.
     """
     try:
-        # First-try fast path (plate wells), then the confocal fallback. Each
-        # locator is internally guarded, so this never raises; an unlocatable
-        # scene simply yields ``None`` here and a clean decline below. Test
-        # ``is None`` explicitly rather than ``a or b`` — an ``Element`` with no
-        # children is falsy, so ``or`` would wrongly skip a valid childless
-        # ``scene_root`` and is deprecated besides.
-        scene_element = _lif_scene_root_fast(reader)
-        if scene_element is None:
-            scene_element = _lif_scene_image(reader)
-        if scene_element is None:
+        scene_xml = find_scene_xml(reader)
+        if scene_xml is None:
             return None, None
-        scene_xml = ET.tostring(scene_element, encoding="unicode")
         extracted = extract_channels(scene_xml)
         if not extracted or len(extracted) != _scene_channel_count(reader):
             return None, None

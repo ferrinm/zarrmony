@@ -28,6 +28,11 @@ stripes at every tile seam. Two-tier handling:
    assumption in the audit's ``mosaic`` block, so users can route around it
    later (an external stitcher: ASHLAR, m2stitch, BigStitcher).
 
+The mosaic audit block also surfaces per-tile stage positions and the LIF-
+declared intended overlap (extracted via :mod:`zarrmony.metadata.lif_tiles`)
+when available, and the :class:`MosaicStitchingWarning` quotes that overlap
+in its text so the user can predict the stripe width.
+
 Exposed as ``lif_plugin`` and registered in ``readers/__init__.py`` at zarrmony
 import time.
 """
@@ -39,6 +44,8 @@ from typing import Any
 from bioio_lif import Reader
 
 from zarrmony.errors import MosaicStitchingWarning
+from zarrmony.metadata._lif_scene import find_scene_xml
+from zarrmony.metadata.lif_tiles import extract_tile_layout
 from zarrmony.readers.plugin import ReaderPlugin
 
 _STITCHER_NAME = "bioio-lif"
@@ -82,6 +89,19 @@ class _MosaicAwareLifReader:
             f"writing that instead of bioio-lif's auto-stitched tiles"
         )
 
+    def _tile_layout(self) -> dict | None:
+        """Extracted LIF tile + overlap metadata for the current scene, or ``None``.
+
+        Pure metadata read — used by both :attr:`mosaic_summary` (audit) and
+        :attr:`xarray_dask_data` (warning text). Fail-safe end-to-end: a missing
+        ``metadata`` surface, a raising ``scene_root``, or any extractor failure
+        all yield ``None``.
+        """
+        scene_xml = find_scene_xml(self._inner)
+        if scene_xml is None:
+            return None
+        return extract_tile_layout(scene_xml)
+
     @property
     def xarray_dask_data(self) -> Any:
         xarr = self._inner.xarray_dask_data
@@ -90,28 +110,61 @@ class _MosaicAwareLifReader:
         scene_name = self._inner.scenes[self._inner.current_scene_index]
         if self._merged_sibling() is None:
             warnings.warn(
-                f"scene {scene_name!r}: bioio-lif is auto-stitching "
-                f"{int(xarr.sizes['M'])} mosaic tiles assuming a 1-pixel "
-                f"inter-tile overlap. The LIF stage XY positions are NOT used. "
-                f"For acquisitions with non-trivial overlap (typical 5–15%), "
-                f"the output has double-coverage stripes at tile seams and is "
-                f"unfit for quantitative analysis at tile boundaries. No "
-                f"vendor-stitched sibling ('{scene_name}{_MERGED_SUFFIX}') was "
-                f"found; consider external stitching (ASHLAR, m2stitch, "
-                f"BigStitcher) if boundary correctness matters.",
+                self._stitching_warning_text(scene_name, int(xarr.sizes["M"])),
                 MosaicStitchingWarning,
                 stacklevel=2,
             )
         return self._inner.mosaic_xarray_dask_data
 
+    def _stitching_warning_text(self, scene_name: str, tile_count: int) -> str:
+        """Compose the :class:`MosaicStitchingWarning` body.
+
+        Quotes the LIF-declared intended overlap when extractable so the message
+        names the actual stripe width the user will see; falls back to the
+        generic 5–15% phrasing when the extractor returns ``None`` or omits the
+        X overlap. The X axis drives the wording because horizontal seams
+        dominate visual inspection; we don't separately report Y to keep the
+        message terse.
+        """
+        layout = self._tile_layout()
+        overlap_x = layout.get("intended_overlap_x_pct") if layout else None
+        if overlap_x is not None:
+            overlap_clause = (
+                f"LIF metadata declares {overlap_x:g}% intended overlap; "
+                f"bioio-lif stitched with a 1-pixel overlap — expect "
+                f"~{overlap_x:g}%-wide double-coverage stripes at every seam"
+            )
+        else:
+            overlap_clause = (
+                "bioio-lif assumes a 1-pixel inter-tile overlap. "
+                "For acquisitions with non-trivial overlap (typical 5–15%), "
+                "the output has double-coverage stripes at tile seams and is "
+                "unfit for quantitative analysis at tile boundaries"
+            )
+        return (
+            f"scene {scene_name!r}: bioio-lif is auto-stitching "
+            f"{tile_count} mosaic tiles. The LIF stage XY positions are NOT "
+            f"used. {overlap_clause}. No vendor-stitched sibling "
+            f"('{scene_name}{_MERGED_SUFFIX}') was found; consider external "
+            f"stitching (ASHLAR, m2stitch, BigStitcher) if boundary "
+            f"correctness matters."
+        )
+
     @property
     def mosaic_summary(self) -> dict | None:
-        """Audit hook — None unless the current scene was mosaic-stitched."""
+        """Audit hook — None unless the current scene was mosaic-stitched.
+
+        Merges :func:`extract_tile_layout`'s output when available so the audit
+        records the actual tile positions and the LIF-declared intended overlap
+        alongside the stitcher/overlap-assumption fields. Extractor misses
+        (missing/malformed scene XML, no ``<Tile>`` elements) leave the
+        new keys absent — today's shape is preserved on fall-back.
+        """
         xarr = self._inner.xarray_dask_data
         if "M" not in xarr.dims:
             return None
         tile_dims = self._inner.mosaic_tile_dims
-        return {
+        summary: dict = {
             "stitched": True,
             "stitcher": _STITCHER_NAME,
             "overlap_assumption_px": _OVERLAP_ASSUMPTION_PX,
@@ -121,6 +174,10 @@ class _MosaicAwareLifReader:
                 "X": int(tile_dims.X),
             },
         }
+        layout = self._tile_layout()
+        if layout is not None:
+            summary.update(layout)
+        return summary
 
 
 def _match_lif(path: Path) -> int | None:

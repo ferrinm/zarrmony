@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- LIF mosaic scenes now surface per-tile stage positions and the LIF-declared
+  intended overlap in the audit's `mosaic` block (`tiles[].{field_x, field_y,
+  pos_x_m, pos_y_m, pos_z_m}`, `intended_overlap_x_pct`,
+  `intended_overlap_y_pct`), parsed from the scene XML's `<Tile>` and
+  `<StitchingSettings>` elements by the new pure-stdlib extractor
+  `zarrmony.metadata.lif_tiles.extract_tile_layout`. Pixels and on-disk layout
+  are unchanged — the audit JSON is the surface that grows. (#34)
+- `MosaicStitchingWarning` text now quotes the LIF-declared intended overlap
+  percentage when available (e.g. *"LIF metadata declares 10% intended overlap;
+  bioio-lif stitched with a 1-pixel overlap — expect ~10%-wide double-coverage
+  stripes at every seam"*) and falls back to the previous generic 5–15% wording
+  when extraction misses. (#34)
+
 ## [0.4.0] - 2026-06-29
 
 ### Added
