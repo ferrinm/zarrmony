@@ -60,8 +60,10 @@ class MosaicStitchingWarning(UserWarning):
     non-trivial overlap (the typical 5–15% used for content-aware stitching),
     the output has double-coverage stripes at every tile seam and is unfit
     for quantitative analysis at tile boundaries. Prefer a vendor-stitched
-    sibling scene (Leica's ``*_Merged``) when present, or an external
-    stitcher (ASHLAR, m2stitch, BigStitcher) otherwise.
+    sibling scene (Leica's ``*_Merged``) when present, an external stitcher
+    (ASHLAR, m2stitch, BigStitcher), or re-run with ``lif_mosaic="per-tile"``
+    to write each tile as its own OME-Zarr with stage positions in the
+    OME-XML ``<Plane>`` (ADR-0005).
     """
 
 
