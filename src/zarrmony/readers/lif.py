@@ -33,6 +33,13 @@ declared intended overlap (extracted via :mod:`zarrmony.metadata.lif_tiles`)
 when available, and the :class:`MosaicStitchingWarning` quotes that overlap
 in its text so the user can predict the stripe width.
 
+ADR-0005 adds an opt-in per-tile writer path (``lif_mosaic="per-tile"``) that
+sidesteps the bioio-lif stitcher entirely: ``convert()`` iterates the raw
+M-intact tiles via :attr:`tiles_xarray_dask_data` and writes one OME-Zarr per
+tile, carrying the stage position in each tile's ``<Plane>``. The proxy
+remains under maintenance for both modes — the per-tile path doesn't fork
+the reader, only the writer dispatch.
+
 Exposed as ``lif_plugin`` and registered in ``readers/__init__.py`` at zarrmony
 import time.
 """
@@ -116,6 +123,34 @@ class _MosaicAwareLifReader:
             )
         return self._inner.mosaic_xarray_dask_data
 
+    @property
+    def tiles_xarray_dask_data(self) -> Any:
+        """The raw M-intact xarray for the current mosaic scene (no auto-stitch).
+
+        ``xarray_dask_data`` swaps the M-intact view for ``mosaic_xarray_dask_data``
+        (and emits :class:`MosaicStitchingWarning`); this property bypasses both
+        so the per-tile writer path in ``convert()`` can iterate tiles without
+        re-triggering the auto-stitch warning. Returns the inner reader's raw
+        ``xarray_dask_data`` unchanged — if ``M`` is absent the caller should
+        not be in the per-tile branch in the first place, so we don't try to
+        invent one. (Used by ``api.convert(..., lif_mosaic="per-tile")``.)
+        """
+        return self._inner.xarray_dask_data
+
+    def is_per_tile_eligible(self) -> bool:
+        """True when the current scene is a mosaic with no vendor ``_Merged`` sibling.
+
+        The per-tile writer path in ``convert()`` is only relevant for this
+        case — a mosaic scene whose tiles bioio-lif would otherwise auto-stitch.
+        Mosaic scenes with a ``_Merged`` sibling still get skipped (their
+        pixels come from the merged sibling's own scene loop iteration);
+        non-mosaic scenes write through the standard per-scene path under
+        either ``lif_mosaic`` value.
+        """
+        if "M" not in self._inner.xarray_dask_data.dims:
+            return False
+        return self._merged_sibling() is None
+
     def _stitching_warning_text(self, scene_name: str, tile_count: int) -> str:
         """Compose the :class:`MosaicStitchingWarning` body.
 
@@ -147,7 +182,8 @@ class _MosaicAwareLifReader:
             f"used. {overlap_clause}. No vendor-stitched sibling "
             f"('{scene_name}{_MERGED_SUFFIX}') was found; consider external "
             f"stitching (ASHLAR, m2stitch, BigStitcher) if boundary "
-            f"correctness matters."
+            f'correctness matters, or re-run with lif_mosaic="per-tile" '
+            f"to write each tile as its own OME-Zarr."
         )
 
     @property

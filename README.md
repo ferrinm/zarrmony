@@ -51,6 +51,11 @@ zarrmony convert phenix-acquisition/ output.ome.zarr --layout plate
 # Bundled bioformats2raw.layout (opt-in): writes a single store at OUTPUT.
 zarrmony convert input.czi output.ome.zarr --layout bf2raw
 
+# LIF-specific: write one OME-Zarr per mosaic tile (with stage positions in
+# <Plane>) instead of bioio-lif's auto-stitched 1-pixel-overlap output.
+# See docs/adr/0005-lif-mosaic-write-strategy.md.
+zarrmony convert mosaic.lif output_dir/ --lif-mosaic per-tile
+
 zarrmony inspect input.czi
 ```
 

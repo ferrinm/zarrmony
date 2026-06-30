@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- LIF mosaic scenes (no vendor `_Merged` sibling) can now be written as one
+  OME-Zarr per tile via the new `convert(..., lif_mosaic="per-tile")` API
+  kwarg and matching CLI option `--lif-mosaic {auto-stitch,per-tile}`
+  (default `auto-stitch`, LIF-specific — other readers ignore the flag).
+  Per-tile output shape: `<output>/<sanitized_scene>/tile_X{f:02d}Y{f:02d}.ome.zarr/`,
+  zero-padded grid coordinates from the LIF `<Tile FieldX>`/`FieldY>` attrs.
+  Each tile sub-store is a self-describing OME-Zarr v0.5 image whose
+  `OME/METADATA.ome.xml` carries `<Plane>` `PositionX/Y/Z` (meters → µm per
+  OME convention) so external stitchers (ASHLAR, m2stitch, BigStitcher) can
+  re-stitch from the tile stores alone. The scene-named parent directory is
+  a plain directory — NOT a zarr group — so tools that recurse into
+  multiscales stores see two unambiguous images per tile group, not nested
+  groups. Reuses `writers.scene.write_scene` per tile (one pixel-writing
+  path under maintenance). See
+  [ADR-0005](docs/adr/0005-lif-mosaic-write-strategy.md) for the design
+  rationale. (#36)
+- `writers.ome_xml.attach_stage_position_plane()` — stamps a single
+  `<Plane TheC=0 TheZ=0 TheT=0 PositionX/Y/Z .../>` on an OME `Image`. Used
+  by the per-tile path; also handy for downstream code that wants to add
+  stage positions to a one-image OME-XML document.
+
+### Changed
+
+- `MosaicStitchingWarning` text now closes with the per-tile escape hatch:
+  *"… or re-run with `lif_mosaic="per-tile"` to write each tile as its own
+  OME-Zarr."* The warning still fires only in auto-stitch mode; the
+  per-tile path bypasses bioio-lif's stitcher entirely.
+- `audit_schema_version` bumped to 5 to mark the new per-tile audit keys.
+  In per-tile mode each tile's audit carries `mosaic.per_tile=true`,
+  `mosaic.tile_index`, `mosaic.tile_count`, and the full
+  `mosaic.tile_stores` index (one entry per tile with `field_x`, `field_y`,
+  `store_path`, `pos_x_m`, `pos_y_m`, `pos_z_m`). Auto-stitch audits keep
+  their pre-v0.5 shape — no `per_tile`, no `tile_stores` — so existing
+  consumers can switch on `mosaic.per_tile` to decide whether to look for
+  sibling tile stores.
+
+### Migration
+
+- No action required for users who don't pass the new flag. The default
+  remains `auto-stitch` and produces byte-for-byte identical output to
+  v0.4.1 (the audit schema bump is additive — no existing field changes
+  meaning).
+- For users converting LIF mosaics to S3/GCS and seeing 1-pixel-overlap
+  stripes at tile seams: re-run with `--lif-mosaic per-tile` (CLI) or
+  `lif_mosaic="per-tile"` (library). Note that `layout="plate"` +
+  `lif_mosaic="per-tile"` is incompatible (a plate FOV is one image by
+  spec) and raises `LayoutMismatchError`; convert as flat to get per-tile
+  stores from a mosaic scene.
+- Audit consumers (Lucida, anything reading `attrs.zarrmony`) should
+  branch on `mosaic.per_tile` when present. The `mosaic.tile_stores` list
+  carries enough information to discover the sibling tile sub-stores
+  without re-parsing the source LIF.
+
 ## [0.4.1] - 2026-06-30
 
 ### Added

@@ -25,7 +25,7 @@ from zarrmony import __version__
 from zarrmony._storage import open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
-AUDIT_SCHEMA_VERSION = 4
+AUDIT_SCHEMA_VERSION = 5
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:

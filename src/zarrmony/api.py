@@ -33,11 +33,16 @@ from zarrmony.metadata.lif_channels import (
     channels_to_omero,
     extract_channels,
 )
-from zarrmony.naming import resolve_scene_dirnames
+from zarrmony.metadata.lif_tiles import extract_tile_layout
+from zarrmony.naming import resolve_scene_dirnames, sanitize_scene_name
 from zarrmony.readers.default import derive_bioio_distribution
 from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
-from zarrmony.writers.ome_xml import build_combined_ome_xml, build_ome_xml_for_scene
+from zarrmony.writers.ome_xml import (
+    attach_stage_position_plane,
+    build_combined_ome_xml,
+    build_ome_xml_for_scene,
+)
 from zarrmony.writers.per_scene import write_per_scene_metadata
 from zarrmony.writers.plate import summarize_plate_layout, write_plate
 from zarrmony.writers.scene import write_scene
@@ -45,6 +50,12 @@ from zarrmony.writers.scene import write_scene
 Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
 ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
 _VALID_LAYOUTS: tuple[Layout, ...] = ("auto", "per-scene", "bf2raw", "plate")
+
+LifMosaic = Literal["auto-stitch", "per-tile"]
+_VALID_LIF_MOSAIC: tuple[LifMosaic, ...] = ("auto-stitch", "per-tile")
+
+# Meters → micrometers (OME convention for <Plane> PositionX/Y/Z units).
+_METERS_TO_UM = 1_000_000.0
 
 
 def _resolve_layout(
@@ -306,6 +317,7 @@ def convert(
     force: bool = False,
     checksum: bool = False,
     validate: bool = True,
+    lif_mosaic: LifMosaic = "auto-stitch",
 ) -> dict:
     """Convert ``input_path`` to OME-Zarr v0.5.
 
@@ -318,6 +330,20 @@ def convert(
     :class:`~zarrmony.errors.LayoutDowngradeWarning`; forcing ``plate``
     against a flat reader raises :class:`~zarrmony.errors.LayoutMismatchError`).
 
+    ``lif_mosaic`` (LIF-specific, default ``"auto-stitch"``, ADR-0005) governs
+    how mosaic LIF scenes without a vendor ``_Merged`` sibling are written:
+
+    - ``"auto-stitch"`` (default) — preserves today's behavior: bioio-lif's
+      1-pixel-overlap auto-stitcher writes one image per scene, with a
+      :class:`~zarrmony.errors.MosaicStitchingWarning`.
+    - ``"per-tile"`` — writes one OME-Zarr image per tile under
+      ``<output>/<sanitized_scene>/tile_X{f:02d}Y{f:02d}.ome.zarr/``, each
+      carrying its stage origin in ``<Plane>`` ``PositionX/Y/Z`` so external
+      stitchers (ASHLAR, m2stitch, BigStitcher) can re-stitch correctly.
+      Incompatible with ``layout="plate"`` — raises
+      :class:`~zarrmony.errors.LayoutMismatchError`. Other readers ignore
+      the flag entirely.
+
     Per-scene return shape: ``{"input": ..., "stores": [<per-store audit>, ...]}``.
     The ``bf2raw`` and ``plate`` shapes return the single bundle's audit dict;
     plate audits use the schema-3 ``fields`` + ``plate`` keys.
@@ -325,6 +351,10 @@ def convert(
     if layout not in _VALID_LAYOUTS:
         raise ValueError(
             f"layout must be one of {list(_VALID_LAYOUTS)} (got {layout!r})"
+        )
+    if lif_mosaic not in _VALID_LIF_MOSAIC:
+        raise ValueError(
+            f"lif_mosaic must be one of {list(_VALID_LIF_MOSAIC)} (got {lif_mosaic!r})"
         )
 
     reader, plugin, match_score = get_reader(input_path)
@@ -334,6 +364,16 @@ def convert(
 
     effective_layout = _resolve_layout(layout, reader, plugin)
 
+    # Plate + per-tile is incompatible: a plate FOV is one image by spec
+    # (ADR-0004). Reject before any pixels are written so users get a clean
+    # signal to convert as flat to get per-tile stores (ADR-0005).
+    if effective_layout == "plate" and lif_mosaic == "per-tile":
+        raise LayoutMismatchError(
+            "per-tile output is incompatible with plate layout — a plate FOV "
+            "is one image by spec; convert as flat (layout='per-scene' or "
+            "layout='auto' with a flat reader) to get per-tile stores"
+        )
+
     config = {
         "layout": effective_layout,
         "pyramid_min_size": pyramid_min_size,
@@ -342,6 +382,7 @@ def convert(
         "force": force,
         "checksum": checksum,
         "validate": validate,
+        "lif_mosaic": lif_mosaic,
     }
 
     if effective_layout == "plate":
@@ -390,6 +431,7 @@ def convert(
         checksum=checksum,
         config=config,
         validate=validate,
+        lif_mosaic=lif_mosaic,
     )
 
 
@@ -408,14 +450,11 @@ def _convert_per_scene(
     checksum: bool,
     config: dict,
     validate: bool,
+    lif_mosaic: LifMosaic = "auto-stitch",
 ) -> dict:
     output_str = str(output).rstrip("/")
     dirnames = resolve_scene_dirnames(reader.scenes)
     store_paths = [f"{output_str}/{d}.ome.zarr" for d in dirnames]
-
-    # Per-store refuse-overwrite (don't blow away the whole output dir).
-    for sp in store_paths:
-        _check_output(sp, force=force)
 
     source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
     source_filename = (
@@ -425,9 +464,6 @@ def _convert_per_scene(
     store_audits: list[dict] = []
 
     for scene_index, scene_name in enumerate(reader.scenes):
-        store_path = store_paths[scene_index]
-        started_at = datetime.now().astimezone()
-
         reader.set_scene(scene_index)
 
         skip_reason = getattr(reader, "skip_reason", None)
@@ -438,6 +474,39 @@ def _convert_per_scene(
                 stacklevel=2,
             )
             continue
+
+        per_tile_mode = lif_mosaic == "per-tile" and bool(
+            getattr(reader, "is_per_tile_eligible", lambda: False)()
+        )
+        if per_tile_mode:
+            tile_audits = _convert_per_tile_scene(
+                reader=reader,
+                plugin=plugin,
+                match_score=match_score,
+                distribution=distribution,
+                input_path=input_path,
+                scene_index=scene_index,
+                scene_name=scene_name,
+                scene_dirname=dirnames[scene_index],
+                output_str=output_str,
+                pyramid_min_size=pyramid_min_size,
+                chunk_shape=chunk_shape,
+                channel_colors=channel_colors,
+                force=force,
+                checksum=checksum,
+                config=config,
+                validate=validate,
+                source_xml=source_xml,
+                source_filename=source_filename,
+            )
+            store_audits.extend(tile_audits)
+            continue
+
+        store_path = store_paths[scene_index]
+        # Per-store refuse-overwrite (don't blow away the whole output dir).
+        _check_output(store_path, force=force)
+
+        started_at = datetime.now().astimezone()
 
         # LIF-vs-other decision in one place: for a LIF scene with extractable
         # channel identities, drive both omero (label/color) and the canonical
@@ -517,6 +586,237 @@ def _convert_per_scene(
         "layout": "per-scene",
         "stores": store_audits,
     }
+
+
+def _tile_dirname(field_x: int | None, field_y: int | None, fallback_index: int) -> str:
+    """Filename stem for a tile sub-store.
+
+    Per ADR-0005: zero-padded grid coordinates from the extracted ``FieldX``/
+    ``FieldY``. When the extractor returns ``None`` for either (a partially-
+    stamped tile in the LIF XML), fall back to the dense iteration index so two
+    tiles can never collide on disk.
+    """
+    if field_x is None or field_y is None:
+        return f"tile_{fallback_index:04d}"
+    return f"tile_X{field_x:02d}Y{field_y:02d}"
+
+
+def _build_tile_stores_index(
+    tile_entries: list[dict], tile_count: int, scene_dir_url: str
+) -> list[dict]:
+    """The ``mosaic.tile_stores`` list: one entry per tile, in tile-iteration order.
+
+    Each entry pairs the LIF grid index + stage position with the on-disk URL
+    of that tile's OME-Zarr sub-store. Downstream stitchers read this to
+    reconstruct the spatial layout without re-parsing the source LIF.
+    """
+    entries: list[dict] = []
+    for m in range(tile_count):
+        tile = tile_entries[m] if m < len(tile_entries) else {}
+        field_x = tile.get("field_x")
+        field_y = tile.get("field_y")
+        dirname = _tile_dirname(field_x, field_y, m)
+        entries.append(
+            {
+                "field_x": field_x,
+                "field_y": field_y,
+                "store_path": f"{scene_dir_url}/{dirname}.ome.zarr",
+                "pos_x_m": tile.get("pos_x_m"),
+                "pos_y_m": tile.get("pos_y_m"),
+                "pos_z_m": tile.get("pos_z_m"),
+            }
+        )
+    return entries
+
+
+def _convert_per_tile_scene(
+    *,
+    reader: Any,
+    plugin: ReaderPlugin,
+    match_score: int | None,
+    distribution: str | None,
+    input_path: str | Path,
+    scene_index: int,
+    scene_name: str,
+    scene_dirname: str,
+    output_str: str,
+    pyramid_min_size: int,
+    chunk_shape: Sequence[int] | None,
+    channel_colors: dict[str, str] | None,
+    force: bool,
+    checksum: bool,
+    config: dict,
+    validate: bool,
+    source_xml: str | None,
+    source_filename: str | None,
+) -> list[dict]:
+    """Write one OME-Zarr image per LIF mosaic tile under a scene-named directory.
+
+    Iterates the raw M-intact xarray (``reader.tiles_xarray_dask_data``),
+    slices one tile at a time, and dispatches each tile to
+    :func:`writers.scene.write_scene` so the per-tile path reuses the single
+    pixel-writing implementation maintained for per-scene/plate (the reuse
+    rationale matches ADR-0004's per-FOV writer reuse).
+
+    Per-tile OME-XML carries ``<Plane>`` ``PositionX/Y/Z`` (meters → µm) so
+    external stitchers can re-stitch from the tile stores alone.
+    """
+    scene_dir_url = f"{output_str}/{sanitize_scene_name(scene_dirname)}"
+    tiles_xarr = reader.tiles_xarray_dask_data
+    tile_count = int(tiles_xarr.sizes["M"])
+
+    # Extract tile positions / intended overlap from the scene XML once; the
+    # `extract_tile_layout` extractor is fail-closed and may return None (e.g.
+    # partial metadata, no <Tile> elements). When it does, tile_stores entries
+    # carry None positions — the on-disk shape is preserved.
+    scene_xml = find_scene_xml(reader)
+    tile_layout = extract_tile_layout(scene_xml) if scene_xml is not None else None
+    tile_entries = tile_layout.get("tiles", []) if tile_layout else []
+
+    tile_stores_index = _build_tile_stores_index(
+        tile_entries, tile_count, scene_dir_url
+    )
+
+    # Per-tile refuse-overwrite, mirroring per-scene mode (don't blow away the
+    # entire scene directory, just collide-check each tile sub-store).
+    for entry in tile_stores_index:
+        _check_output(entry["store_path"], force=force)
+
+    # Channel projection: as in per-scene mode, the LIF extracted identity wins;
+    # otherwise fall through to the name-based path. Same channels for every
+    # tile of the same scene.
+    lif_extracted, lif_omero_channels = _lif_scene_channels(reader)
+    channels = (
+        lif_omero_channels
+        if lif_omero_channels is not None
+        else _channels_for_scene(reader, channel_colors)
+    )
+
+    tile_audits: list[dict] = []
+    for m in range(tile_count):
+        started_at = datetime.now().astimezone()
+        entry = tile_stores_index[m]
+        store_path = entry["store_path"]
+
+        # Slice this tile out of the M-intact xarray. Drop the M index coord
+        # so the writer sees clean [T?,C,Z,Y,X] dims (normalize_axes rejects
+        # axes outside that set).
+        tile_xarr = tiles_xarr.isel(M=m, drop=True)
+
+        tile_image_name = (
+            f"{scene_name} {_tile_dirname(entry['field_x'], entry['field_y'], m)}"
+        )
+
+        scene_record = write_scene(
+            reader,
+            scene_index=scene_index,
+            store_path=store_path,
+            pyramid_min_size=pyramid_min_size,
+            chunk_shape=chunk_shape,
+            channels=channels,
+            image_name=tile_image_name,
+            xarr_override=tile_xarr,
+            # Suppress the scene-level mosaic_summary on the per-tile record:
+            # the audit's per-tile discriminator + tile_stores belong on the
+            # audit's mosaic block, not duplicated under per_scene[0].mosaic.
+            record_mosaic_summary=False,
+        )
+        scene_record["store_path"] = store_path
+        scene_record["tile_index"] = m
+        scene_record["field_x"] = entry["field_x"]
+        scene_record["field_y"] = entry["field_y"]
+
+        # OME-XML for the tile: start from the standard per-scene Image
+        # construction (LIF channel identity wins; stub fallback otherwise),
+        # then stamp the tile's stage position into a single <Plane>.
+        metadata_warnings: list[dict] = []
+        ome_image: Image | None = None
+        if lif_extracted is not None:
+            ome_image = _lif_ome_image(
+                lif_extracted, scene_index, tile_image_name, scene_record
+            )
+        if ome_image is None:
+            ome_image, warning = _try_get_ome_image(reader, scene_index)
+            if warning is not None:
+                metadata_warnings.append(warning)
+                warnings.warn(
+                    f"scene {scene_index} ({scene_name}) tile {m}: {warning['error']}",
+                    ExtractorWarning,
+                    stacklevel=2,
+                )
+                ome_image = _stub_image(scene_index, tile_image_name, scene_record)
+            else:
+                # Reuse the OME Image but override its name with the tile-scoped
+                # name so each tile's per-store XML names itself, not the scene.
+                ome_image.name = tile_image_name
+
+        pos_x_um = (
+            entry["pos_x_m"] * _METERS_TO_UM if entry["pos_x_m"] is not None else None
+        )
+        pos_y_um = (
+            entry["pos_y_m"] * _METERS_TO_UM if entry["pos_y_m"] is not None else None
+        )
+        pos_z_um = (
+            entry["pos_z_m"] * _METERS_TO_UM if entry["pos_z_m"] is not None else None
+        )
+        attach_stage_position_plane(
+            ome_image,
+            position_x_um=pos_x_um,
+            position_y_um=pos_y_um,
+            position_z_um=pos_z_um,
+        )
+
+        ome_xml = build_ome_xml_for_scene(ome_image)
+        write_per_scene_metadata(
+            store_path,
+            ome_xml=ome_xml,
+            source_xml=source_xml,
+            source_xml_filename=source_filename,
+        )
+
+        validation_findings = _run_validation(store_path, "per-scene", validate)
+
+        finished_at = datetime.now().astimezone()
+        audit = build_audit_record(
+            input_path=input_path,
+            reader_plugin=plugin,
+            match_score=match_score,
+            distribution=distribution,
+            config=config,
+            started_at=started_at,
+            finished_at=finished_at,
+            layout="per-scene",
+            per_scene=[scene_record],
+            metadata_warnings=metadata_warnings,
+            checksum=checksum,
+        )
+        audit["validation_warnings"] = validation_findings
+        audit["store_path"] = store_path
+        audit["scene_index"] = scene_index
+        audit["scene_name"] = scene_name
+        # Per-tile mosaic block: schema-5 `per_tile=true` discriminator + the
+        # full tile_stores index (same list on every tile audit so any tile
+        # store names its siblings). Stitcher / overlap_assumption_px do NOT
+        # apply — the per-tile path skips bioio-lif's stitcher entirely.
+        audit["mosaic"] = {
+            "per_tile": True,
+            "tile_index": m,
+            "tile_count": tile_count,
+            "tile_stores": tile_stores_index,
+        }
+        if tile_layout is not None:
+            if tile_layout.get("intended_overlap_x_pct") is not None:
+                audit["mosaic"]["intended_overlap_x_pct"] = tile_layout[
+                    "intended_overlap_x_pct"
+                ]
+            if tile_layout.get("intended_overlap_y_pct") is not None:
+                audit["mosaic"]["intended_overlap_y_pct"] = tile_layout[
+                    "intended_overlap_y_pct"
+                ]
+        write_audit_record(store_path, audit)
+        tile_audits.append(audit)
+
+    return tile_audits
 
 
 def _convert_bf2raw(

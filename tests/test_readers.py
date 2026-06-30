@@ -396,6 +396,62 @@ def test_proxy_warning_falls_back_to_generic_when_overlap_missing() -> None:
     assert "intended overlap" not in msg
 
 
+# --- ADR-0005 escape-hatch sentence + per-tile reader surface ---------------
+
+
+def test_proxy_warning_quotes_per_tile_escape_hatch() -> None:
+    """The MosaicStitchingWarning body must name the lif_mosaic='per-tile'
+    escape hatch so users hitting a bad stitch see the corrected output path
+    in the same message (ADR-0005)."""
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}, tile_count=4))
+    proxy.set_scene(0)
+
+    with pytest.warns(MosaicStitchingWarning) as captured:
+        _ = proxy.xarray_dask_data
+
+    msg = str(captured[0].message)
+    assert 'lif_mosaic="per-tile"' in msg
+
+
+def test_proxy_tiles_xarray_dask_data_returns_m_intact_view() -> None:
+    """The per-tile writer path needs the raw M-intact xarray; the auto-stitch
+    swap and its MosaicStitchingWarning must NOT fire on this accessor."""
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}, tile_count=8))
+    proxy.set_scene(0)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MosaicStitchingWarning)
+        xarr = proxy.tiles_xarray_dask_data
+
+    assert "M" in xarr.dims
+    assert xarr.sizes["M"] == 8
+
+
+def test_proxy_is_per_tile_eligible_true_for_mosaic_no_sibling() -> None:
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}))
+    proxy.set_scene(0)
+    assert proxy.is_per_tile_eligible() is True
+
+
+def test_proxy_is_per_tile_eligible_false_for_non_mosaic_scene() -> None:
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: False}))
+    proxy.set_scene(0)
+    assert proxy.is_per_tile_eligible() is False
+
+
+def test_proxy_is_per_tile_eligible_false_when_merged_sibling_present() -> None:
+    """A mosaic scene with a vendor _Merged sibling is NOT per-tile-eligible —
+    the merged sibling is the source of truth for that scene, so per-tile
+    output would be redundant."""
+    inner = _FakeBioioLifReader(
+        {0: True, 1: False},
+        scene_names=["Position 1", "Position 1_Merged"],
+    )
+    proxy = lif_mod._MosaicAwareLifReader(inner)
+    proxy.set_scene(0)
+    assert proxy.is_per_tile_eligible() is False
+
+
 def test_proxy_forwards_arbitrary_attrs() -> None:
     inner = _FakeBioioLifReader({0: True})
     proxy = lif_mod._MosaicAwareLifReader(inner)

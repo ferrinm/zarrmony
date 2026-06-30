@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import dask.array as da
+import xarray as xr
 from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 
 from zarrmony.transforms import NGFF_AXIS_TYPE, NGFF_AXIS_UNIT, normalize_axes
@@ -72,18 +73,30 @@ def write_scene(
     channels: Sequence[Channel] | None = None,
     image_name: str | None = None,
     creator_info: dict | None = None,
+    xarr_override: xr.DataArray | None = None,
+    record_mosaic_summary: bool = True,
 ) -> dict:
     """Convert one scene to an OME-Zarr image at ``store_path``.
 
     Returns an audit dict (scene_index/name, dims, level_shapes,
     axis_normalization record, channel_count, physical_pixel_size).
+
+    ``xarr_override`` substitutes a pre-built xarray for ``reader.xarray_dask_data``
+    (used by ``api.convert(..., lif_mosaic="per-tile")`` to feed in one tile at
+    a time without forking the writer). Physical pixel sizes still come from
+    the reader. ``record_mosaic_summary=False`` suppresses the ``mosaic`` key
+    in the returned audit dict — the per-tile path emits its own ``per_tile``
+    discriminator at the audit caller, so attaching the scene-level mosaic
+    summary to each tile's own audit would double-count and mislead.
     """
     reader.set_scene(scene_index)
     scene_name = reader.scenes[scene_index]
     name = image_name or scene_name
 
-    mosaic_summary = getattr(reader, "mosaic_summary", None)
-    xarr = reader.xarray_dask_data
+    mosaic_summary = (
+        getattr(reader, "mosaic_summary", None) if record_mosaic_summary else None
+    )
+    xarr = xarr_override if xarr_override is not None else reader.xarray_dask_data
     canonical, axis_record = normalize_axes(xarr)
     dims = list(canonical.dims)
     base_shape = tuple(int(s) for s in canonical.shape)

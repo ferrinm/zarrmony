@@ -2,6 +2,7 @@ from ome_types import OME, from_xml
 from ome_types.model import Image, Pixels, PixelType, TiffData
 
 from zarrmony.writers.ome_xml import (
+    attach_stage_position_plane,
     build_combined_ome_xml,
     normalize_image_for_metadata_only,
 )
@@ -56,3 +57,43 @@ def test_image_order_preserved() -> None:
     xml = build_combined_ome_xml(images)
     parsed = from_xml(xml)
     assert [img.id for img in parsed.images] == ["Image:2", "Image:0", "Image:1"]
+
+
+# --- ADR-0005: per-tile <Plane> stage-position stamping ---------------------
+
+
+def test_attach_stage_position_plane_emits_single_plane_in_um() -> None:
+    img = _make_image(0)
+    normalize_image_for_metadata_only(img)
+    attach_stage_position_plane(
+        img, position_x_um=40500.0, position_y_um=17000.0, position_z_um=11700.0
+    )
+    xml = build_combined_ome_xml([img])
+    parsed = from_xml(xml)
+    planes = parsed.images[0].pixels.planes
+    assert len(planes) == 1
+    p = planes[0]
+    assert (p.the_c, p.the_z, p.the_t) == (0, 0, 0)
+    assert p.position_x == 40500.0
+    assert p.position_y == 17000.0
+    assert p.position_z == 11700.0
+    # Units are explicitly µm (OME convention; LIF stores meters, the caller
+    # converts before stamping).
+    assert p.position_x_unit.value == "µm"
+    assert p.position_y_unit.value == "µm"
+    assert p.position_z_unit.value == "µm"
+
+
+def test_attach_stage_position_plane_allows_none_coordinates() -> None:
+    """The LIF extractor may return None for a tile's PosZ — the Plane is still
+    emitted with the present axes filled and the missing axis omitted."""
+    img = _make_image(0)
+    normalize_image_for_metadata_only(img)
+    attach_stage_position_plane(
+        img, position_x_um=10.0, position_y_um=20.0, position_z_um=None
+    )
+    parsed = from_xml(build_combined_ome_xml([img]))
+    p = parsed.images[0].pixels.planes[0]
+    assert p.position_x == 10.0
+    assert p.position_y == 20.0
+    assert p.position_z is None
