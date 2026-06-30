@@ -361,18 +361,14 @@ The strongest test is converting a tiny real fixture and asserting on the
 output store:
 
 ```python
-from zarrmony import convert, UserMetadata
+from zarrmony import convert
 
 def test_convert_myformat_end_to_end(tmp_path, isolated_registry):
     from zarrmony.readers.plugin import register_plugin
     register_plugin(my_plugin)
 
     out_dir = tmp_path / "out"
-    result = convert(
-        "tests/fixtures/tiny.myf",
-        out_dir,
-        metadata=UserMetadata(...),
-    )
+    result = convert("tests/fixtures/tiny.myf", out_dir)
     assert result["stores"]
     assert (out_dir / "scene-0.ome.zarr" / "zarr.json").is_file()
 ```
@@ -488,10 +484,6 @@ against a `PlateLayout`:
   key like `"B04"` or `"AA01"` into `(row, col)`. Casing and zero-padding
   are preserved verbatim — caller validates against the plate's
   canonical spellings.
-- **`zarrmony.writers.plate.resolve_per_well_metadata(d, plate_layout)`**
-  parses a user-supplied `{"B04": {...}, ...}` dict into the
-  `(row, col) -> dict` shape the writer consumes, validating every key
-  against the plate's canonical rows/columns.
 - **`zarrmony.writers.plate.summarize_plate_layout(plate_layout)`**
   returns the OME-NGFF `plate`-shaped summary dict (no I/O), mirroring
   the on-disk `attrs.ome.plate` and the audit `plate` block. Used by

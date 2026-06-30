@@ -170,10 +170,6 @@ def _install(monkeypatch, reader: FakeReader) -> None:
     monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin, 100))
 
 
-def _md() -> dict:
-    return {"microscope": "Stellaris", "modality": "fluorescence"}
-
-
 def test_api_lif_path_writes_real_channels(tmp_path: Path, monkeypatch) -> None:
     xml = FIXTURE.read_text(encoding="utf-8")
     reader = FakeLifReader(
@@ -185,7 +181,7 @@ def test_api_lif_path_writes_real_channels(tmp_path: Path, monkeypatch) -> None:
     _install(monkeypatch, reader)
     out = tmp_path / "out"
 
-    convert("/tmp/x.lif", out, metadata=_md(), pyramid_min_size=8)
+    convert("/tmp/x.lif", out, pyramid_min_size=8)
 
     store = out / "scene0.ome.zarr"
 
@@ -226,7 +222,7 @@ def test_api_non_lif_reader_is_untouched(tmp_path: Path, monkeypatch) -> None:
     _install(monkeypatch, reader)
     out = tmp_path / "out"
 
-    convert("/tmp/x.czi", out, metadata=_md(), pyramid_min_size=8)
+    convert("/tmp/x.czi", out, pyramid_min_size=8)
 
     store = out / "s.ome.zarr"
     g = zarr.open_group(str(store), mode="r")
@@ -252,7 +248,7 @@ def test_api_lif_channel_count_mismatch_falls_back(tmp_path: Path, monkeypatch) 
     out = tmp_path / "out"
 
     # Must not raise; conversion completes.
-    convert("/tmp/x.lif", out, metadata=_md(), pyramid_min_size=8)
+    convert("/tmp/x.lif", out, pyramid_min_size=8)
 
     store = out / "scene0.ome.zarr"
     parsed = from_xml((store / "OME" / "METADATA.ome.xml").read_text())
@@ -278,7 +274,7 @@ def test_api_lif_with_garbage_scene_root_falls_back(
     _install(monkeypatch, reader)
     out = tmp_path / "out"
 
-    convert("/tmp/x.lif", out, metadata=_md(), pyramid_min_size=8)
+    convert("/tmp/x.lif", out, pyramid_min_size=8)
 
     store = out / "s.ome.zarr"
     assert (store / "OME" / "METADATA.ome.xml").exists()

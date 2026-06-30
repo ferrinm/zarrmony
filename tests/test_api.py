@@ -17,7 +17,6 @@ from zarrmony import api as api_module
 from zarrmony import convert, inspect
 from zarrmony.errors import (
     ExtractorWarning,
-    MetadataValidationError,
     MosaicMergedSiblingWarning,
     OutputExistsError,
 )
@@ -47,10 +46,6 @@ def patched_reader(monkeypatch: pytest.MonkeyPatch):
     return installer
 
 
-def _good_metadata() -> dict:
-    return {"microscope": "Axioscan", "modality": "fluorescence"}
-
-
 # ---------- per-scene mode (default) ----------
 
 
@@ -64,9 +59,7 @@ def test_per_scene_minimal_lifecycle(tmp_path: Path, patched_reader) -> None:
     patched_reader(reader, plugin="bioio-fake")
     out = tmp_path / "out"
 
-    result = convert(
-        "/tmp/fake.lif", out, metadata=_good_metadata(), pyramid_min_size=32
-    )
+    result = convert("/tmp/fake.lif", out, pyramid_min_size=32)
 
     assert result["layout"] == "per-scene"
     assert len(result["stores"]) == 2
@@ -94,23 +87,12 @@ def test_per_scene_minimal_lifecycle(tmp_path: Path, patched_reader) -> None:
         assert g["0"].shape == (1, 2, 64, 64)
 
 
-def test_per_scene_writes_audit_with_user_metadata(
-    tmp_path: Path, patched_reader
-) -> None:
+def test_per_scene_writes_audit(tmp_path: Path, patched_reader) -> None:
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
     out = tmp_path / "out"
 
-    result = convert(
-        "/tmp/x.czi",
-        out,
-        metadata={
-            "microscope": "Axioscan",
-            "modality": "multiplex",
-            "objective": "20x",
-        },
-        pyramid_min_size=8,
-    )
+    result = convert("/tmp/x.czi", out, pyramid_min_size=8)
 
     assert len(result["stores"]) == 1
     audit = result["stores"][0]
@@ -119,35 +101,8 @@ def test_per_scene_writes_audit_with_user_metadata(
     assert audit["reader_plugin"]["distribution"] == "bioio-fake"
     assert audit["reader_plugin"]["source"] == "builtin"
     assert audit["reader_plugin"]["match_score"] == 100
-    assert audit["user_metadata"]["microscope"] == "Axioscan"
-    assert audit["user_metadata"]["objective"] == "20x"
     assert audit["config"]["pyramid_min_size"] == 8
     assert audit["config"]["layout"] == "per-scene"
-
-
-def test_per_scene_metadata_gate_raises(tmp_path: Path, patched_reader) -> None:
-    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
-    patched_reader(reader)
-
-    with pytest.raises(MetadataValidationError):
-        convert("/tmp/x.lif", tmp_path / "out1", metadata=None)
-
-    with pytest.raises(MetadataValidationError):
-        convert("/tmp/x.lif", tmp_path / "out2", metadata={"microscope": "Axioscan"})
-
-
-def test_per_scene_permissive_bypasses_gate(tmp_path: Path, patched_reader) -> None:
-    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
-    patched_reader(reader)
-
-    result = convert(
-        "/tmp/x.lif",
-        tmp_path / "out",
-        metadata=None,
-        permissive=True,
-        pyramid_min_size=8,
-    )
-    assert result["stores"][0]["user_metadata"] == {}
 
 
 def test_per_scene_refuses_existing_store(tmp_path: Path, patched_reader) -> None:
@@ -155,9 +110,9 @@ def test_per_scene_refuses_existing_store(tmp_path: Path, patched_reader) -> Non
     patched_reader(reader)
     out = tmp_path / "out"
 
-    convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
+    convert("/tmp/x.lif", out, pyramid_min_size=8)
     with pytest.raises(OutputExistsError):
-        convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
+        convert("/tmp/x.lif", out, pyramid_min_size=8)
 
 
 def test_per_scene_force_overwrites_existing_store(
@@ -167,10 +122,8 @@ def test_per_scene_force_overwrites_existing_store(
     patched_reader(reader)
     out = tmp_path / "out"
 
-    convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
-    result = convert(
-        "/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8, force=True
-    )
+    convert("/tmp/x.lif", out, pyramid_min_size=8)
+    result = convert("/tmp/x.lif", out, pyramid_min_size=8, force=True)
     assert result["stores"][0]["version"]
 
 
@@ -186,38 +139,9 @@ def test_per_scene_does_not_clobber_unrelated_sibling(
     sibling.mkdir()
     (sibling / "marker.txt").write_text("keep me")
 
-    convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
+    convert("/tmp/x.lif", out, pyramid_min_size=8)
 
     assert (sibling / "marker.txt").read_text() == "keep me"
-
-
-def test_per_scene_per_scene_metadata_routes_correctly(
-    tmp_path: Path, patched_reader
-) -> None:
-    reader = FakeReader(scenes=["a", "b"], dims="TCYX", shape=(1, 1, 32, 32))
-    patched_reader(reader)
-    out = tmp_path / "out"
-
-    result = convert(
-        "/tmp/x.lif",
-        out,
-        metadata=_good_metadata(),
-        per_scene_metadata={
-            "b": {
-                "microscope": "Axioscan",
-                "modality": "multiplex",
-                "objective": "63x",
-            },
-        },
-        pyramid_min_size=8,
-    )
-
-    by_name = {s["scene_name"]: s for s in result["stores"]}
-    assert by_name["b"]["user_metadata"]["objective"] == "63x"
-    # "a" falls back to root-level metadata (no per-scene override supplied):
-    # the model dumps ``objective`` as None since it wasn't set there.
-    assert by_name["a"]["user_metadata"]["microscope"] == "Axioscan"
-    assert by_name["a"]["user_metadata"].get("objective") is None
 
 
 def test_per_scene_warns_and_records_on_extractor_failure(
@@ -231,9 +155,7 @@ def test_per_scene_warns_and_records_on_extractor_failure(
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        result = convert(
-            "/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8
-        )
+        result = convert("/tmp/x.lif", out, pyramid_min_size=8)
 
     extractor_warns = [w for w in caught if issubclass(w.category, ExtractorWarning)]
     assert len(extractor_warns) >= 1
@@ -253,7 +175,7 @@ def test_per_scene_writes_source_xml_named_by_input_ext(
     patched_reader(reader)
     out = tmp_path / "out"
 
-    convert("/tmp/sample.czi", out, metadata=_good_metadata(), pyramid_min_size=8)
+    convert("/tmp/sample.czi", out, pyramid_min_size=8)
 
     # Each per-scene store carries its own copy of the raw vendor XML.
     for scene_name in ["a", "b"]:
@@ -269,7 +191,7 @@ def test_per_scene_omits_source_xml_when_reader_metadata_none(
     patched_reader(reader)
     out = tmp_path / "out"
 
-    convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
+    convert("/tmp/x.lif", out, pyramid_min_size=8)
 
     assert not (out / "s.ome.zarr" / "OME" / "source").exists()
 
@@ -281,7 +203,7 @@ def test_per_scene_sanitizes_scene_names_in_dirnames(
     patched_reader(reader)
     out = tmp_path / "out"
 
-    result = convert("/tmp/x.lif", out, metadata=_good_metadata(), pyramid_min_size=8)
+    result = convert("/tmp/x.lif", out, pyramid_min_size=8)
 
     assert (out / "a_b.ome.zarr").is_dir()
     assert (out / "c_d.ome.zarr").is_dir()
@@ -303,13 +225,7 @@ def test_bf2raw_opt_in_round_trip(tmp_path: Path, patched_reader) -> None:
     patched_reader(reader, plugin="bioio-fake")
     out = tmp_path / "x.ome.zarr"
 
-    audit = convert(
-        "/tmp/fake.lif",
-        out,
-        layout="bf2raw",
-        metadata=_good_metadata(),
-        pyramid_min_size=32,
-    )
+    audit = convert("/tmp/fake.lif", out, layout="bf2raw", pyramid_min_size=32)
 
     with open(out / "zarr.json") as f:
         root = json.load(f)
@@ -334,21 +250,9 @@ def test_bf2raw_refuses_overwrite(tmp_path: Path, patched_reader) -> None:
     patched_reader(reader)
     out = tmp_path / "x.zarr"
 
-    convert(
-        "/tmp/x.lif",
-        out,
-        layout="bf2raw",
-        metadata=_good_metadata(),
-        pyramid_min_size=8,
-    )
+    convert("/tmp/x.lif", out, layout="bf2raw", pyramid_min_size=8)
     with pytest.raises(OutputExistsError):
-        convert(
-            "/tmp/x.lif",
-            out,
-            layout="bf2raw",
-            metadata=_good_metadata(),
-            pyramid_min_size=8,
-        )
+        convert("/tmp/x.lif", out, layout="bf2raw", pyramid_min_size=8)
 
 
 def test_unknown_layout_raises(tmp_path: Path, patched_reader) -> None:
@@ -356,7 +260,7 @@ def test_unknown_layout_raises(tmp_path: Path, patched_reader) -> None:
     patched_reader(reader)
 
     with pytest.raises(ValueError, match="layout"):
-        convert("/tmp/x.lif", tmp_path / "x", layout="bogus", metadata=_good_metadata())
+        convert("/tmp/x.lif", tmp_path / "x", layout="bogus")
 
 
 # ---------- inspect ----------
@@ -486,9 +390,7 @@ def test_per_scene_skips_scene_with_skip_reason(tmp_path: Path, patched_reader) 
     out = tmp_path / "out"
 
     with pytest.warns(MosaicMergedSiblingWarning, match="Position 1_Merged"):
-        result = convert(
-            "/tmp/fake.lif", out, metadata=_good_metadata(), pyramid_min_size=32
-        )
+        result = convert("/tmp/fake.lif", out, pyramid_min_size=32)
 
     assert result["layout"] == "per-scene"
     assert len(result["stores"]) == 1

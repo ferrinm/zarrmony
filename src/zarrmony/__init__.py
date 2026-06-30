@@ -5,6 +5,5 @@ from importlib.metadata import version
 __version__ = version("zarrmony")
 
 from zarrmony.api import convert, inspect
-from zarrmony.metadata.model import UserMetadata
 
-__all__ = ["__version__", "convert", "inspect", "UserMetadata"]
+__all__ = ["__version__", "convert", "inspect"]

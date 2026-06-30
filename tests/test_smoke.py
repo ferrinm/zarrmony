@@ -22,5 +22,5 @@ def test_cli_help_runs() -> None:
 def test_cli_subcommands_registered() -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["--help"])
-    for cmd in ("convert", "inspect", "schema"):
+    for cmd in ("convert", "inspect"):
         assert cmd in result.output

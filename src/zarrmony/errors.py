@@ -5,14 +5,6 @@ class ZarrmonyError(Exception):
     """Base class for all zarrmony exceptions."""
 
 
-class MetadataValidationError(ZarrmonyError):
-    """User-supplied metadata failed the compliance gate.
-
-    Raised by ``convert(...)`` when the gate is enabled (default) and required
-    fields are missing or invalid. Pass ``permissive=True`` to bypass.
-    """
-
-
 class OutputExistsError(ZarrmonyError):
     """Refused to overwrite an existing output store. Pass ``force=True`` to overwrite."""
 

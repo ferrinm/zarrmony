@@ -1,16 +1,14 @@
 """Command-line interface for zarrmony.
 
-Three subcommands:
+Two subcommands:
 
 - ``zarrmony convert INPUT OUTPUT`` — convert a bioimage file to OME-Zarr v0.5.
 - ``zarrmony inspect INPUT`` — print a scene summary without converting.
-- ``zarrmony schema dump`` — emit JSON Schema for the user-metadata model.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import click
@@ -18,20 +16,13 @@ import click
 from zarrmony import __version__
 from zarrmony import api as zm_api
 from zarrmony._storage import format_bytes, size_on_disk
-from zarrmony.errors import MetadataValidationError, OutputExistsError
-from zarrmony.metadata.schema import export_schema_json
+from zarrmony.errors import OutputExistsError
 
 
 @click.group(name="zarrmony")
 @click.version_option(__version__, prog_name="zarrmony")
 def app() -> None:
     """Convert any bioimage file to OME-Zarr v0.5, preserving metadata."""
-
-
-def _load_json(path: str | None) -> Any:
-    if path is None:
-        return None
-    return json.loads(Path(path).read_text())
 
 
 def _format_plate_summary(plate: dict[str, Any]) -> str:
@@ -67,19 +58,6 @@ def _parse_chunk_shape(
 @app.command(name="convert")
 @click.argument("input_path", metavar="INPUT", type=str)
 @click.argument("output", metavar="OUTPUT", type=str)
-@click.option(
-    "--metadata-file",
-    "-m",
-    type=click.Path(exists=True, dir_okay=False),
-    default=None,
-    help="JSON file with user-supplied metadata (matching the UserMetadata schema).",
-)
-@click.option(
-    "--per-scene-metadata",
-    type=click.Path(exists=True, dir_okay=False),
-    default=None,
-    help="JSON file mapping scene_name → metadata dict for per-scene overrides.",
-)
 @click.option(
     "--layout",
     type=click.Choice(["auto", "per-scene", "bf2raw", "plate"]),
@@ -118,11 +96,6 @@ def _parse_chunk_shape(
     ),
 )
 @click.option(
-    "--permissive",
-    is_flag=True,
-    help="Skip the metadata compliance gate (for prototyping).",
-)
-@click.option(
     "--checksum",
     is_flag=True,
     help="Include SHA256 of the input file in the audit attrs (slower).",
@@ -142,13 +115,10 @@ def _parse_chunk_shape(
 def convert_cmd(
     input_path: str,
     output: str,
-    metadata_file: str | None,
-    per_scene_metadata: str | None,
     layout: str,
     pyramid_min_size: int,
     chunk_shape: tuple[int, ...] | None,
     force: bool,
-    permissive: bool,
     checksum: bool,
     validate: bool,
 ) -> None:
@@ -159,25 +129,17 @@ def convert_cmd(
     ``<scene>.ome.zarr`` per scene under OUTPUT, plate-shaped readers write
     a single OME-NGFF HCS plate store at OUTPUT.
     """
-    metadata = _load_json(metadata_file)
-    per_scene = _load_json(per_scene_metadata)
-
     try:
         result = zm_api.convert(
             input_path=input_path,
             output=output,
             layout=layout,
-            metadata=metadata,
-            per_scene_metadata=per_scene,
             pyramid_min_size=pyramid_min_size,
             chunk_shape=chunk_shape,
             force=force,
-            permissive=permissive,
             checksum=checksum,
             validate=validate,
         )
-    except MetadataValidationError as e:
-        raise click.ClickException(f"Metadata validation failed:\n{e}") from e
     except OutputExistsError as e:
         raise click.ClickException(str(e)) from e
 
@@ -240,17 +202,3 @@ def inspect_cmd(input_path: str, as_json: bool) -> None:
         click.echo(f"      dims={dims_str} shape={shape_str} dtype={s['dtype']}")
         click.echo(f"      channels: {chans}")
         click.echo(f"      pixel sizes: {px_str}")
-
-
-@app.group(name="schema")
-def schema_group() -> None:
-    """Inspect or export the user-metadata schema."""
-
-
-@schema_group.command(name="dump")
-def schema_dump_cmd() -> None:
-    """Emit the JSON Schema for the user-supplied metadata model.
-
-    Pipe to a file or to a tool like ``yq`` for YAML conversion.
-    """
-    click.echo(export_schema_json())

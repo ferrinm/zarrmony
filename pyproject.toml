@@ -17,7 +17,6 @@ dependencies = [
     "dask>=2026.3.0",
     "numpy>=2",
     "ome-types>=0.6.3",
-    "pydantic>=2.10",
     "scikit-image>=0.26.0",
     "xarray>=2025.9.0",
     # zarr pinned <3.2 because tifffile's tifffile.zarr module imports

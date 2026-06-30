@@ -48,7 +48,6 @@ def test_validate_store_passes_for_per_scene(
         result = zm_api.convert(
             input_path=str(tmp_path / "in.fake"),
             output=str(tmp_path / "out"),
-            permissive=True,
             pyramid_min_size=8,
             validate=False,
         )
@@ -64,7 +63,6 @@ def test_validate_store_passes_for_bf2raw(
         zm_api.convert(
             input_path=str(tmp_path / "in.fake"),
             output=str(tmp_path / "bundle.ome.zarr"),
-            permissive=True,
             pyramid_min_size=8,
             layout="bf2raw",
             validate=False,
@@ -108,7 +106,6 @@ def test_validate_store_passes_for_plate(
         zm_api.convert(
             input_path=str(tmp_path / "in.fake"),
             output=str(tmp_path / "plate.ome.zarr"),
-            permissive=True,
             pyramid_min_size=8,
             validate=False,
         )
@@ -133,7 +130,6 @@ def test_convert_default_validate_writes_clean_audit(
         result = zm_api.convert(
             input_path=str(tmp_path / "in.fake"),
             output=str(tmp_path / "out"),
-            permissive=True,
             pyramid_min_size=8,
         )
     audit = result["stores"][0]
@@ -153,7 +149,6 @@ def test_convert_validate_false_skips_validator(
             result = zm_api.convert(
                 input_path=str(tmp_path / "in.fake"),
                 output=str(tmp_path / "out"),
-                permissive=True,
                 pyramid_min_size=8,
                 validate=False,
             )
@@ -170,7 +165,6 @@ def test_convert_validate_true_but_extra_missing_warns_and_continues(
                 result = zm_api.convert(
                     input_path=str(tmp_path / "in.fake"),
                     output=str(tmp_path / "out"),
-                    permissive=True,
                     pyramid_min_size=8,
                 )
     assert result["stores"][0]["validation_warnings"] == []

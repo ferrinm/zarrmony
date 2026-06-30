@@ -34,11 +34,6 @@ def patched_reader(monkeypatch: pytest.MonkeyPatch):
     return installer
 
 
-def _write_metadata_file(path: Path, data: dict) -> Path:
-    path.write_text(json.dumps(data))
-    return path
-
-
 # ---------- convert (per-scene default) ----------
 
 
@@ -47,9 +42,6 @@ def test_convert_per_scene_default_writes_one_store_per_scene(
 ) -> None:
     reader = FakeReader(scenes=["alpha", "beta"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
-    md = _write_metadata_file(
-        tmp_path / "md.json", {"microscope": "Axioscan", "modality": "fluorescence"}
-    )
     out = tmp_path / "out"
 
     result = runner.invoke(
@@ -58,8 +50,6 @@ def test_convert_per_scene_default_writes_one_store_per_scene(
             "convert",
             "/tmp/x.lif",
             str(out),
-            "--metadata-file",
-            str(md),
             "--pyramid-min-size",
             "8",
         ],
@@ -76,46 +66,14 @@ def test_convert_per_scene_singular_store_phrasing(
 ) -> None:
     reader = FakeReader(scenes=["only"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
-    md = _write_metadata_file(
-        tmp_path / "md.json", {"microscope": "Axioscan", "modality": "fluorescence"}
-    )
     out = tmp_path / "out"
 
     result = runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "-m", str(md), "--pyramid-min-size", "8"],
+        ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"],
     )
     assert result.exit_code == 0, result.output
     assert "Wrote 1 store to" in result.output
-
-
-def test_convert_permissive_bypasses_gate(
-    tmp_path: Path, runner: CliRunner, patched_reader
-) -> None:
-    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
-    patched_reader(reader)
-    out = tmp_path / "out"
-
-    result = runner.invoke(
-        app,
-        ["convert", "/tmp/x.lif", str(out), "--permissive", "--pyramid-min-size", "8"],
-    )
-    assert result.exit_code == 0, result.output
-    assert (out / "s.ome.zarr" / "zarr.json").exists()
-
-
-def test_convert_no_metadata_no_permissive_fails_friendly(
-    tmp_path: Path, runner: CliRunner, patched_reader
-) -> None:
-    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
-    patched_reader(reader)
-    out = tmp_path / "out"
-
-    result = runner.invoke(
-        app, ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"]
-    )
-    assert result.exit_code != 0
-    assert "Metadata validation failed" in result.output
 
 
 def test_convert_existing_store_without_force_fails_friendly(
@@ -123,20 +81,17 @@ def test_convert_existing_store_without_force_fails_friendly(
 ) -> None:
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
-    md = _write_metadata_file(
-        tmp_path / "md.json", {"microscope": "Axioscan", "modality": "multiplex"}
-    )
     out = tmp_path / "out"
 
     r1 = runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "-m", str(md), "--pyramid-min-size", "8"],
+        ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"],
     )
     assert r1.exit_code == 0
 
     r2 = runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "-m", str(md), "--pyramid-min-size", "8"],
+        ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"],
     )
     assert r2.exit_code != 0
     assert "already exists" in r2.output
@@ -148,14 +103,11 @@ def test_convert_force_overwrites(
 ) -> None:
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
-    md = _write_metadata_file(
-        tmp_path / "md.json", {"microscope": "Axioscan", "modality": "multiplex"}
-    )
     out = tmp_path / "out"
 
     runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "-m", str(md), "--pyramid-min-size", "8"],
+        ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"],
     )
     r2 = runner.invoke(
         app,
@@ -163,8 +115,6 @@ def test_convert_force_overwrites(
             "convert",
             "/tmp/x.lif",
             str(out),
-            "-m",
-            str(md),
             "--pyramid-min-size",
             "8",
             "--force",
@@ -180,14 +130,11 @@ def test_convert_prints_input_and_output_size_lines_per_scene(
     patched_reader(reader)
     src = tmp_path / "in.lif"
     src.write_bytes(b"\x00" * 4096)
-    md = _write_metadata_file(
-        tmp_path / "md.json", {"microscope": "Axioscan", "modality": "fluorescence"}
-    )
     out = tmp_path / "out"
 
     result = runner.invoke(
         app,
-        ["convert", str(src), str(out), "-m", str(md), "--pyramid-min-size", "8"],
+        ["convert", str(src), str(out), "--pyramid-min-size", "8"],
     )
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
@@ -211,7 +158,6 @@ def test_convert_chunk_shape_invalid_format(
             "convert",
             "/tmp/x.lif",
             str(out),
-            "--permissive",
             "--chunk-shape",
             "not,a,number",
         ],
@@ -228,9 +174,6 @@ def test_convert_layout_bf2raw_writes_bundle(
 ) -> None:
     reader = FakeReader(scenes=["a", "b"], dims="TCYX", shape=(1, 1, 32, 32))
     patched_reader(reader)
-    md = _write_metadata_file(
-        tmp_path / "md.json", {"microscope": "Axioscan", "modality": "fluorescence"}
-    )
     out = tmp_path / "x.ome.zarr"
 
     result = runner.invoke(
@@ -241,8 +184,6 @@ def test_convert_layout_bf2raw_writes_bundle(
             str(out),
             "--layout",
             "bf2raw",
-            "-m",
-            str(md),
             "--pyramid-min-size",
             "8",
         ],
@@ -264,7 +205,7 @@ def test_convert_layout_invalid_choice_rejected(
 
     result = runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "--layout", "bogus", "--permissive"],
+        ["convert", "/tmp/x.lif", str(out), "--layout", "bogus"],
     )
     assert result.exit_code != 0
     assert "layout" in result.output.lower()
@@ -395,16 +336,3 @@ def test_inspect_text_output_prints_plate_header_for_plate_reader(
     assert "3/4 wells imaged" in result.output
     assert "1 field per well" in result.output
     assert "1 acquisition" in result.output
-
-
-# ---------- schema dump ----------
-
-
-def test_schema_dump_emits_valid_json_schema(runner: CliRunner) -> None:
-    result = runner.invoke(app, ["schema", "dump"])
-    assert result.exit_code == 0
-    parsed = json.loads(result.output)
-    assert "required" in parsed
-    assert "microscope" in parsed["required"]
-    assert "modality" in parsed["required"]
-    assert "properties" in parsed

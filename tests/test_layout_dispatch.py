@@ -18,7 +18,6 @@ Also exercises:
 
 from __future__ import annotations
 
-import json
 import warnings
 from pathlib import Path
 
@@ -100,7 +99,6 @@ def test_auto_plus_flat_reader_resolves_to_per_scene(
         "/tmp/fake.czi",
         tmp_path / "out",
         layout="auto",
-        metadata={"microscope": "Axioscan", "modality": "fluorescence"},
         pyramid_min_size=8,
     )
     assert result["layout"] == "per-scene"
@@ -117,7 +115,6 @@ def test_auto_plus_plate_reader_resolves_to_plate(
         "/tmp/fake.czi",
         out,
         layout="auto",
-        metadata={"microscope": "Axioscan", "modality": "fluorescence"},
         pyramid_min_size=8,
     )
     assert audit["layout"] == "plate"
@@ -132,7 +129,6 @@ def test_auto_is_the_default_layout(tmp_path: Path, patched_reader) -> None:
     audit = convert(
         "/tmp/fake.czi",
         out,
-        metadata={"microscope": "Axioscan", "modality": "fluorescence"},
         pyramid_min_size=8,
     )
     assert audit["layout"] == "plate"
@@ -151,7 +147,6 @@ def test_per_scene_against_plate_reader_warns_and_writes_flat(
             "/tmp/fake.czi",
             out,
             layout="per-scene",
-            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
             pyramid_min_size=8,
         )
     assert result["layout"] == "per-scene"
@@ -170,7 +165,6 @@ def test_bf2raw_against_plate_reader_warns_and_writes_bundle(
             "/tmp/fake.czi",
             out,
             layout="bf2raw",
-            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
             pyramid_min_size=8,
         )
     assert audit["layout"] == "bf2raw"
@@ -190,7 +184,6 @@ def test_plate_against_flat_reader_message_names_layout_hint(
             "/tmp/fake.czi",
             tmp_path / "out.ome.zarr",
             layout="plate",
-            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
         )
     msg = str(exc.value)
     assert "layout_hint='flat'" in msg
@@ -210,7 +203,6 @@ def test_per_scene_against_flat_reader_does_not_warn(
             "/tmp/fake.czi",
             tmp_path / "out",
             layout="per-scene",
-            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
             pyramid_min_size=8,
         )
     downgrade = [w for w in record if issubclass(w.category, LayoutDowngradeWarning)]
@@ -237,7 +229,6 @@ def test_plate_warns_on_unreferenced_scenes(tmp_path: Path, patched_reader) -> N
             "/tmp/fake.czi",
             out,
             layout="auto",
-            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
             pyramid_min_size=8,
         )
 
@@ -253,7 +244,6 @@ def test_plate_does_not_warn_when_all_scenes_referenced(
             "/tmp/fake.czi",
             out,
             layout="auto",
-            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
             pyramid_min_size=8,
         )
     downgrade = [w for w in record if issubclass(w.category, LayoutDowngradeWarning)]
@@ -270,7 +260,6 @@ def test_unknown_layout_value_rejected(tmp_path: Path, patched_reader) -> None:
             "/tmp/fake.czi",
             tmp_path / "out",
             layout="bogus",  # type: ignore[arg-type]
-            metadata={"microscope": "Axioscan", "modality": "fluorescence"},
         )
 
 
@@ -282,22 +271,16 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-def _write_md(path: Path) -> Path:
-    path.write_text(json.dumps({"microscope": "Axioscan", "modality": "fluorescence"}))
-    return path
-
-
 def test_cli_auto_default_writes_per_scene_for_flat_reader(
     tmp_path: Path, runner: CliRunner, patched_reader
 ) -> None:
     patched_reader(_flat_reader(2))
-    md = _write_md(tmp_path / "md.json")
     out = tmp_path / "out"
 
     # No --layout flag → defaults to auto.
     result = runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "-m", str(md), "--pyramid-min-size", "8"],
+        ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"],
     )
     assert result.exit_code == 0, result.output
     assert "Wrote 2 stores to" in result.output
@@ -309,12 +292,11 @@ def test_cli_auto_default_writes_plate_for_plate_reader(
     tmp_path: Path, runner: CliRunner, patched_reader
 ) -> None:
     patched_reader(_plate_reader())
-    md = _write_md(tmp_path / "md.json")
     out = tmp_path / "plate.ome.zarr"
 
     result = runner.invoke(
         app,
-        ["convert", "/tmp/x.lif", str(out), "-m", str(md), "--pyramid-min-size", "8"],
+        ["convert", "/tmp/x.lif", str(out), "--pyramid-min-size", "8"],
     )
     assert result.exit_code == 0, result.output
     assert "(plate)" in result.output
@@ -325,7 +307,6 @@ def test_cli_explicit_layout_auto_matches_omitted(
     tmp_path: Path, runner: CliRunner, patched_reader
 ) -> None:
     patched_reader(_plate_reader())
-    md = _write_md(tmp_path / "md.json")
     out = tmp_path / "plate.ome.zarr"
 
     result = runner.invoke(
@@ -336,8 +317,6 @@ def test_cli_explicit_layout_auto_matches_omitted(
             str(out),
             "--layout",
             "auto",
-            "-m",
-            str(md),
             "--pyramid-min-size",
             "8",
         ],

@@ -20,11 +20,6 @@ from ome_types import from_xml  # noqa: E402
 from tests.fixtures.synthesize import make_synth_ome_tiff  # noqa: E402
 from zarrmony import convert  # noqa: E402
 
-
-def _good_metadata() -> dict:
-    return {"microscope": "FakeScope", "modality": "fluorescence"}
-
-
 # ---------- per-scene (default) ----------
 
 
@@ -39,7 +34,7 @@ def test_per_scene_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     )
     out = tmp_path / "out"
 
-    result = convert(str(src), out, metadata=_good_metadata(), pyramid_min_size=32)
+    result = convert(str(src), out, pyramid_min_size=32)
 
     assert result["layout"] == "per-scene"
     assert len(result["stores"]) == 1
@@ -50,7 +45,6 @@ def test_per_scene_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     assert audit["reader_plugin"]["match_score"] == 0
     assert audit["audit_schema_version"] == 4
     assert audit["input"]["size_bytes"] > 0
-    assert audit["user_metadata"]["microscope"] == "FakeScope"
 
     # bioio's synth scene name is "Image:0".
     store = out / f"{audit['per_scene'][0]['scene_name'].replace(':', '_')}.ome.zarr"
@@ -93,7 +87,7 @@ def test_per_scene_multi_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     )
     out = tmp_path / "out"
 
-    result = convert(str(src), out, metadata=_good_metadata(), pyramid_min_size=8)
+    result = convert(str(src), out, pyramid_min_size=8)
 
     assert len(result["stores"]) == 3
 
@@ -123,7 +117,7 @@ def test_per_scene_pyramid_levels_match_expected(tmp_path: Path) -> None:
     )
     out = tmp_path / "out"
 
-    result = convert(str(src), out, metadata=_good_metadata(), pyramid_min_size=32)
+    result = convert(str(src), out, pyramid_min_size=32)
 
     audit = result["stores"][0]
     # bioio normalizes to 5D TCZYX. 256 → 128 → 64 → 32; next 16 < 32, stop.
@@ -149,9 +143,7 @@ def test_bf2raw_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     )
     out = tmp_path / "out.ome.zarr"
 
-    audit = convert(
-        str(src), out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=32
-    )
+    audit = convert(str(src), out, layout="bf2raw", pyramid_min_size=32)
 
     assert audit["reader_plugin"]["name"] == "bioio"
     assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
@@ -187,9 +179,7 @@ def test_bf2raw_multi_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     )
     out = tmp_path / "multi.ome.zarr"
 
-    audit = convert(
-        str(src), out, layout="bf2raw", metadata=_good_metadata(), pyramid_min_size=8
-    )
+    audit = convert(str(src), out, layout="bf2raw", pyramid_min_size=8)
 
     assert len(audit["per_scene"]) == 3
 

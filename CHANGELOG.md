@@ -38,6 +38,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report the full recursive byte count instead of the top-level inode size.
 - `audit_schema_version` bumped to 4 (added top-level `validation_warnings`).
 
+### Removed
+
+- **BREAKING (#33):** Entire user-supplied metadata surface. User metadata is
+  now owned by [aperture-backend](https://github.com/calicolabs/aperture-backend),
+  which associates OME-Zarr stores to a separate metadata database.
+  Removed from zarrmony:
+  - `zarrmony.UserMetadata` (the Pydantic model) and the
+    `zarrmony.metadata.model` / `zarrmony.metadata.schema` modules.
+  - `MetadataValidationError` (no longer raised).
+  - `convert()`'s `metadata=`, `per_scene_metadata=`, `per_well_metadata=`,
+    and `permissive=` parameters.
+  - The CLI options `--metadata-file` / `-m`, `--per-scene-metadata`, and
+    `--permissive`; the `zarrmony schema dump` subcommand and `schema`
+    command group.
+  - `write_plate(..., per_well_user_metadata=...)` parameter,
+    `zarrmony.writers.plate.resolve_per_well_metadata`, and the
+    `attrs.zarrmony.user_metadata` block on well groups and audit records
+    (per-scene, bf2raw, and plate audits all drop `user_metadata`).
+
+  Migration: drop these parameters and flags from all callers. The
+  file-derived metadata (OME-XML, LIF channel identities, audit records'
+  reader / bioio distribution / validation findings / etc.) is unchanged
+  and remains zarrmony's responsibility.
+
 ## [0.3.6] - 2026-05-15
 
 ### Fixed

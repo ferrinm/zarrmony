@@ -13,7 +13,6 @@ import fsspec
 from bioio_ome_zarr.writers import Channel
 from ome_types import OME
 from ome_types.model import Image, Pixels, PixelType
-from pydantic import ValidationError
 
 from zarrmony import _validate
 from zarrmony._storage import size_on_disk
@@ -22,7 +21,6 @@ from zarrmony.errors import (
     ExtractorWarning,
     LayoutDowngradeWarning,
     LayoutMismatchError,
-    MetadataValidationError,
     MosaicMergedSiblingWarning,
     OutputExistsError,
     ValidationWarning,
@@ -34,18 +32,13 @@ from zarrmony.metadata.lif_channels import (
     channels_to_omero,
     extract_channels,
 )
-from zarrmony.metadata.model import UserMetadata
 from zarrmony.naming import resolve_scene_dirnames
 from zarrmony.readers.default import derive_bioio_distribution
 from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import build_combined_ome_xml, build_ome_xml_for_scene
 from zarrmony.writers.per_scene import write_per_scene_metadata
-from zarrmony.writers.plate import (
-    resolve_per_well_metadata,
-    summarize_plate_layout,
-    write_plate,
-)
+from zarrmony.writers.plate import summarize_plate_layout, write_plate
 from zarrmony.writers.scene import write_scene
 
 Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
@@ -86,30 +79,6 @@ def _resolve_layout(
             stacklevel=3,
         )
     return layout  # type: ignore[return-value]
-
-
-def _validate_metadata(
-    metadata: UserMetadata | dict | None,
-    permissive: bool,
-) -> dict:
-    if metadata is None:
-        if permissive:
-            return {}
-        raise MetadataValidationError(
-            "metadata is required (pass permissive=True to bypass for prototyping)"
-        )
-    if isinstance(metadata, UserMetadata):
-        return metadata.model_dump(exclude_none=False)
-    if isinstance(metadata, dict):
-        if permissive:
-            return dict(metadata)
-        try:
-            return UserMetadata(**metadata).model_dump(exclude_none=False)
-        except ValidationError as e:
-            raise MetadataValidationError(str(e)) from e
-    raise TypeError(
-        f"metadata must be UserMetadata, dict, or None (got {type(metadata).__name__})"
-    )
 
 
 def _check_output(output: str | Path, *, force: bool) -> None:
@@ -383,14 +352,10 @@ def convert(
     output: str | Path,
     *,
     layout: Layout = "auto",
-    metadata: UserMetadata | dict | None = None,
-    per_scene_metadata: dict[str, UserMetadata | dict] | None = None,
-    per_well_metadata: dict[str, UserMetadata | dict] | None = None,
     pyramid_min_size: int = 256,
     chunk_shape: Sequence[int] | None = None,
     channel_colors: dict[str, str] | None = None,
     force: bool = False,
-    permissive: bool = False,
     checksum: bool = False,
     validate: bool = True,
 ) -> dict:
@@ -414,8 +379,6 @@ def convert(
             f"layout must be one of {list(_VALID_LAYOUTS)} (got {layout!r})"
         )
 
-    user_metadata = _validate_metadata(metadata, permissive)
-
     reader, plugin, match_score = get_reader(input_path)
     if not reader.scenes:
         raise ZarrmonyError(f"reader returned no scenes for {input_path!s}")
@@ -423,44 +386,12 @@ def convert(
 
     effective_layout = _resolve_layout(layout, reader, plugin)
 
-    per_scene_user_metadata: dict[str, dict] = {}
-    if per_scene_metadata:
-        if effective_layout == "plate":
-            raise ValueError(
-                "per_scene_metadata is not supported in plate mode; "
-                "use per_well_metadata={'B04': {...}, ...} for per-well overrides"
-            )
-        for scene_name, m in per_scene_metadata.items():
-            per_scene_user_metadata[scene_name] = _validate_metadata(m, permissive)
-
-    per_well_user_metadata: dict[tuple[str, str], dict] = {}
-    if per_well_metadata:
-        if effective_layout != "plate":
-            raise ValueError(
-                "per_well_metadata is only supported in plate mode "
-                f"(got effective layout={effective_layout!r})"
-            )
-        plate_layout = getattr(reader, "plate_layout", None)
-        if plate_layout is None:
-            raise ZarrmonyError(
-                f"per_well_metadata requires reader.plate_layout to be set; "
-                f"got None for {input_path!s}"
-            )
-        validated_per_well = {
-            key: _validate_metadata(m, permissive)
-            for key, m in per_well_metadata.items()
-        }
-        per_well_user_metadata = resolve_per_well_metadata(
-            validated_per_well, plate_layout
-        )
-
     config = {
         "layout": effective_layout,
         "pyramid_min_size": pyramid_min_size,
         "chunk_shape": list(chunk_shape) if chunk_shape else None,
         "channel_colors": dict(channel_colors) if channel_colors else None,
         "force": force,
-        "permissive": permissive,
         "checksum": checksum,
         "validate": validate,
     }
@@ -473,8 +404,6 @@ def convert(
             distribution=distribution,
             input_path=input_path,
             output=output,
-            user_metadata=user_metadata,
-            per_well_user_metadata=per_well_user_metadata,
             pyramid_min_size=pyramid_min_size,
             chunk_shape=chunk_shape,
             channel_colors=channel_colors,
@@ -491,8 +420,6 @@ def convert(
             distribution=distribution,
             input_path=input_path,
             output=output,
-            user_metadata=user_metadata,
-            per_scene_user_metadata=per_scene_user_metadata,
             pyramid_min_size=pyramid_min_size,
             chunk_shape=chunk_shape,
             channel_colors=channel_colors,
@@ -508,8 +435,6 @@ def convert(
         distribution=distribution,
         input_path=input_path,
         output=output,
-        user_metadata=user_metadata,
-        per_scene_user_metadata=per_scene_user_metadata,
         pyramid_min_size=pyramid_min_size,
         chunk_shape=chunk_shape,
         channel_colors=channel_colors,
@@ -528,8 +453,6 @@ def _convert_per_scene(
     distribution: str | None,
     input_path: str | Path,
     output: str | Path,
-    user_metadata: dict,
-    per_scene_user_metadata: dict[str, dict],
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
     channel_colors: dict[str, str] | None,
@@ -591,11 +514,6 @@ def _convert_per_scene(
         scene_record["store_path"] = store_path
         scene_record["dirname"] = dirnames[scene_index]
 
-        scene_user_md: dict | None = None
-        if scene_name in per_scene_user_metadata:
-            scene_user_md = per_scene_user_metadata[scene_name]
-            scene_record["user_metadata"] = scene_user_md
-
         metadata_warnings: list[dict] = []
         ome_image: Image | None = None
         if lif_extracted is not None:
@@ -639,11 +557,6 @@ def _convert_per_scene(
             checksum=checksum,
         )
         audit["validation_warnings"] = validation_findings
-        # Effective user_metadata for this store: per-scene override falls back
-        # to the root-level user_metadata.
-        audit["user_metadata"] = (
-            scene_user_md if scene_user_md is not None else user_metadata
-        )
         audit["store_path"] = store_path
         audit["scene_index"] = scene_index
         audit["scene_name"] = scene_name
@@ -666,8 +579,6 @@ def _convert_bf2raw(
     distribution: str | None,
     input_path: str | Path,
     output: str | Path,
-    user_metadata: dict,
-    per_scene_user_metadata: dict[str, dict],
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
     channel_colors: dict[str, str] | None,
@@ -701,9 +612,6 @@ def _convert_bf2raw(
             channels=channels,
             image_name=scene_name,
         )
-
-        if scene_name in per_scene_user_metadata:
-            scene_record["user_metadata"] = per_scene_user_metadata[scene_name]
 
         per_scene_records.append(scene_record)
         series_paths.append(str(scene_index))
@@ -751,7 +659,6 @@ def _convert_bf2raw(
         checksum=checksum,
     )
     audit["validation_warnings"] = validation_findings
-    audit["user_metadata"] = user_metadata
     write_audit_record(output, audit)
 
     return audit
@@ -765,8 +672,6 @@ def _convert_plate(
     distribution: str | None,
     input_path: str | Path,
     output: str | Path,
-    user_metadata: dict,
-    per_well_user_metadata: dict[tuple[str, str], dict],
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
     channel_colors: dict[str, str] | None,
@@ -810,7 +715,6 @@ def _convert_plate(
         pyramid_min_size=pyramid_min_size,
         chunk_shape=chunk_shape,
         channel_colors=channel_colors,
-        per_well_user_metadata=per_well_user_metadata,
         ome_image_for_field=_ome_image_for_field,
         ome_xml_builder=build_combined_ome_xml,
         source_xml=source_xml,
@@ -836,7 +740,6 @@ def _convert_plate(
         checksum=checksum,
     )
     audit["validation_warnings"] = validation_findings
-    audit["user_metadata"] = user_metadata
     write_audit_record(output, audit)
 
     return audit
