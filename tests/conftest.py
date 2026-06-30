@@ -22,6 +22,59 @@ class FakePhysicalPixelSizes:
     X: float = 1.0
 
 
+@dataclass
+class TileScene:
+    """Describes a per-tile-eligible mosaic scene for FakeReader.
+
+    Sets the scene up to expose ``tiles_xarray_dask_data`` (M-intact),
+    ``is_per_tile_eligible() -> True``, and a LIF-shaped ``metadata`` blob
+    carrying the per-tile ``<Tile FieldX/FieldY/PosX/PosY/PosZ>`` entries the
+    extractor will pick up. Tile data is filled with ``m + 1`` so tests can
+    assert "the right tile was written" cheaply.
+    """
+
+    tiles: list[dict]  # each: {field_x, field_y, pos_x_m, pos_y_m, pos_z_m}
+    tile_yx: tuple[int, int] = (32, 32)
+    intended_overlap_x_pct: float | None = 10.0
+    intended_overlap_y_pct: float | None = 10.0
+    channels: int = 1
+    z: int = 1
+    t: int = 1
+
+
+def _build_lif_tilescan_metadata(scene: "TileScene") -> str:
+    """LIF-shaped XML blob with one ``<Image>`` carrying tile + overlap entries.
+
+    Matches the document shape ``find_scene_xml`` keys off: scenes live under
+    ``.//Image``. The single ``<Image>`` here represents the current scene's
+    settings (the FakeReader instances we test against expose this for the
+    one and only scene index).
+    """
+    tile_xml = "".join(
+        f'<Tile FieldX="{t["field_x"]}" FieldY="{t["field_y"]}"'
+        f' PosX="{t["pos_x_m"]:.10f}" PosY="{t["pos_y_m"]:.10f}" PosZ="{t["pos_z_m"]:.10f}" />'
+        for t in scene.tiles
+    )
+    overlap_attrs = []
+    if scene.intended_overlap_x_pct is not None:
+        overlap_attrs.append(
+            f'OverlapPercentageX="{scene.intended_overlap_x_pct / 100.0:.4f}"'
+        )
+    if scene.intended_overlap_y_pct is not None:
+        overlap_attrs.append(
+            f'OverlapPercentageY="{scene.intended_overlap_y_pct / 100.0:.4f}"'
+        )
+    stitching_xml = (
+        f"<StitchingSettings {' '.join(overlap_attrs)} />" if overlap_attrs else ""
+    )
+    return (
+        "<LMSDataContainerHeader><Element><Children><Element><Data><Image>"
+        f'<Attachment Name="TileScanInfo" Application="LAS AF">{tile_xml}</Attachment>'
+        f'<Attachment Name="HardwareSetting">{stitching_xml}</Attachment>'
+        "</Image></Data></Element></Children></Element></LMSDataContainerHeader>"
+    )
+
+
 class FakeReader:
     """Minimal bioio-like reader for testing without real proprietary files.
 
@@ -43,6 +96,7 @@ class FakeReader:
         plate_layout: PlateLayout | None = None,
         mosaic_summary: dict | None = None,
         skip_reasons: dict[int, str] | None = None,
+        per_tile_scenes: dict[int, "TileScene"] | None = None,
     ) -> None:
         self.scenes = tuple(scenes)
         self._dims = dims
@@ -56,6 +110,7 @@ class FakeReader:
         self.plate_layout = plate_layout
         self.mosaic_summary = mosaic_summary
         self._skip_reasons = skip_reasons or {}
+        self._per_tile_scenes = per_tile_scenes or {}
 
     @property
     def skip_reason(self) -> str | None:
@@ -71,6 +126,14 @@ class FakeReader:
         self._current_scene = idx
 
     @property
+    def current_scene_index(self) -> int:
+        return self._current_scene
+
+    def is_per_tile_eligible(self) -> bool:
+        """True iff the current scene was configured as a per-tile mosaic."""
+        return self._current_scene in self._per_tile_scenes
+
+    @property
     def xarray_dask_data(self) -> xr.DataArray:
         # Fill with scene-index+1 so tests can assert "the right scene was read"
         arr = np.full(self._shape, fill_value=self._current_scene + 1, dtype=np.uint16)
@@ -80,9 +143,35 @@ class FakeReader:
         return xr.DataArray(da.from_array(arr), dims=list(self._dims), coords=coords)
 
     @property
+    def tiles_xarray_dask_data(self) -> xr.DataArray:
+        """M-intact tile xarray for per-tile-eligible scenes.
+
+        Fills each tile slice with ``m + 1`` so per-tile tests can assert
+        "tile N's pixels went to tile_X*Y*N's store" cheaply. Dims are
+        ``[M, T, C, Z, Y, X]`` to mirror the bioio-lif raw shape.
+        """
+        scene = self._per_tile_scenes[self._current_scene]
+        m = len(scene.tiles)
+        shape = (
+            m,
+            scene.t,
+            scene.channels,
+            scene.z,
+            scene.tile_yx[0],
+            scene.tile_yx[1],
+        )
+        arr = np.zeros(shape, dtype=np.uint16)
+        for i in range(m):
+            arr[i].fill(i + 1)
+        return xr.DataArray(da.from_array(arr), dims=["M", "T", "C", "Z", "Y", "X"])
+
+    @property
     def metadata(self) -> ET.Element | None:
         if self._raw_xml is None:
             return None
+        scene = self._per_tile_scenes.get(self._current_scene)
+        if scene is not None:
+            return ET.fromstring(_build_lif_tilescan_metadata(scene))
         return ET.fromstring(self._raw_xml)
 
     @property

@@ -112,6 +112,22 @@ def _parse_chunk_shape(
         "output."
     ),
 )
+@click.option(
+    "--lif-mosaic",
+    type=click.Choice(["auto-stitch", "per-tile"]),
+    default="auto-stitch",
+    show_default=True,
+    help=(
+        "LIF-specific. How to write mosaic scenes with no vendor _Merged "
+        "sibling. 'auto-stitch' (default) uses bioio-lif's 1-pixel-overlap "
+        "stitcher (one image per scene; emits MosaicStitchingWarning). "
+        "'per-tile' writes one OME-Zarr per tile under "
+        "<OUTPUT>/<scene>/tile_X{f:02d}Y{f:02d}.ome.zarr/ with stage "
+        "positions in each tile's OME-XML <Plane> for external stitchers "
+        "(ASHLAR, m2stitch, BigStitcher). Incompatible with --layout plate. "
+        "Other readers ignore this flag. See ADR-0005."
+    ),
+)
 def convert_cmd(
     input_path: str,
     output: str,
@@ -121,6 +137,7 @@ def convert_cmd(
     force: bool,
     checksum: bool,
     validate: bool,
+    lif_mosaic: str,
 ) -> None:
     """Convert INPUT (a bioimage file) to OME-Zarr v0.5 at OUTPUT.
 
@@ -139,6 +156,7 @@ def convert_cmd(
             force=force,
             checksum=checksum,
             validate=validate,
+            lif_mosaic=lif_mosaic,
         )
     except OutputExistsError as e:
         raise click.ClickException(str(e)) from e

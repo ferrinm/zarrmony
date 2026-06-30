@@ -211,6 +211,82 @@ def test_convert_layout_invalid_choice_rejected(
     assert "layout" in result.output.lower()
 
 
+# ---------- convert (--lif-mosaic per-tile, ADR-0005) ----------
+
+
+def test_convert_lif_mosaic_per_tile_writes_tile_substores(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    from tests.conftest import TileScene
+
+    scene = TileScene(
+        tiles=[
+            {
+                "field_x": 0,
+                "field_y": 0,
+                "pos_x_m": 0.04,
+                "pos_y_m": 0.017,
+                "pos_z_m": 0.0117,
+            },
+            {
+                "field_x": 1,
+                "field_y": 0,
+                "pos_x_m": 0.0405,
+                "pos_y_m": 0.017,
+                "pos_z_m": 0.0117,
+            },
+        ],
+        tile_yx=(32, 32),
+    )
+    reader = FakeReader(
+        scenes=["Position 1"],
+        dims="TCZYX",
+        shape=(1, 1, 1, 32, 32),
+        per_tile_scenes={0: scene},
+    )
+    patched_reader(reader, plugin="bioio-lif")
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--pyramid-min-size",
+            "8",
+            "--lif-mosaic",
+            "per-tile",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (out / "Position_1" / "tile_X00Y00.ome.zarr" / "zarr.json").exists()
+    assert (out / "Position_1" / "tile_X01Y00.ome.zarr" / "zarr.json").exists()
+
+
+def test_convert_lif_mosaic_invalid_choice_rejected(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--lif-mosaic",
+            "bogus",
+        ],
+    )
+    assert result.exit_code != 0
+    assert (
+        "lif-mosaic" in result.output.lower() or "lif_mosaic" in result.output.lower()
+    )
+
+
 # ---------- inspect ----------
 
 
