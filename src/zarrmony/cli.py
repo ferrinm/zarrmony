@@ -114,7 +114,7 @@ def _parse_chunk_shape(
 )
 @click.option(
     "--lif-mosaic",
-    type=click.Choice(["auto-stitch", "per-tile"]),
+    type=click.Choice(["auto-stitch", "per-tile", "grid-stitch"]),
     default="auto-stitch",
     show_default=True,
     help=(
@@ -124,7 +124,11 @@ def _parse_chunk_shape(
         "'per-tile' writes one OME-Zarr per tile under "
         "<OUTPUT>/<scene>/tile_X{f:02d}Y{f:02d}.ome.zarr/ with stage "
         "positions in each tile's OME-XML <Plane> for external stitchers "
-        "(ASHLAR, m2stitch, BigStitcher). Incompatible with --layout plate. "
+        "(ASHLAR, m2stitch, BigStitcher); incompatible with --layout plate. "
+        "'grid-stitch' reassembles one canvas per scene by placing tile M=i "
+        "at (field_y[i]*tile_H, field_x[i]*tile_W) from LIF FieldX/FieldY "
+        "(butt joints, no overlap); fixes M-scan-order placement while "
+        "preserving one-store-per-scene; raises on incomplete tile metadata. "
         "Other readers ignore this flag. See ADR-0005."
     ),
 )

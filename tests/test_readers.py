@@ -413,6 +413,36 @@ def test_proxy_warning_quotes_per_tile_escape_hatch() -> None:
     assert 'lif_mosaic="per-tile"' in msg
 
 
+def test_proxy_warning_quotes_grid_stitch_escape_hatch() -> None:
+    """The MosaicStitchingWarning body must also name the lif_mosaic='grid-stitch'
+    escape hatch (#39). Grid-stitch fixes M-scan-order tile placement while
+    preserving one-store-per-scene, so users with tooling that expects a single
+    canvas see it as an alternative to per-tile."""
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}, tile_count=4))
+    proxy.set_scene(0)
+
+    with pytest.warns(MosaicStitchingWarning) as captured:
+        _ = proxy.xarray_dask_data
+
+    msg = str(captured[0].message)
+    assert 'lif_mosaic="grid-stitch"' in msg
+
+
+def test_proxy_warning_names_m_scan_arrangement_bug() -> None:
+    """The MosaicStitchingWarning body must explicitly name the M-scan-order
+    tile placement bug (#39). Prior text only mentioned the overlap-stripe
+    issue, leaving users no in-context signal that arrangement was ALSO broken."""
+    proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}, tile_count=4))
+    proxy.set_scene(0)
+
+    with pytest.warns(MosaicStitchingWarning) as captured:
+        _ = proxy.xarray_dask_data
+
+    msg = str(captured[0].message)
+    assert "M-scan order" in msg
+    assert "FieldX/FieldY" in msg
+
+
 def test_proxy_tiles_xarray_dask_data_returns_m_intact_view() -> None:
     """The per-tile writer path needs the raw M-intact xarray; the auto-stitch
     swap and its MosaicStitchingWarning must NOT fire on this accessor."""
@@ -427,29 +457,31 @@ def test_proxy_tiles_xarray_dask_data_returns_m_intact_view() -> None:
     assert xarr.sizes["M"] == 8
 
 
-def test_proxy_is_per_tile_eligible_true_for_mosaic_no_sibling() -> None:
+def test_proxy_is_mosaic_reassembly_eligible_true_for_mosaic_no_sibling() -> None:
     proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}))
     proxy.set_scene(0)
-    assert proxy.is_per_tile_eligible() is True
+    assert proxy.is_mosaic_reassembly_eligible() is True
 
 
-def test_proxy_is_per_tile_eligible_false_for_non_mosaic_scene() -> None:
+def test_proxy_is_mosaic_reassembly_eligible_false_for_non_mosaic_scene() -> None:
     proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: False}))
     proxy.set_scene(0)
-    assert proxy.is_per_tile_eligible() is False
+    assert proxy.is_mosaic_reassembly_eligible() is False
 
 
-def test_proxy_is_per_tile_eligible_false_when_merged_sibling_present() -> None:
-    """A mosaic scene with a vendor _Merged sibling is NOT per-tile-eligible —
-    the merged sibling is the source of truth for that scene, so per-tile
-    output would be redundant."""
+def test_proxy_is_mosaic_reassembly_eligible_false_when_merged_sibling_present() -> (
+    None
+):
+    """A mosaic scene with a vendor _Merged sibling is NOT reassembly-eligible —
+    the merged sibling is the source of truth for that scene, so per-tile or
+    grid-stitch output would be redundant."""
     inner = _FakeBioioLifReader(
         {0: True, 1: False},
         scene_names=["Position 1", "Position 1_Merged"],
     )
     proxy = lif_mod._MosaicAwareLifReader(inner)
     proxy.set_scene(0)
-    assert proxy.is_per_tile_eligible() is False
+    assert proxy.is_mosaic_reassembly_eligible() is False
 
 
 def test_proxy_forwards_arbitrary_attrs() -> None:

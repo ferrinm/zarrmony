@@ -33,7 +33,11 @@ from zarrmony.metadata.lif_channels import (
     channels_to_omero,
     extract_channels,
 )
-from zarrmony.metadata.lif_tiles import extract_tile_layout
+from zarrmony.metadata.lif_tiles import (
+    extract_tile_layout,
+    grid_shape,
+    reassemble_grid,
+)
 from zarrmony.naming import resolve_scene_dirnames, sanitize_scene_name
 from zarrmony.readers.default import derive_bioio_distribution
 from zarrmony.readers.plugin import ReaderPlugin, get_reader
@@ -51,11 +55,17 @@ Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
 ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
 _VALID_LAYOUTS: tuple[Layout, ...] = ("auto", "per-scene", "bf2raw", "plate")
 
-LifMosaic = Literal["auto-stitch", "per-tile"]
-_VALID_LIF_MOSAIC: tuple[LifMosaic, ...] = ("auto-stitch", "per-tile")
+LifMosaic = Literal["auto-stitch", "per-tile", "grid-stitch"]
+_VALID_LIF_MOSAIC: tuple[LifMosaic, ...] = ("auto-stitch", "per-tile", "grid-stitch")
 
 # Meters → micrometers (OME convention for <Plane> PositionX/Y/Z units).
 _METERS_TO_UM = 1_000_000.0
+
+# Grid-stitch produces a butt-jointed canvas — no inter-tile overlap. Recorded
+# in the audit alongside intended_overlap_*_pct so downstream consumers can
+# diagnose missing-pixel-at-seam risk when the acquisition intended overlap.
+_STITCHER_GRID_NAME = "zarrmony-grid"
+_GRID_OVERLAP_ASSUMPTION_PX = 0
 
 
 def _resolve_layout(
@@ -330,8 +340,9 @@ def convert(
     :class:`~zarrmony.errors.LayoutDowngradeWarning`; forcing ``plate``
     against a flat reader raises :class:`~zarrmony.errors.LayoutMismatchError`).
 
-    ``lif_mosaic`` (LIF-specific, default ``"auto-stitch"``, ADR-0005) governs
-    how mosaic LIF scenes without a vendor ``_Merged`` sibling are written:
+    ``lif_mosaic`` (LIF-specific, default ``"auto-stitch"``, ADR-0005 + #39)
+    governs how mosaic LIF scenes without a vendor ``_Merged`` sibling are
+    written:
 
     - ``"auto-stitch"`` (default) — preserves today's behavior: bioio-lif's
       1-pixel-overlap auto-stitcher writes one image per scene, with a
@@ -341,8 +352,16 @@ def convert(
       carrying its stage origin in ``<Plane>`` ``PositionX/Y/Z`` so external
       stitchers (ASHLAR, m2stitch, BigStitcher) can re-stitch correctly.
       Incompatible with ``layout="plate"`` — raises
-      :class:`~zarrmony.errors.LayoutMismatchError`. Other readers ignore
-      the flag entirely.
+      :class:`~zarrmony.errors.LayoutMismatchError`.
+    - ``"grid-stitch"`` — reassembles a single canvas per scene by placing
+      tile M=i at ``(field_y[i]*tile_H, field_x[i]*tile_W)`` from the LIF
+      ``FieldX``/``FieldY`` indices (butt joints, no overlap). Fixes
+      bioio-lif's M-scan-order placement bug while preserving the
+      one-store-per-scene invariant. Strict: raises :class:`ValueError` with
+      a clear message pointing at ``"per-tile"`` when tile metadata is
+      incomplete. Composes with ``layout="plate"``.
+
+    Non-LIF readers ignore the flag entirely.
 
     Per-scene return shape: ``{"input": ..., "stores": [<per-store audit>, ...]}``.
     The ``bf2raw`` and ``plate`` shapes return the single bundle's audit dict;
@@ -400,6 +419,7 @@ def convert(
             checksum=checksum,
             config=config,
             validate=validate,
+            lif_mosaic=lif_mosaic,
         )
     if effective_layout == "bf2raw":
         return _convert_bf2raw(
@@ -433,6 +453,55 @@ def convert(
         validate=validate,
         lif_mosaic=lif_mosaic,
     )
+
+
+def _tile_shape_from_reader(reader: Any) -> dict[str, int] | None:
+    """LIF per-tile Y/X pixel dims from the reader's ``mosaic_tile_dims``, or None.
+
+    Defensive: not every reader plugin exposes ``mosaic_tile_dims`` (only the
+    LIF plugin does). Returns ``None`` when absent so the grid-stitch audit
+    block simply omits ``tile_shape`` rather than crashing.
+    """
+    tile_dims = getattr(reader, "mosaic_tile_dims", None)
+    if tile_dims is None:
+        return None
+    y = getattr(tile_dims, "Y", None)
+    x = getattr(tile_dims, "X", None)
+    if y is None or x is None:
+        return None
+    return {"Y": int(y), "X": int(x)}
+
+
+def _grid_stitch_mosaic_summary(
+    tile_layout: dict | None,
+    *,
+    tile_count: int,
+    tile_shape_yx: dict[str, int] | None,
+) -> dict:
+    """Audit's ``mosaic`` block for a grid-stitched scene.
+
+    Records ``stitcher="zarrmony-grid"``, ``overlap_assumption_px=0`` (butt
+    joints — pair with ``intended_overlap_*_pct`` to diagnose missing-pixel
+    seams), and ``placement_shape`` when the layout exposes contiguous grid
+    coverage. Merges in the extracted tile positions + intended overlaps so
+    downstream consumers get the same tile metadata surface as the auto-stitch
+    path.
+    """
+    summary: dict = {
+        "stitched": True,
+        "stitcher": _STITCHER_GRID_NAME,
+        "overlap_assumption_px": _GRID_OVERLAP_ASSUMPTION_PX,
+        "tile_count": tile_count,
+    }
+    if tile_shape_yx is not None:
+        summary["tile_shape"] = tile_shape_yx
+    if tile_layout is not None:
+        tiles = tile_layout.get("tiles") or []
+        rows, cols = grid_shape(tiles)
+        if rows is not None and cols is not None:
+            summary["placement_shape"] = {"rows": rows, "cols": cols}
+        summary.update(tile_layout)
+    return summary
 
 
 def _convert_per_scene(
@@ -475,10 +544,10 @@ def _convert_per_scene(
             )
             continue
 
-        per_tile_mode = lif_mosaic == "per-tile" and bool(
-            getattr(reader, "is_per_tile_eligible", lambda: False)()
+        reassembly_eligible = bool(
+            getattr(reader, "is_mosaic_reassembly_eligible", lambda: False)()
         )
-        if per_tile_mode:
+        if lif_mosaic == "per-tile" and reassembly_eligible:
             tile_audits = _convert_per_tile_scene(
                 reader=reader,
                 plugin=plugin,
@@ -502,6 +571,7 @@ def _convert_per_scene(
             store_audits.extend(tile_audits)
             continue
 
+        grid_stitch_mode = lif_mosaic == "grid-stitch" and reassembly_eligible
         store_path = store_paths[scene_index]
         # Per-store refuse-overwrite (don't blow away the whole output dir).
         _check_output(store_path, force=force)
@@ -519,6 +589,24 @@ def _convert_per_scene(
             else _channels_for_scene(reader, channel_colors)
         )
 
+        # Grid-stitch: consume raw M-intact tiles, reassemble by FieldX/FieldY,
+        # pass the corrected canvas into the standard writer path via
+        # xarr_override. Suppress the auto-stitch mosaic_summary — it would
+        # mislabel the record with stitcher="bioio-lif" and the wrong
+        # overlap_assumption_px; we attach a grid-stitch mosaic block below.
+        grid_tile_layout: dict | None = None
+        grid_tile_count = 0
+        if grid_stitch_mode:
+            grid_tiles_xarr = reader.tiles_xarray_dask_data
+            grid_tile_count = int(grid_tiles_xarr.sizes["M"])
+            scene_xml = find_scene_xml(reader)
+            grid_tile_layout = (
+                extract_tile_layout(scene_xml) if scene_xml is not None else None
+            )
+            grid_xarr = reassemble_grid(grid_tiles_xarr, grid_tile_layout)
+        else:
+            grid_xarr = None
+
         scene_record = write_scene(
             reader,
             scene_index=scene_index,
@@ -527,9 +615,17 @@ def _convert_per_scene(
             chunk_shape=chunk_shape,
             channels=channels,
             image_name=scene_name,
+            xarr_override=grid_xarr,
+            record_mosaic_summary=not grid_stitch_mode,
         )
         scene_record["store_path"] = store_path
         scene_record["dirname"] = dirnames[scene_index]
+        if grid_stitch_mode:
+            scene_record["mosaic"] = _grid_stitch_mosaic_summary(
+                grid_tile_layout,
+                tile_count=grid_tile_count,
+                tile_shape_yx=_tile_shape_from_reader(reader),
+            )
 
         metadata_warnings: list[dict] = []
         ome_image: Image | None = None
@@ -927,6 +1023,7 @@ def _convert_plate(
     checksum: bool,
     config: dict,
     validate: bool,
+    lif_mosaic: LifMosaic = "auto-stitch",
 ) -> dict:
     plate_layout = getattr(reader, "plate_layout", None)
     if plate_layout is None:
@@ -967,6 +1064,7 @@ def _convert_plate(
         ome_xml_builder=build_combined_ome_xml,
         source_xml=source_xml,
         source_xml_filename=source_filename,
+        lif_mosaic=lif_mosaic,
     )
 
     validation_findings = _run_validation(output, "plate", validate)

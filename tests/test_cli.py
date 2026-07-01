@@ -287,6 +287,75 @@ def test_convert_lif_mosaic_invalid_choice_rejected(
     )
 
 
+def test_convert_lif_mosaic_grid_stitch_writes_single_canvas(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """--lif-mosaic grid-stitch dispatches through convert() and produces one
+    canvas per scene at <output>/<scene>.ome.zarr (regression for the CLI
+    plumbing to api.convert; end-to-end pixel correctness is covered in
+    tests/test_lif_grid_stitch.py)."""
+    from tests.conftest import TileScene
+
+    scene = TileScene(
+        tiles=[
+            {
+                "field_x": 0,
+                "field_y": 0,
+                "pos_x_m": 0.04,
+                "pos_y_m": 0.017,
+                "pos_z_m": 0.01,
+            },
+            {
+                "field_x": 1,
+                "field_y": 0,
+                "pos_x_m": 0.041,
+                "pos_y_m": 0.017,
+                "pos_z_m": 0.01,
+            },
+            {
+                "field_x": 0,
+                "field_y": 1,
+                "pos_x_m": 0.04,
+                "pos_y_m": 0.018,
+                "pos_z_m": 0.01,
+            },
+            {
+                "field_x": 1,
+                "field_y": 1,
+                "pos_x_m": 0.041,
+                "pos_y_m": 0.018,
+                "pos_z_m": 0.01,
+            },
+        ],
+        tile_yx=(8, 8),
+    )
+    reader = FakeReader(
+        scenes=["Position 1"],
+        dims="TCZYX",
+        shape=(1, 1, 1, 8, 8),
+        per_tile_scenes={0: scene},
+    )
+    patched_reader(reader, plugin="bioio-lif")
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--pyramid-min-size",
+            "4",
+            "--lif-mosaic",
+            "grid-stitch",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (out / "Position_1.ome.zarr" / "zarr.json").exists()
+    # No scene-named subdirectory of tile sub-stores (that's the per-tile shape).
+    assert not (out / "Position_1").exists()
+
+
 # ---------- inspect ----------
 
 

@@ -26,13 +26,61 @@ from ome_types.model import Image
 
 from zarrmony._storage import open_root_group
 from zarrmony.errors import LayoutDowngradeWarning, PlateLayoutError
+from zarrmony.metadata._lif_scene import find_scene_xml
 from zarrmony.metadata.channel_colors import colors_for_channels
+from zarrmony.metadata.lif_tiles import (
+    extract_tile_layout,
+    grid_shape,
+    reassemble_grid,
+)
 from zarrmony.readers.plate import PlateField, PlateLayout
 from zarrmony.writers.scene import write_scene
 
 NGFF_VERSION = "0.5"
 
 _WELL_KEY_RE = re.compile(r"([A-Za-z]+)(\d+)")
+
+# Grid-stitch audit fields (parallel to the API-level constants; duplicated
+# here to keep this writer independent of ``zarrmony.api`` — a plate write can
+# be driven directly for testing without importing the top-level orchestrator).
+_STITCHER_GRID_NAME = "zarrmony-grid"
+_GRID_OVERLAP_ASSUMPTION_PX = 0
+
+
+def _grid_stitch_fov_mosaic_summary(
+    tile_layout: dict | None,
+    *,
+    tile_count: int,
+    reader: Any,
+) -> dict:
+    """FOV-scoped ``mosaic`` block for a grid-stitched plate field.
+
+    Same shape as the per-scene grid-stitch audit block — records
+    ``stitcher="zarrmony-grid"``, ``overlap_assumption_px=0``,
+    ``placement_shape``, and the extracted tile positions when available.
+    Kept parallel to ``api._grid_stitch_mosaic_summary`` on purpose: a plate
+    FOV mosaic and a flat-scene mosaic get identical audit surfaces for the
+    same underlying operation.
+    """
+    summary: dict = {
+        "stitched": True,
+        "stitcher": _STITCHER_GRID_NAME,
+        "overlap_assumption_px": _GRID_OVERLAP_ASSUMPTION_PX,
+        "tile_count": tile_count,
+    }
+    tile_dims = getattr(reader, "mosaic_tile_dims", None)
+    if tile_dims is not None:
+        y = getattr(tile_dims, "Y", None)
+        x = getattr(tile_dims, "X", None)
+        if y is not None and x is not None:
+            summary["tile_shape"] = {"Y": int(y), "X": int(x)}
+    if tile_layout is not None:
+        tiles = tile_layout.get("tiles") or []
+        rows, cols = grid_shape(tiles)
+        if rows is not None and cols is not None:
+            summary["placement_shape"] = {"rows": rows, "cols": cols}
+        summary.update(tile_layout)
+    return summary
 
 
 def parse_well_key(key: str) -> tuple[str, str]:
@@ -213,6 +261,7 @@ def write_plate(
     ome_xml_builder: Any = None,
     source_xml: str | None = None,
     source_xml_filename: str | None = None,
+    lif_mosaic: str = "auto-stitch",
 ) -> tuple[list[dict], dict]:
     """Validate ``plate_layout``, write every FOV, and emit plate-level metadata.
 
@@ -224,6 +273,14 @@ def write_plate(
     is an optional callable ``list[Image] -> str`` (defaults to
     ``writers.ome_xml.build_combined_ome_xml``); injecting it keeps the writer
     free of any specific builder import-time dependency.
+
+    ``lif_mosaic="grid-stitch"`` reassembles each mosaic FOV's canvas from
+    per-tile ``FieldX``/``FieldY`` indices before writing (butt joints), so
+    mosaic FOVs in a plate get correct tile arrangement while still meeting
+    the "one FOV = one image" plate spec. Non-mosaic FOVs and non-LIF plates
+    pass through untouched. ``lif_mosaic="per-tile"`` is not accepted here —
+    per-tile output produces N sub-stores per FOV, which the plate spec cannot
+    express; ``api.convert()`` raises before calling this writer.
     """
     validate_plate_layout(plate_layout, n_scenes=len(reader.scenes))
 
@@ -258,6 +315,22 @@ def write_plate(
             channels = _channels_for_current_scene(reader, channel_colors)
             image_name = f.field_name or reader.scenes[f.scene_index]
 
+            grid_stitch_this_fov = lif_mosaic == "grid-stitch" and bool(
+                getattr(reader, "is_mosaic_reassembly_eligible", lambda: False)()
+            )
+            grid_tile_layout: dict | None = None
+            grid_tile_count = 0
+            if grid_stitch_this_fov:
+                grid_tiles_xarr = reader.tiles_xarray_dask_data
+                grid_tile_count = int(grid_tiles_xarr.sizes["M"])
+                scene_xml = find_scene_xml(reader)
+                grid_tile_layout = (
+                    extract_tile_layout(scene_xml) if scene_xml is not None else None
+                )
+                grid_xarr = reassemble_grid(grid_tiles_xarr, grid_tile_layout)
+            else:
+                grid_xarr = None
+
             scene_record = write_scene(
                 reader,
                 scene_index=f.scene_index,
@@ -266,6 +339,8 @@ def write_plate(
                 chunk_shape=chunk_shape,
                 channels=channels,
                 image_name=image_name,
+                xarr_override=grid_xarr,
+                record_mosaic_summary=not grid_stitch_this_fov,
             )
             scene_record.update(
                 {
@@ -276,6 +351,12 @@ def write_plate(
                     "acquisition_id": f.acquisition_id,
                 }
             )
+            if grid_stitch_this_fov:
+                scene_record["mosaic"] = _grid_stitch_fov_mosaic_summary(
+                    grid_tile_layout,
+                    tile_count=grid_tile_count,
+                    reader=reader,
+                )
             field_records.append(scene_record)
 
             if ome_image_for_field is not None:
