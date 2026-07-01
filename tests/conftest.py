@@ -24,13 +24,14 @@ class FakePhysicalPixelSizes:
 
 @dataclass
 class TileScene:
-    """Describes a per-tile-eligible mosaic scene for FakeReader.
+    """Describes a mosaic-reassembly-eligible scene for FakeReader.
 
     Sets the scene up to expose ``tiles_xarray_dask_data`` (M-intact),
-    ``is_per_tile_eligible() -> True``, and a LIF-shaped ``metadata`` blob
-    carrying the per-tile ``<Tile FieldX/FieldY/PosX/PosY/PosZ>`` entries the
-    extractor will pick up. Tile data is filled with ``m + 1`` so tests can
-    assert "the right tile was written" cheaply.
+    ``is_mosaic_reassembly_eligible() -> True``, and a LIF-shaped ``metadata``
+    blob carrying the per-tile ``<Tile FieldX/FieldY/PosX/PosY/PosZ>`` entries
+    the extractor will pick up. Tile data is filled with ``m + 1`` so tests
+    can assert "the right tile was written" cheaply. Used by both the
+    ``lif_mosaic="per-tile"`` and ``lif_mosaic="grid-stitch"`` paths.
     """
 
     tiles: list[dict]  # each: {field_x, field_y, pos_x_m, pos_y_m, pos_z_m}
@@ -129,8 +130,8 @@ class FakeReader:
     def current_scene_index(self) -> int:
         return self._current_scene
 
-    def is_per_tile_eligible(self) -> bool:
-        """True iff the current scene was configured as a per-tile mosaic."""
+    def is_mosaic_reassembly_eligible(self) -> bool:
+        """True iff the current scene was configured as a mosaic-reassembly source."""
         return self._current_scene in self._per_tile_scenes
 
     @property

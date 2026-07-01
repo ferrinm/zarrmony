@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - LIF mosaic scenes (no vendor `_Merged` sibling) can now be written as one
   OME-Zarr per tile via the new `convert(..., lif_mosaic="per-tile")` API
-  kwarg and matching CLI option `--lif-mosaic {auto-stitch,per-tile}`
+  kwarg and matching CLI option `--lif-mosaic {auto-stitch,per-tile,grid-stitch}`
   (default `auto-stitch`, LIF-specific — other readers ignore the flag).
   Per-tile output shape: `<output>/<sanitized_scene>/tile_X{f:02d}Y{f:02d}.ome.zarr/`,
   zero-padded grid coordinates from the LIF `<Tile FieldX>`/`FieldY>` attrs.
@@ -25,6 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path under maintenance). See
   [ADR-0005](docs/adr/0005-lif-mosaic-write-strategy.md) for the design
   rationale. (#36)
+- Third value on `lif_mosaic`: `"grid-stitch"` reassembles a single canvas
+  per scene by placing tile M=i at `(field_y[i]*tile_H, field_x[i]*tile_W)`
+  from the LIF `FieldX`/`FieldY` indices (butt joints, no overlap handling).
+  Fixes bioio-lif's M-scan-order placement bug — where tiles are stitched in
+  the order they appear on the raw `M` dim rather than at their declared
+  grid slots — while preserving the "one scene = one OME-Zarr store" invariant
+  that per-tile breaks. Strict on metadata: raises `ValueError` naming the
+  missing field(s) and pointing at `lif_mosaic="per-tile"` as the graceful
+  escape when the tile layout is incomplete/malformed (no silent fallback).
+  Composes with `layout="plate"` — a mosaic FOV in a plate well is
+  reassembled and written as one image per FOV, honoring the plate spec.
+  Audit carries `mosaic.stitcher="zarrmony-grid"`,
+  `mosaic.overlap_assumption_px=0` (pair with `intended_overlap_*_pct` to
+  diagnose missing-pixel seams), and `mosaic.placement_shape={rows, cols}`.
+  Powered by new pure-function helpers `zarrmony.metadata.lif_tiles.reassemble_grid`,
+  `validate_grid_layout`, and `grid_shape`. (#39)
 - `writers.ome_xml.attach_stage_position_plane()` — stamps a single
   `<Plane TheC=0 TheZ=0 TheT=0 PositionX/Y/Z .../>` on an OME `Image`. Used
   by the per-tile path; also handy for downstream code that wants to add
@@ -32,18 +48,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `MosaicStitchingWarning` text now closes with the per-tile escape hatch:
-  *"… or re-run with `lif_mosaic="per-tile"` to write each tile as its own
-  OME-Zarr."* The warning still fires only in auto-stitch mode; the
-  per-tile path bypasses bioio-lif's stitcher entirely.
-- `audit_schema_version` bumped to 5 to mark the new per-tile audit keys.
-  In per-tile mode each tile's audit carries `mosaic.per_tile=true`,
-  `mosaic.tile_index`, `mosaic.tile_count`, and the full
-  `mosaic.tile_stores` index (one entry per tile with `field_x`, `field_y`,
-  `store_path`, `pos_x_m`, `pos_y_m`, `pos_z_m`). Auto-stitch audits keep
-  their pre-v0.5 shape — no `per_tile`, no `tile_stores` — so existing
-  consumers can switch on `mosaic.per_tile` to decide whether to look for
-  sibling tile stores.
+- `MosaicStitchingWarning` text now names both auto-stitch pathologies (the
+  1-pixel-overlap seams AND the M-scan-order tile placement, so users have an
+  in-context signal that arrangement is broken too) and both escape hatches
+  (per-tile first: pixel-correct; grid-stitch second: fixes arrangement on a
+  single canvas), then external stitchers as a last resort. The warning still
+  fires only in auto-stitch mode; per-tile and grid-stitch bypass the
+  bioio-lif stitcher entirely.
+- `audit_schema_version` bumped to 5 to mark the new per-tile and grid-stitch
+  audit keys. In per-tile mode each tile's audit carries `mosaic.per_tile=true`,
+  `mosaic.tile_index`, `mosaic.tile_count`, and the full `mosaic.tile_stores`
+  index (one entry per tile with `field_x`, `field_y`, `store_path`,
+  `pos_x_m`, `pos_y_m`, `pos_z_m`). In grid-stitch mode the audit carries
+  `mosaic.stitcher="zarrmony-grid"`, `mosaic.overlap_assumption_px=0`, and
+  `mosaic.placement_shape={rows, cols}`. Auto-stitch audits keep their
+  pre-v0.5 shape — no `per_tile`, no `tile_stores`, `stitcher="bioio-lif"` —
+  so existing consumers switch on `mosaic.per_tile` (per-tile discriminator)
+  and `mosaic.stitcher` (grid-stitch vs auto-stitch discriminator) to decide
+  which shape they're looking at.
+- Reader eligibility predicate `_MosaicAwareLifReader.is_per_tile_eligible()`
+  renamed to `is_mosaic_reassembly_eligible()` — same semantics (mosaic scene
+  with no `_Merged` sibling), now shared by both non-default `lif_mosaic`
+  writer paths.
 
 ### Migration
 
@@ -57,10 +83,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `lif_mosaic="per-tile"` is incompatible (a plate FOV is one image by
   spec) and raises `LayoutMismatchError`; convert as flat to get per-tile
   stores from a mosaic scene.
+- For users whose downstream tooling expects a single canvas per scene but
+  who need correct tile arrangement: re-run with `--lif-mosaic grid-stitch`
+  (CLI) or `lif_mosaic="grid-stitch"` (library). Grid-stitch preserves the
+  one-store-per-scene invariant AND composes with `layout="plate"` (mosaic
+  FOVs get reassembled and written as one image per FOV). Incomplete tile
+  metadata raises `ValueError` naming the missing field(s) — fall back to
+  `per-tile` if you can't fix the source LIF.
 - Audit consumers (Lucida, anything reading `attrs.zarrmony`) should
-  branch on `mosaic.per_tile` when present. The `mosaic.tile_stores` list
-  carries enough information to discover the sibling tile sub-stores
-  without re-parsing the source LIF.
+  branch on `mosaic.per_tile` (present → per-tile output; look at
+  `mosaic.tile_stores` for sibling sub-store URLs) and `mosaic.stitcher`
+  (`"zarrmony-grid"` → grid-stitch; `"bioio-lif"` → auto-stitch;
+  `mosaic.placement_shape` present only for grid-stitch).
 
 ## [0.4.1] - 2026-06-30
 

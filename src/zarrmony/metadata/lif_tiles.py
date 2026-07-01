@@ -1,4 +1,4 @@
-"""Pure, stdlib-only per-tile layout extractor for Leica LIF scene XML.
+"""Pure per-tile layout extractor + grid reassembly for Leica LIF scene XML.
 
 A mosaic LIF scene carries two pieces of acquisition metadata that bioio-lif's
 stitcher ignores:
@@ -17,6 +17,13 @@ with no ``<Tile>`` elements also yields ``None`` — the audit/warning fall back
 to today's generic shape rather than carrying a nonsense empty list.
 
 The extractor is dependency-free and intended to lift into ``bioio-lif`` later.
+
+For the grid-stitch writer path (``lif_mosaic="grid-stitch"``),
+:func:`reassemble_grid` and its validation helpers place raw M-intact tiles onto
+a butt-jointed canvas by their declared ``field_x``/``field_y`` slots — the fix
+for bioio-lif's M-scan-order placement bug that shows up in real acquisitions.
+Grid reassembly is strict: incomplete/malformed tile metadata raises with a
+clear message pointing at ``lif_mosaic="per-tile"`` as the graceful escape.
 """
 
 from __future__ import annotations
@@ -24,6 +31,9 @@ from __future__ import annotations
 import math
 import re
 import xml.etree.ElementTree as ET
+
+import dask.array as da
+import xarray as xr
 
 # A confocal scene blob is a few hundred KB; 32 MiB is generous headroom while
 # still bounding parse work. Mirrors :mod:`lif_channels`.
@@ -172,3 +182,132 @@ def extract_tile_layout(scene_xml: str) -> dict | None:
         }
     except Exception:
         return None
+
+
+# --- grid-stitch reassembly (lif_mosaic="grid-stitch") --------------------
+#
+# ``bioio_lif``'s auto-stitcher places tiles in M-scan order — the order they
+# appear on the ``M`` dim of the raw ``xarray_dask_data``. Real acquisitions
+# rarely record tiles row-major from ``(0, 0)``, so the auto-stitched canvas
+# routinely puts the wrong tile at each grid slot. Grid-stitch fixes this by
+# reading each tile's declared ``field_x``/``field_y`` and placing it at
+# ``(field_y*tile_H, field_x*tile_W)`` on a butt-jointed canvas.
+#
+# This slice does not handle overlap — canvas is ``(rows*tile_H, cols*tile_W)``,
+# so an acquisition with real overlap gets a missing-pixel gap at every seam
+# (the mirror of auto-stitch's double-coverage stripe). The audit records
+# ``overlap_assumption_px: 0`` so downstream consumers can spot the mismatch
+# against ``intended_overlap_*_pct``.
+
+
+def grid_shape(tiles: list[dict]) -> tuple[int | None, int | None]:
+    """Best-effort ``(rows, cols)`` from a tile layout, or ``(None, None)``.
+
+    Used by the audit's ``placement_shape`` field — must not raise even when
+    the layout is malformed (a partial grid still records a partial audit).
+    Returns ``(None, None)`` if any ``field_x``/``field_y`` is missing.
+    """
+    xs = [t.get("field_x") for t in tiles]
+    ys = [t.get("field_y") for t in tiles]
+    if any(v is None for v in xs) or any(v is None for v in ys):
+        return None, None
+    return max(ys) + 1, max(xs) + 1
+
+
+def validate_grid_layout(tiles: list[dict], m_size: int) -> tuple[int, int]:
+    """Assert ``tiles`` covers a complete rectangular grid; return ``(rows, cols)``.
+
+    Raises :class:`ValueError` with a clear message on any invariant failure:
+    empty tile list, count mismatch with the M dim, missing ``field_x``/
+    ``field_y``, duplicate slots, or non-contiguous grid coverage. Each error
+    message points at ``lif_mosaic="per-tile"`` as the graceful-degrade escape,
+    since per-tile tolerates the same metadata shortcomings that grid-stitch
+    cannot recover from.
+    """
+    escape = 'pass lif_mosaic="per-tile" to write per-tile stores instead.'
+    if not tiles:
+        raise ValueError(
+            "lif_mosaic='grid-stitch': no <Tile> entries were extracted from "
+            "the scene XML; cannot place tiles without per-tile grid indices. "
+            f"{escape}"
+        )
+    if len(tiles) != m_size:
+        raise ValueError(
+            f"lif_mosaic='grid-stitch': tile-metadata count ({len(tiles)}) does "
+            f"not match the array's M dim ({m_size}). {escape}"
+        )
+    missing = [
+        i
+        for i, t in enumerate(tiles)
+        if t.get("field_x") is None or t.get("field_y") is None
+    ]
+    if missing:
+        raise ValueError(
+            f"lif_mosaic='grid-stitch': tiles at M index(es) {missing} are "
+            f"missing FieldX and/or FieldY on the scene XML's <Tile> elements. "
+            f"{escape}"
+        )
+    slots = {(t["field_x"], t["field_y"]) for t in tiles}
+    if len(slots) != m_size:
+        raise ValueError(
+            f"lif_mosaic='grid-stitch': tiles have duplicate (field_x, field_y) "
+            f"pairs; expected {m_size} unique slots, got {len(slots)}. {escape}"
+        )
+    xs = [t["field_x"] for t in tiles]
+    ys = [t["field_y"] for t in tiles]
+    cols = max(xs) + 1
+    rows = max(ys) + 1
+    expected = {(x, y) for x in range(cols) for y in range(rows)}
+    if slots != expected:
+        raise ValueError(
+            f"lif_mosaic='grid-stitch': (field_x, field_y) pairs do not cover a "
+            f"complete rectangular grid; expected {rows}x{cols} slots, got "
+            f"{sorted(slots)}. {escape}"
+        )
+    return rows, cols
+
+
+def reassemble_grid(tiles_xarr: xr.DataArray, tile_layout: dict | None) -> xr.DataArray:
+    """Reassemble raw M-intact tiles onto a butt-jointed canvas by grid index.
+
+    Given the reader's raw M-intact xarray (dims include ``M``, ``Y``, ``X``)
+    and the ``extract_tile_layout()`` output, returns a new xarray with the
+    ``M`` dim consumed — tile at M=i is placed at
+    ``(field_y[i]*tile_H, field_x[i]*tile_W)`` on the canvas. T/C/Z axes and
+    their coords are preserved untouched. The returned array remains
+    dask-backed — no eager materialization.
+
+    Strict: raises :class:`ValueError` (via :func:`validate_grid_layout`) when
+    the tile layout is missing, incomplete, or malformed. Callers that want a
+    graceful fallback should use ``lif_mosaic="per-tile"`` (surfaced in every
+    error message).
+    """
+    if tile_layout is None:
+        raise ValueError(
+            "lif_mosaic='grid-stitch' requires per-tile grid metadata "
+            "(<Tile FieldX FieldY .../> under <Attachment "
+            'Name="TileScanInfo"> in the scene XML), but none could be '
+            "extracted for the current scene. Pass "
+            'lif_mosaic="per-tile" to write per-tile stores instead.'
+        )
+    tiles = tile_layout.get("tiles") or []
+    m_size = int(tiles_xarr.sizes["M"])
+    rows, cols = validate_grid_layout(tiles, m_size)
+
+    idx_map = {(t["field_x"], t["field_y"]): i for i, t in enumerate(tiles)}
+    non_m_dims = [d for d in tiles_xarr.dims if d != "M"]
+    y_axis = non_m_dims.index("Y")
+    x_axis = non_m_dims.index("X")
+
+    row_arrays = []
+    for y in range(rows):
+        row_tiles = [tiles_xarr.isel(M=idx_map[(x, y)]).data for x in range(cols)]
+        row_arrays.append(da.concatenate(row_tiles, axis=x_axis))
+    canvas_data = da.concatenate(row_arrays, axis=y_axis)
+
+    preserved_coords = {
+        name: coord
+        for name, coord in tiles_xarr.coords.items()
+        if "M" not in coord.dims
+    }
+    return xr.DataArray(canvas_data, dims=non_m_dims, coords=preserved_coords)

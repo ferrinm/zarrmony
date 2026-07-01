@@ -33,12 +33,16 @@ declared intended overlap (extracted via :mod:`zarrmony.metadata.lif_tiles`)
 when available, and the :class:`MosaicStitchingWarning` quotes that overlap
 in its text so the user can predict the stripe width.
 
-ADR-0005 adds an opt-in per-tile writer path (``lif_mosaic="per-tile"``) that
-sidesteps the bioio-lif stitcher entirely: ``convert()`` iterates the raw
-M-intact tiles via :attr:`tiles_xarray_dask_data` and writes one OME-Zarr per
-tile, carrying the stage position in each tile's ``<Plane>``. The proxy
-remains under maintenance for both modes — the per-tile path doesn't fork
-the reader, only the writer dispatch.
+ADR-0005 adds two opt-in writer paths that consume the raw M-intact tile
+xarray via :attr:`tiles_xarray_dask_data` and sidestep the bioio-lif stitcher
+entirely: ``lif_mosaic="per-tile"`` writes one OME-Zarr per tile carrying the
+stage position in each tile's ``<Plane>``; ``lif_mosaic="grid-stitch"``
+reassembles a single canvas by placing tile M=i at
+``(field_y[i]*tile_H, field_x[i]*tile_W)`` from the LIF ``FieldX``/``FieldY``
+indices, fixing bioio-lif's M-scan-order placement bug on a butt-jointed
+canvas. Both share the eligibility predicate :meth:`is_mosaic_reassembly_eligible`
+(mosaic scene with no ``_Merged`` sibling). The proxy stays thin — reader
+exposes the raw tiles surface, ``api.convert()`` owns strategy dispatch.
 
 Exposed as ``lif_plugin`` and registered in ``readers/__init__.py`` at zarrmony
 import time.
@@ -129,23 +133,24 @@ class _MosaicAwareLifReader:
 
         ``xarray_dask_data`` swaps the M-intact view for ``mosaic_xarray_dask_data``
         (and emits :class:`MosaicStitchingWarning`); this property bypasses both
-        so the per-tile writer path in ``convert()`` can iterate tiles without
-        re-triggering the auto-stitch warning. Returns the inner reader's raw
-        ``xarray_dask_data`` unchanged — if ``M`` is absent the caller should
-        not be in the per-tile branch in the first place, so we don't try to
-        invent one. (Used by ``api.convert(..., lif_mosaic="per-tile")``.)
+        so the mosaic-reassembly writer paths in ``convert()`` can iterate tiles
+        without re-triggering the auto-stitch warning. Returns the inner
+        reader's raw ``xarray_dask_data`` unchanged — if ``M`` is absent the
+        caller should not be on a reassembly branch in the first place, so we
+        don't try to invent one. Used by ``api.convert(..., lif_mosaic="per-tile")``
+        and ``api.convert(..., lif_mosaic="grid-stitch")``.
         """
         return self._inner.xarray_dask_data
 
-    def is_per_tile_eligible(self) -> bool:
+    def is_mosaic_reassembly_eligible(self) -> bool:
         """True when the current scene is a mosaic with no vendor ``_Merged`` sibling.
 
-        The per-tile writer path in ``convert()`` is only relevant for this
-        case — a mosaic scene whose tiles bioio-lif would otherwise auto-stitch.
-        Mosaic scenes with a ``_Merged`` sibling still get skipped (their
-        pixels come from the merged sibling's own scene loop iteration);
-        non-mosaic scenes write through the standard per-scene path under
-        either ``lif_mosaic`` value.
+        Both non-default ``lif_mosaic`` writer paths (per-tile, grid-stitch)
+        are only relevant for this case — a mosaic scene whose tiles bioio-lif
+        would otherwise auto-stitch. Mosaic scenes with a ``_Merged`` sibling
+        still get skipped (their pixels come from the merged sibling's own
+        scene loop iteration); non-mosaic scenes write through the standard
+        per-scene path under any ``lif_mosaic`` value.
         """
         if "M" not in self._inner.xarray_dask_data.dims:
             return False
@@ -154,12 +159,14 @@ class _MosaicAwareLifReader:
     def _stitching_warning_text(self, scene_name: str, tile_count: int) -> str:
         """Compose the :class:`MosaicStitchingWarning` body.
 
-        Quotes the LIF-declared intended overlap when extractable so the message
-        names the actual stripe width the user will see; falls back to the
-        generic 5–15% phrasing when the extractor returns ``None`` or omits the
-        X overlap. The X axis drives the wording because horizontal seams
-        dominate visual inspection; we don't separately report Y to keep the
-        message terse.
+        Names both known auto-stitch pathologies — the 1-pixel overlap seam
+        (quoted against the LIF-declared intended overlap when extractable) and
+        the M-scan-order tile placement — then lists both zarrmony escape
+        hatches (per-tile first: pixel-correct; grid-stitch second: fixes
+        arrangement on a single canvas), then external stitchers as a last
+        resort. Ordering is deliberate: per-tile is the honest correctness
+        answer, grid-stitch preserves the one-store-per-scene invariant when
+        the user's downstream tooling needs a single canvas.
         """
         layout = self._tile_layout()
         overlap_x = layout.get("intended_overlap_x_pct") if layout else None
@@ -179,11 +186,16 @@ class _MosaicAwareLifReader:
         return (
             f"scene {scene_name!r}: bioio-lif is auto-stitching "
             f"{tile_count} mosaic tiles. The LIF stage XY positions are NOT "
-            f"used. {overlap_clause}. No vendor-stitched sibling "
-            f"('{scene_name}{_MERGED_SUFFIX}') was found; consider external "
-            f"stitching (ASHLAR, m2stitch, BigStitcher) if boundary "
-            f'correctness matters, or re-run with lif_mosaic="per-tile" '
-            f"to write each tile as its own OME-Zarr."
+            f"used, and tiles are placed by M-scan order — not by their "
+            f"declared FieldX/FieldY grid indices, so visual layout may not "
+            f"match acquisition. {overlap_clause}. No vendor-stitched sibling "
+            f"('{scene_name}{_MERGED_SUFFIX}') was found; consider re-running "
+            f'with lif_mosaic="per-tile" to write each tile as its own '
+            f"OME-Zarr (pixel-correct, no seams), or "
+            f'lif_mosaic="grid-stitch" to place tiles correctly on a single '
+            f"canvas by their grid indices (butt joints — seams remain if the "
+            f"acquisition had overlap), or an external stitcher (ASHLAR, "
+            f"m2stitch, BigStitcher) if boundary correctness matters."
         )
 
     @property
