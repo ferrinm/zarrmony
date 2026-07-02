@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-02
+
 ### Added
 
 - Fourth value on `lif_mosaic`: `"stage-stitch"` reassembles a single canvas
@@ -27,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `intended_overlap_*_pct` fields. Powered by new pure-function helpers
   `zarrmony.metadata.lif_tiles.compute_stage_placements`,
   `reassemble_stage`, and `stage_overlap_discrepancy`. (#40)
+
+### Fixed
+
+- `lif_mosaic="grid-stitch"` and `"stage-stitch"` no longer crash with
+  `CoordinateValidationError: conflicting sizes for dimension 'Y'` when the
+  reader attaches per-tile Y/X pixel-space coords. Both reassemblers now
+  drop stale Y/X coords along with the M-indexed coords, so a canvas whose
+  Y/X size no longer matches a single tile stays consistent. Surfaced on a
+  real Leica LIF (3×3 mosaic, 2048×2048 tiles → 6144×6144 canvas); the
+  synthetic fixtures happened not to carry Y/X coords so the fault didn't
+  show up in CI. (#41)
 
 ## [0.5.0] - 2026-07-01
 
