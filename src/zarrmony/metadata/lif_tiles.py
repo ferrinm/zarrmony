@@ -226,6 +226,79 @@ def grid_shape(tiles: list[dict]) -> tuple[int | None, int | None]:
     return max(ys) + 1, max(xs) + 1
 
 
+def select_auto_stitch_cascade(
+    tile_layout: dict | None,
+    *,
+    m_size: int,
+    pixel_size_x_um: float | None,
+    pixel_size_y_um: float | None,
+    plate_mode: bool,
+) -> str:
+    """Resolve ``lif_mosaic="auto-stitch"`` to a concrete stitcher per scene.
+
+    Cascade order:
+
+    1. ``"stage-stitch"`` — every tile has ``pos_x_m``/``pos_y_m`` and the scene
+       has both physical pixel sizes. Skipped under ``plate_mode=True`` since
+       the plate writer does not yet wire stage-stitch (see api.py rejection).
+    2. ``"grid-stitch"`` — every tile has ``field_x``/``field_y`` forming a
+       complete rectangular grid.
+    3. ``"bioio-lif"`` — no tile layout (or neither of the above eligible);
+       falls back to bioio-lif's built-in M-scan-order stitcher.
+
+    Returned value is one of ``"stage-stitch"``, ``"grid-stitch"``,
+    ``"bioio-lif"`` — always a concrete stitcher, never ``"per-tile"`` (which
+    users request explicitly because it changes the on-disk shape) and never
+    ``"auto-stitch"`` (the value that triggered this call).
+    """
+    if (
+        not plate_mode
+        and is_stage_layout_complete(tile_layout)
+        and pixel_size_x_um is not None
+        and pixel_size_y_um is not None
+    ):
+        return "stage-stitch"
+    if is_grid_layout_complete(tile_layout, m_size):
+        return "grid-stitch"
+    return "bioio-lif"
+
+
+def is_stage_layout_complete(tile_layout: dict | None) -> bool:
+    """True iff every tile in ``tile_layout`` has finite ``pos_x_m`` AND ``pos_y_m``.
+
+    Used by the ``lif_mosaic="auto-stitch"`` cascade to pre-check whether a
+    scene is stage-stitch-eligible before invoking the (strict, raising) stage
+    path. Returns ``False`` on ``None`` layout, empty tiles, or any tile
+    missing a stage position — the cascade then falls through to grid-stitch.
+    """
+    if tile_layout is None:
+        return False
+    tiles = tile_layout.get("tiles") or []
+    if not tiles:
+        return False
+    return all(
+        t.get("pos_x_m") is not None and t.get("pos_y_m") is not None for t in tiles
+    )
+
+
+def is_grid_layout_complete(tile_layout: dict | None, m_size: int) -> bool:
+    """True iff ``tile_layout`` covers a complete rectangular grid of ``m_size`` tiles.
+
+    Non-raising sibling of :func:`validate_grid_layout` for the auto-stitch
+    cascade's grid-eligibility pre-check. Returns ``False`` on ``None`` layout
+    or any invariant failure that would make :func:`validate_grid_layout`
+    raise.
+    """
+    if tile_layout is None:
+        return False
+    tiles = tile_layout.get("tiles") or []
+    try:
+        validate_grid_layout(tiles, m_size)
+    except ValueError:
+        return False
+    return True
+
+
 def validate_grid_layout(tiles: list[dict], m_size: int) -> tuple[int, int]:
     """Assert ``tiles`` covers a complete rectangular grid; return ``(rows, cols)``.
 

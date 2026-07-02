@@ -348,23 +348,29 @@ def test_stage_stitch_does_not_emit_stitching_warning(
         convert("/tmp/x.lif", out, pyramid_min_size=4, lif_mosaic="stage-stitch")
 
 
-# ---------- default mode is unaffected ----------
+# ---------- default cascade lands on stage when metadata is complete ----------
 
 
-def test_default_mode_does_not_use_stage_stitch_path(
+def test_default_cascade_lands_on_stage_when_metadata_complete(
     tmp_path: Path, patched_reader
 ) -> None:
-    """Regression guard: the no-flag user still gets bioio-lif auto-stitch."""
+    """v0.7.0 flipped the default to a cascade that picks stage-stitch when
+    per-tile PosX/PosY + scene pixel size are all present. This 3x3 stage
+    fixture supplies both, so the no-flag convert must land on stage-stitch
+    and stamp cascade_selected=True on the audit for downstream visibility.
+    """
     reader = _make_3x3_stage_reader()
     patched_reader(reader)
     out = tmp_path / "out"
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", MosaicStitchingWarning)
+        warnings.simplefilter("ignore", MosaicPlacementWarning)
         result = convert("/tmp/x.lif", out, pyramid_min_size=4)
 
-    scene_record = result["stores"][0]["per_scene"][0]
-    assert scene_record.get("mosaic", {}).get("stitcher") != "zarrmony-stage"
+    mosaic = result["stores"][0]["per_scene"][0]["mosaic"]
+    assert mosaic["stitcher"] == "zarrmony-stage"
+    assert mosaic["cascade_selected"] is True
 
 
 # ---------- API validation: unknown values still error clearly ----------

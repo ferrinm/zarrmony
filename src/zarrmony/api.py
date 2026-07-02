@@ -40,6 +40,7 @@ from zarrmony.metadata.lif_tiles import (
     grid_shape,
     reassemble_grid,
     reassemble_stage,
+    select_auto_stitch_cascade,
     stage_overlap_discrepancy,
 )
 from zarrmony.naming import resolve_scene_dirnames, sanitize_scene_name
@@ -59,13 +60,21 @@ Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
 ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
 _VALID_LAYOUTS: tuple[Layout, ...] = ("auto", "per-scene", "bf2raw", "plate")
 
-LifMosaic = Literal["auto-stitch", "per-tile", "grid-stitch", "stage-stitch"]
+LifMosaic = Literal[
+    "auto-stitch", "per-tile", "grid-stitch", "stage-stitch", "bioio-lif"
+]
 _VALID_LIF_MOSAIC: tuple[LifMosaic, ...] = (
     "auto-stitch",
     "per-tile",
     "grid-stitch",
     "stage-stitch",
+    "bioio-lif",
 )
+
+# The concrete stitcher the cascade dispatches to under lif_mosaic="auto-stitch".
+# "per-tile" is not a cascade output — users request it explicitly because it
+# changes the on-disk shape (N sub-stores per scene, not one canvas).
+_CascadeChoice = Literal["stage-stitch", "grid-stitch", "bioio-lif"]
 
 # Meters → micrometers (OME convention for <Plane> PositionX/Y/Z units).
 _METERS_TO_UM = 1_000_000.0
@@ -418,11 +427,14 @@ def convert(
             "is one image by spec; convert as flat (layout='per-scene' or "
             "layout='auto' with a flat reader) to get per-tile stores"
         )
-    # Plate + stage-stitch is not yet wired end-to-end (the plate writer
-    # only knows how to swap in grid-stitch's reassembly today). Reject
+    # Plate + explicit stage-stitch is not yet wired end-to-end (the plate
+    # writer only knows how to swap in grid-stitch's reassembly today). Reject
     # explicitly so users don't silently get bioio-lif auto-stitched plate
     # FOVs when they asked for stage-based placement; convert flat to get
-    # a stage-stitched canvas per scene, or use grid-stitch under plate.
+    # a stage-stitched canvas per scene, or use grid-stitch under plate. The
+    # auto-stitch cascade already knows to skip stage-stitch under plate mode
+    # and land on grid-stitch instead, so this rejection is scoped to the
+    # explicit request only.
     if effective_layout == "plate" and lif_mosaic == "stage-stitch":
         raise LayoutMismatchError(
             "stage-stitch is not yet supported under plate layout; convert "
@@ -716,8 +728,35 @@ def _convert_per_scene(
             store_audits.extend(tile_audits)
             continue
 
-        grid_stitch_mode = lif_mosaic == "grid-stitch" and reassembly_eligible
-        stage_stitch_mode = lif_mosaic == "stage-stitch" and reassembly_eligible
+        # Resolve the effective stitcher. Under the cascade default
+        # (lif_mosaic="auto-stitch"), per-scene metadata decides which of
+        # stage-stitch → grid-stitch → bioio-lif runs; explicit values pass
+        # through unchanged. When the scene isn't mosaic-reassembly-eligible
+        # (e.g. a _Merged sibling or a scalar scene) there's nothing to
+        # cascade and the reader's normal xarray_dask_data path handles it.
+        effective_stitcher = lif_mosaic
+        cascade_selected = False
+        if reassembly_eligible and lif_mosaic == "auto-stitch":
+            cascade_tiles_xarr = reader.tiles_xarray_dask_data
+            cascade_m_size = int(cascade_tiles_xarr.sizes["M"])
+            cascade_scene_xml = find_scene_xml(reader)
+            cascade_tile_layout = (
+                extract_tile_layout(cascade_scene_xml)
+                if cascade_scene_xml is not None
+                else None
+            )
+            cascade_px_y, cascade_px_x = _stage_pixel_sizes_um(reader)
+            effective_stitcher = select_auto_stitch_cascade(
+                cascade_tile_layout,
+                m_size=cascade_m_size,
+                pixel_size_x_um=cascade_px_x,
+                pixel_size_y_um=cascade_px_y,
+                plate_mode=False,
+            )
+            cascade_selected = True
+
+        grid_stitch_mode = effective_stitcher == "grid-stitch" and reassembly_eligible
+        stage_stitch_mode = effective_stitcher == "stage-stitch" and reassembly_eligible
         # Either reassembly mode consumes the raw M-intact tiles surface and
         # replaces the auto-stitch mosaic_summary with a mode-specific block;
         # `write_scene`'s auto-stitch summary would mislabel the record with
@@ -784,6 +823,14 @@ def _convert_per_scene(
             )
         elif stage_stitch_mode and stage_mosaic_summary is not None:
             scene_record["mosaic"] = stage_mosaic_summary
+
+        # Distinguish cascade-selected from user-explicit in the audit so
+        # downstream analysis can tell "grid-stitch was picked because stage
+        # metadata was incomplete" apart from "user explicitly asked for
+        # grid-stitch". The mosaic block already carries stitcher=... for the
+        # concrete choice; this flag adds the intent.
+        if cascade_selected and "mosaic" in scene_record and scene_record["mosaic"]:
+            scene_record["mosaic"]["cascade_selected"] = True
 
         metadata_warnings: list[dict] = []
         ome_image: Image | None = None

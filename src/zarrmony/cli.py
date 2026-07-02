@@ -114,26 +114,33 @@ def _parse_chunk_shape(
 )
 @click.option(
     "--lif-mosaic",
-    type=click.Choice(["auto-stitch", "per-tile", "grid-stitch", "stage-stitch"]),
+    type=click.Choice(
+        ["auto-stitch", "per-tile", "grid-stitch", "stage-stitch", "bioio-lif"]
+    ),
     default="auto-stitch",
     show_default=True,
     help=(
         "LIF-specific. How to write mosaic scenes with no vendor _Merged "
-        "sibling. 'auto-stitch' (default) uses bioio-lif's 1-pixel-overlap "
-        "stitcher (one image per scene; emits MosaicStitchingWarning). "
-        "'per-tile' writes one OME-Zarr per tile under "
-        "<OUTPUT>/<scene>/tile_X{f:02d}Y{f:02d}.ome.zarr/ with stage "
-        "positions in each tile's OME-XML <Plane> for external stitchers "
-        "(ASHLAR, m2stitch, BigStitcher); incompatible with --layout plate. "
-        "'grid-stitch' reassembles one canvas per scene by placing tile M=i "
-        "at (field_y[i]*tile_H, field_x[i]*tile_W) from LIF FieldX/FieldY "
-        "(butt joints, no overlap); fixes M-scan-order placement while "
-        "preserving one-store-per-scene; raises on incomplete tile metadata. "
+        "sibling. 'auto-stitch' (default) runs a per-scene cascade: "
+        "stage-stitch when the scene has per-tile PosX/PosY and physical "
+        "pixel size (both X and Y), else grid-stitch when tile FieldX/FieldY "
+        "form a complete rectangular grid, else bioio-lif's built-in "
+        "M-scan-order stitcher (which emits MosaicStitchingWarning). "
         "'stage-stitch' places each tile at its PosX/PosY stage µm position "
         "(converted via the scene's pixel size); honours the LIF-declared "
         "intended overlap; raises on missing PosX/PosY or scene pixel size "
         "and warns (MosaicPlacementWarning) when observed vs intended overlap "
-        "diverges past 20%. Other readers ignore this flag. See ADR-0005."
+        "diverges past 20%. 'grid-stitch' reassembles one canvas per scene by "
+        "placing tile M=i at (field_y[i]*tile_H, field_x[i]*tile_W) from LIF "
+        "FieldX/FieldY (butt joints, no overlap); raises on incomplete tile "
+        "metadata. 'per-tile' writes one OME-Zarr per tile under "
+        "<OUTPUT>/<scene>/tile_X{f:02d}Y{f:02d}.ome.zarr/ with stage positions "
+        "in each tile's OME-XML <Plane> for external stitchers (ASHLAR, "
+        "m2stitch, BigStitcher); incompatible with --layout plate. 'bioio-lif' "
+        "opts back into bioio-lif's 1-pixel-overlap M-scan-order stitcher "
+        "(the pre-v0.7.0 default); the cascade will pick this automatically "
+        "when a scene has no <Tile> layout metadata. Other readers ignore this "
+        "flag. See ADR-0005."
     ),
 )
 def convert_cmd(

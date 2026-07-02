@@ -32,6 +32,7 @@ from zarrmony.metadata.lif_tiles import (
     extract_tile_layout,
     grid_shape,
     reassemble_grid,
+    select_auto_stitch_cascade,
 )
 from zarrmony.readers.plate import PlateField, PlateLayout
 from zarrmony.writers.scene import write_scene
@@ -315,18 +316,50 @@ def write_plate(
             channels = _channels_for_current_scene(reader, channel_colors)
             image_name = f.field_name or reader.scenes[f.scene_index]
 
-            grid_stitch_this_fov = lif_mosaic == "grid-stitch" and bool(
+            # Cascade under plate mode: auto-stitch resolves per FOV to either
+            # grid-stitch (when tile grid metadata is complete) or bioio-lif
+            # (fallback). Stage-stitch is unreachable here — the plate writer
+            # hasn't wired stage-stitch's canvas swap, and select_auto_stitch_
+            # cascade() honours plate_mode=True by skipping it. Explicit
+            # lif_mosaic="grid-stitch" from the caller still routes directly.
+            reassembly_eligible_fov = bool(
                 getattr(reader, "is_mosaic_reassembly_eligible", lambda: False)()
             )
+            effective_stitcher = lif_mosaic
+            cascade_selected = False
             grid_tile_layout: dict | None = None
             grid_tile_count = 0
+            if reassembly_eligible_fov and lif_mosaic == "auto-stitch":
+                cascade_tiles_xarr = reader.tiles_xarray_dask_data
+                grid_tile_count = int(cascade_tiles_xarr.sizes["M"])
+                cascade_scene_xml = find_scene_xml(reader)
+                grid_tile_layout = (
+                    extract_tile_layout(cascade_scene_xml)
+                    if cascade_scene_xml is not None
+                    else None
+                )
+                effective_stitcher = select_auto_stitch_cascade(
+                    grid_tile_layout,
+                    m_size=grid_tile_count,
+                    pixel_size_x_um=None,
+                    pixel_size_y_um=None,
+                    plate_mode=True,
+                )
+                cascade_selected = True
+
+            grid_stitch_this_fov = (
+                effective_stitcher == "grid-stitch" and reassembly_eligible_fov
+            )
             if grid_stitch_this_fov:
                 grid_tiles_xarr = reader.tiles_xarray_dask_data
                 grid_tile_count = int(grid_tiles_xarr.sizes["M"])
-                scene_xml = find_scene_xml(reader)
-                grid_tile_layout = (
-                    extract_tile_layout(scene_xml) if scene_xml is not None else None
-                )
+                if grid_tile_layout is None:
+                    scene_xml = find_scene_xml(reader)
+                    grid_tile_layout = (
+                        extract_tile_layout(scene_xml)
+                        if scene_xml is not None
+                        else None
+                    )
                 grid_xarr = reassemble_grid(grid_tiles_xarr, grid_tile_layout)
             else:
                 grid_xarr = None
@@ -357,6 +390,8 @@ def write_plate(
                     tile_count=grid_tile_count,
                     reader=reader,
                 )
+            if cascade_selected and "mosaic" in scene_record and scene_record["mosaic"]:
+                scene_record["mosaic"]["cascade_selected"] = True
             field_records.append(scene_record)
 
             if ome_image_for_field is not None:
