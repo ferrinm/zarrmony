@@ -413,11 +413,14 @@ def test_proxy_warning_quotes_per_tile_escape_hatch() -> None:
     assert 'lif_mosaic="per-tile"' in msg
 
 
-def test_proxy_warning_quotes_grid_stitch_escape_hatch() -> None:
-    """The MosaicStitchingWarning body must also name the lif_mosaic='grid-stitch'
-    escape hatch (#39). Grid-stitch fixes M-scan-order tile placement while
-    preserving one-store-per-scene, so users with tooling that expects a single
-    canvas see it as an alternative to per-tile."""
+def test_proxy_warning_does_not_suggest_cascade_alternatives() -> None:
+    """Under the v0.7.0 cascade default (lif_mosaic="auto-stitch"), when the
+    bioio-lif fallback path fires it's because the cascade already tried and
+    couldn't use stage-stitch or grid-stitch (or the user explicitly asked for
+    the bioio-lif escape). The warning must NOT re-suggest either as an
+    "escape hatch" — that would tell the user to try things the cascade
+    already tried on their behalf.
+    """
     proxy = lif_mod._MosaicAwareLifReader(_FakeBioioLifReader({0: True}, tile_count=4))
     proxy.set_scene(0)
 
@@ -425,7 +428,10 @@ def test_proxy_warning_quotes_grid_stitch_escape_hatch() -> None:
         _ = proxy.xarray_dask_data
 
     msg = str(captured[0].message)
-    assert 'lif_mosaic="grid-stitch"' in msg
+    assert 'lif_mosaic="grid-stitch"' not in msg
+    assert 'lif_mosaic="stage-stitch"' not in msg
+    # per-tile IS still recommended as the remaining alternative.
+    assert 'lif_mosaic="per-tile"' in msg
 
 
 def test_proxy_warning_names_m_scan_arrangement_bug() -> None:

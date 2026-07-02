@@ -358,25 +358,34 @@ def test_grid_stitch_composes_with_plate_layout(tmp_path: Path, patched_reader) 
     assert np.all(block_m0 == 1)
 
 
-# ---------- auto-stitch (default) is unaffected ----------
+# ---------- default cascade falls back to grid when stage is ineligible ----------
 
 
-def test_default_mode_does_not_use_grid_stitch_path(
+def test_default_cascade_falls_back_to_grid_when_pixel_size_missing(
     tmp_path: Path, patched_reader
 ) -> None:
-    """The default lif_mosaic value does NOT invoke grid-stitch, even when the
-    scene would be eligible. Regression guard for the no-flag user."""
-    reader = _make_3x3_mosaic_reader()
+    """v0.7.0 flipped the default to a cascade: stage-stitch first, then
+    grid-stitch when stage is ineligible. A scene with per-tile PosX/PosY
+    but no scene physical pixel size (bioio-lif surfaces None for some
+    non-calibrated confocals) can't run stage-stitch — the cascade must
+    land on grid-stitch, not on bioio-lif.
+    """
+    from tests.conftest import FakePhysicalPixelSizes
+
+    scene = TileScene(tiles=_shuffled_3x3_tiles(), tile_yx=(8, 8))
+    reader = FakeReader(
+        scenes=["Position 1"],
+        dims="TCZYX",
+        shape=(1, 1, 1, 8, 8),
+        channel_names=["DAPI"],
+        pixel_sizes=FakePhysicalPixelSizes(Y=None, X=None),
+        per_tile_scenes={0: scene},
+    )
     patched_reader(reader)
     out = tmp_path / "out"
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", MosaicStitchingWarning)
-        result = convert("/tmp/x.lif", out, pyramid_min_size=4)
+    result = convert("/tmp/x.lif", out, pyramid_min_size=4)
 
-    # Default writes via the auto-stitch path (bioio-lif mosaic_xarray_dask_data),
-    # whose mosaic_summary carries stitcher="bioio-lif" — not zarrmony-grid.
-    # (FakeReader's mosaic_summary is None by default, so this is asserted
-    # via the ABSENCE of grid-stitch fields.)
-    scene_record = result["stores"][0]["per_scene"][0]
-    assert scene_record.get("mosaic", {}).get("stitcher") != "zarrmony-grid"
+    mosaic = result["stores"][0]["per_scene"][0]["mosaic"]
+    assert mosaic["stitcher"] == "zarrmony-grid"
+    assert mosaic["cascade_selected"] is True

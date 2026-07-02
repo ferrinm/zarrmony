@@ -162,14 +162,17 @@ class _MosaicAwareLifReader:
     def _stitching_warning_text(self, scene_name: str, tile_count: int) -> str:
         """Compose the :class:`MosaicStitchingWarning` body.
 
-        Names both known auto-stitch pathologies — the 1-pixel overlap seam
-        (quoted against the LIF-declared intended overlap when extractable) and
-        the M-scan-order tile placement — then lists both zarrmony escape
-        hatches (per-tile first: pixel-correct; grid-stitch second: fixes
-        arrangement on a single canvas), then external stitchers as a last
-        resort. Ordering is deliberate: per-tile is the honest correctness
-        answer, grid-stitch preserves the one-store-per-scene invariant when
-        the user's downstream tooling needs a single canvas.
+        Fires only when bioio-lif's own stitcher actually runs — under the
+        v0.7.0 cascade default (``lif_mosaic="auto-stitch"``) that's either
+        the cascade fallback (no ``<Tile>`` layout metadata to feed
+        stage-stitch or grid-stitch) or an explicit
+        ``lif_mosaic="bioio-lif"`` request. The warning names both known
+        pathologies — the 1-pixel overlap seam (quoted against the
+        LIF-declared intended overlap when extractable) and the M-scan-order
+        placement that ignores ``FieldX``/``FieldY`` — and points at
+        ``lif_mosaic="per-tile"`` as the remaining zarrmony alternative
+        (stage-stitch and grid-stitch aren't listed because the cascade
+        already tried them or the user opted out of both).
         """
         layout = self._tile_layout()
         overlap_x = layout.get("intended_overlap_x_pct") if layout else None
@@ -192,15 +195,14 @@ class _MosaicAwareLifReader:
             f"used, and tiles are placed by M-scan order — not by their "
             f"declared FieldX/FieldY grid indices, so visual layout may not "
             f"match acquisition. {overlap_clause}. No vendor-stitched sibling "
-            f"('{scene_name}{_MERGED_SUFFIX}') was found; consider re-running "
-            f'with lif_mosaic="stage-stitch" to place tiles at their true '
-            f"stage µm positions (honours declared overlap; one canvas per "
-            f'scene), lif_mosaic="grid-stitch" to fix arrangement on a butt-'
-            f"jointed canvas by FieldX/FieldY indices (seams remain if the "
-            f'acquisition had overlap), lif_mosaic="per-tile" to write each '
-            f"tile as its own OME-Zarr (pixel-correct, no seams — external "
-            f"stitcher must reassemble), or an external stitcher (ASHLAR, "
-            f"m2stitch, BigStitcher) if boundary correctness matters."
+            f"('{scene_name}{_MERGED_SUFFIX}') was found. Under the default "
+            f'lif_mosaic="auto-stitch" cascade this fallback runs only when '
+            f"neither stage-stitch nor grid-stitch is eligible (no per-tile "
+            f"<Tile> layout in the scene XML); consider "
+            f'lif_mosaic="per-tile" to write each tile as its own OME-Zarr '
+            f"(pixel-correct, no seams — external stitcher must reassemble), "
+            f"or an external stitcher (ASHLAR, m2stitch, BigStitcher) if "
+            f"boundary correctness matters."
         )
 
     @property

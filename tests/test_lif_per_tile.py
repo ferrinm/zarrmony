@@ -312,10 +312,16 @@ def test_auto_stitch_default_does_not_use_per_tile_path(
     out = tmp_path / "out"
 
     # Default lif_mosaic — FakeReader is per-tile-eligible but the dispatch
-    # only fires when lif_mosaic=="per-tile". The standard per-scene path
-    # writes one OME-Zarr at out/Position_1.ome.zarr/.
+    # only fires when lif_mosaic=="per-tile". Under the v0.7.0 cascade default
+    # this fixture has stage metadata, so it lands on stage-stitch — the
+    # single-store on-disk shape (asserted below) is unchanged either way.
+    # Suppress MosaicPlacementWarning because this fixture's stage positions
+    # aren't calibrated for a realistic overlap.
+    from zarrmony.errors import MosaicPlacementWarning
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", MosaicStitchingWarning)
+        warnings.simplefilter("ignore", MosaicPlacementWarning)
         result = convert("/tmp/x.lif", out, pyramid_min_size=8)
 
     assert (out / "Position_1.ome.zarr" / "zarr.json").exists()

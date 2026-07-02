@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-02
+
+### Changed (BREAKING)
+
+- `lif_mosaic="auto-stitch"` (still the default) no longer means "use
+  bioio-lif's 1-pixel-overlap M-scan-order stitcher"; it now dispatches a
+  per-scene cascade — try `stage-stitch` when the scene has per-tile
+  `PosX`/`PosY` and both physical pixel sizes, fall back to `grid-stitch`
+  when the `FieldX`/`FieldY` grid is complete, and only fall through to
+  bioio-lif's built-in stitcher when no `<Tile>` layout is present. Existing
+  scripts passing `--lif-mosaic auto-stitch` (or the API `lif_mosaic=
+  "auto-stitch"`) will now produce different — and, per the validation done
+  under #41 against a real Leica LIF, better — pixels. To restore the
+  pre-v0.7.0 behavior for a specific run, pass the new
+  `lif_mosaic="bioio-lif"` value; that path still fires
+  `MosaicStitchingWarning`. Under `layout="plate"`, the cascade skips
+  `stage-stitch` (not wired to the plate writer) and lands on
+  `grid-stitch` or `bioio-lif`. (#41)
+- `MosaicStitchingWarning` text no longer suggests `lif_mosaic="grid-stitch"`
+  or `"stage-stitch"` as alternatives — the cascade already tried them
+  before falling through to this branch. The warning still names
+  `lif_mosaic="per-tile"` as the remaining zarrmony alternative.
+
+### Added
+
+- `lif_mosaic="bioio-lif"` — explicit value that opts back into bioio-lif's
+  1-pixel-overlap M-scan-order stitcher. The cascade will also select this
+  automatically for scenes with no `<Tile>` metadata. (#41)
+- `mosaic.cascade_selected: true` on the audit block whenever the
+  `auto-stitch` cascade picked the concrete stitcher (as opposed to the
+  user requesting one explicitly). Pairs with the existing
+  `mosaic.stitcher` field so downstream analysis can distinguish
+  "grid-stitch was picked because stage was ineligible" from "user
+  explicitly asked for grid-stitch". (#41)
+- Non-throwing `is_stage_layout_complete()` and `is_grid_layout_complete()`
+  predicates in `zarrmony.metadata.lif_tiles`, plus a
+  `select_auto_stitch_cascade()` selector that composes them. Both writer
+  paths (`_convert_per_scene` and `write_plate`) use the same selector so
+  the cascade decision stays consistent. (#41)
+
 ## [0.6.0] - 2026-07-02
 
 ### Added
