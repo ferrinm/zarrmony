@@ -317,10 +317,14 @@ def reassemble_grid(tiles_xarr: xr.DataArray, tile_layout: dict | None) -> xr.Da
         row_arrays.append(da.concatenate(row_tiles, axis=x_axis))
     canvas_data = da.concatenate(row_arrays, axis=y_axis)
 
+    # Y/X coords carry per-tile pixel positions — they no longer size-match
+    # the enlarged canvas, so drop them along with any other spatial coord
+    # whose dims touch Y or X. Non-spatial coords (T/C/Z, channel names, etc.)
+    # survive untouched.
     preserved_coords = {
         name: coord
         for name, coord in tiles_xarr.coords.items()
-        if "M" not in coord.dims
+        if "M" not in coord.dims and "Y" not in coord.dims and "X" not in coord.dims
     }
     return xr.DataArray(canvas_data, dims=non_m_dims, coords=preserved_coords)
 
@@ -552,10 +556,12 @@ def reassemble_stage(
     )
     canvas_data = da.from_delayed(delayed_canvas, shape=canvas_shape_t, dtype=dtype)
 
+    # See reassemble_grid: Y/X coords carry per-tile positions and can't
+    # be reused on a canvas of a different size.
     preserved_coords = {
         name: coord
         for name, coord in tiles_xarr.coords.items()
-        if "M" not in coord.dims
+        if "M" not in coord.dims and "Y" not in coord.dims and "X" not in coord.dims
     }
     return xr.DataArray(canvas_data, dims=non_m_dims, coords=preserved_coords)
 

@@ -367,6 +367,32 @@ def test_reassemble_grid_preserves_non_m_coords() -> None:
     assert list(canvas.coords["C"].values) == ["DAPI"]
 
 
+def test_reassemble_grid_drops_stale_tile_yx_coords() -> None:
+    # Real bioio-lif readers attach Y/X pixel-space coords sized for a single
+    # tile. The reassembled canvas is N× wider, so those coords no longer
+    # size-match — reassemble_grid must drop them (regression from a real
+    # Leica LIF where the 2048-long Y coord clashed with a 6144-tall canvas).
+    m_order = [(0, 0), (1, 0), (0, 1), (1, 1)]
+    tile_h, tile_w = 4, 4
+    tiles_xarr = _tiles_xarr(m_order, tile_h=tile_h, tile_w=tile_w)
+    tiles_xarr = tiles_xarr.assign_coords(
+        Y=np.arange(tile_h, dtype=np.float64),
+        X=np.arange(tile_w, dtype=np.float64),
+    )
+    tile_layout = {
+        "tiles": _tiles_from_grid(m_order),
+        "intended_overlap_x_pct": None,
+        "intended_overlap_y_pct": None,
+    }
+
+    canvas = reassemble_grid(tiles_xarr, tile_layout)
+
+    assert canvas.sizes["Y"] == 2 * tile_h
+    assert canvas.sizes["X"] == 2 * tile_w
+    assert "Y" not in canvas.coords
+    assert "X" not in canvas.coords
+
+
 # --- compute_stage_placements ---------------------------------------------
 
 
@@ -537,3 +563,22 @@ def test_reassemble_stage_raises_on_offsets_m_count_mismatch() -> None:
     tiles_xarr = xr.DataArray(da.from_array(arr), dims=["M", "T", "C", "Y", "X"])
     with pytest.raises(ValueError, match=r"offsets count \(1\).*M dim \(2\)"):
         reassemble_stage(tiles_xarr, [(0, 0)], canvas_shape_yx=(4, 8))
+
+
+def test_reassemble_stage_drops_stale_tile_yx_coords() -> None:
+    # Same shape-mismatch as reassemble_grid: the reader's tile-sized Y/X
+    # coords can't be reused on a canvas of a different size.
+    tile_h, tile_w = 4, 4
+    arr = np.zeros((2, 1, 1, tile_h, tile_w), dtype=np.uint16)
+    tiles_xarr = xr.DataArray(da.from_array(arr), dims=["M", "T", "C", "Y", "X"])
+    tiles_xarr = tiles_xarr.assign_coords(
+        Y=np.arange(tile_h, dtype=np.float64),
+        X=np.arange(tile_w, dtype=np.float64),
+    )
+
+    canvas = reassemble_stage(tiles_xarr, [(0, 0), (0, 2)], canvas_shape_yx=(4, 6))
+
+    assert canvas.sizes["Y"] == 4
+    assert canvas.sizes["X"] == 6
+    assert "Y" not in canvas.coords
+    assert "X" not in canvas.coords
