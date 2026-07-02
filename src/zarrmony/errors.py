@@ -81,6 +81,18 @@ class ValidationWarning(UserWarning):
     """
 
 
+class MosaicPlacementWarning(UserWarning):
+    """Stage-based tile placement diverges from the LIF-declared intended overlap.
+
+    Emitted by ``convert(..., lif_mosaic="stage-stitch")`` when the observed
+    tile-to-tile overlap — computed from stage ``PosX``/``PosY`` positions and
+    the scene's physical pixel size — differs from the LIF metadata's
+    ``StitchingSettings/OverlapPercentageX/Y`` by more than 20% on either axis.
+    Placement proceeds; the warning names the discrepancy so users can catch
+    pixel-size / unit-conversion bugs without failing the conversion.
+    """
+
+
 class MosaicMergedSiblingWarning(UserWarning):
     """A mosaic scene was skipped because a vendor ``_Merged`` sibling exists.
 

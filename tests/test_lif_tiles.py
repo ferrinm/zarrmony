@@ -12,9 +12,12 @@ import pytest
 import xarray as xr
 
 from zarrmony.metadata.lif_tiles import (
+    compute_stage_placements,
     extract_tile_layout,
     grid_shape,
     reassemble_grid,
+    reassemble_stage,
+    stage_overlap_discrepancy,
     validate_grid_layout,
 )
 
@@ -362,3 +365,175 @@ def test_reassemble_grid_preserves_non_m_coords() -> None:
     canvas = reassemble_grid(tiles_xarr, tile_layout)
     assert "C" in canvas.coords
     assert list(canvas.coords["C"].values) == ["DAPI"]
+
+
+# --- compute_stage_placements ---------------------------------------------
+
+
+def _stage_tiles(step_um: float = 18.0) -> list[dict]:
+    """3x3 grid of stage-µm positions with the given inter-tile step."""
+    step_m = step_um / 1_000_000.0
+    tiles = []
+    for fy in range(3):
+        for fx in range(3):
+            tiles.append(
+                {
+                    "field_x": fx,
+                    "field_y": fy,
+                    "pos_x_m": fx * step_m,
+                    "pos_y_m": fy * step_m,
+                    "pos_z_m": 0.0,
+                }
+            )
+    return tiles
+
+
+def test_compute_stage_placements_snaps_to_integer_pixels_and_normalises() -> None:
+    tiles = _stage_tiles(step_um=18.0)
+    layout = {
+        "tiles": tiles,
+        "intended_overlap_x_pct": 10.0,
+        "intended_overlap_y_pct": 10.0,
+    }
+    offsets, canvas_shape, observed = compute_stage_placements(
+        layout,
+        pixel_size_x_um=1.0,
+        pixel_size_y_um=1.0,
+        tile_h=20,
+        tile_w=20,
+    )
+    # First tile normalises to (0,0); last tile at 2*18=36 in each axis.
+    assert offsets[0] == (0, 0)
+    assert offsets[-1] == (36, 36)
+    # Canvas = 36 + 20 = 56 per side.
+    assert canvas_shape == (56, 56)
+    # Observed overlap = (20 - 18) / 20 * 100 = 10.0
+    assert observed["x"] == pytest.approx(10.0)
+    assert observed["y"] == pytest.approx(10.0)
+
+
+def test_compute_stage_placements_raises_on_missing_pixel_size_names_axes() -> None:
+    layout = {
+        "tiles": _stage_tiles(),
+        "intended_overlap_x_pct": None,
+        "intended_overlap_y_pct": None,
+    }
+    with pytest.raises(ValueError, match=r"pixel size.*\['X'\].*grid-stitch"):
+        compute_stage_placements(
+            layout, pixel_size_x_um=None, pixel_size_y_um=1.0, tile_h=20, tile_w=20
+        )
+
+
+def test_compute_stage_placements_raises_on_none_layout() -> None:
+    with pytest.raises(ValueError, match=r"per-tile stage positions.*grid-stitch"):
+        compute_stage_placements(
+            None, pixel_size_x_um=1.0, pixel_size_y_um=1.0, tile_h=20, tile_w=20
+        )
+
+
+def test_compute_stage_placements_raises_on_empty_tiles_list() -> None:
+    with pytest.raises(ValueError, match=r"no <Tile> entries.*grid-stitch"):
+        compute_stage_placements(
+            {
+                "tiles": [],
+                "intended_overlap_x_pct": None,
+                "intended_overlap_y_pct": None,
+            },
+            pixel_size_x_um=1.0,
+            pixel_size_y_um=1.0,
+            tile_h=20,
+            tile_w=20,
+        )
+
+
+def test_compute_stage_placements_raises_on_partial_position_naming_missing_key() -> (
+    None
+):
+    tiles = _stage_tiles()
+    tiles[2]["pos_x_m"] = None
+    with pytest.raises(ValueError, match=r"M=2.*pos_x_m"):
+        compute_stage_placements(
+            {
+                "tiles": tiles,
+                "intended_overlap_x_pct": None,
+                "intended_overlap_y_pct": None,
+            },
+            pixel_size_x_um=1.0,
+            pixel_size_y_um=1.0,
+            tile_h=20,
+            tile_w=20,
+        )
+
+
+# --- stage_overlap_discrepancy --------------------------------------------
+
+
+def test_stage_overlap_discrepancy_flags_axis_beyond_tolerance() -> None:
+    findings = stage_overlap_discrepancy(
+        {"x": 55.0, "y": 10.5}, intended_x_pct=10.0, intended_y_pct=10.0
+    )
+    assert len(findings) == 1
+    axis, obs, intended = findings[0]
+    assert axis == "x"
+    assert obs == 55.0 and intended == 10.0
+
+
+def test_stage_overlap_discrepancy_silent_when_within_tolerance() -> None:
+    # 12 vs 10 → 20% diff, exactly at tolerance boundary — NOT > 0.2.
+    findings = stage_overlap_discrepancy(
+        {"x": 12.0, "y": 8.0}, intended_x_pct=10.0, intended_y_pct=10.0
+    )
+    assert findings == []
+
+
+def test_stage_overlap_discrepancy_skips_axis_when_intended_missing() -> None:
+    findings = stage_overlap_discrepancy(
+        {"x": 55.0, "y": None}, intended_x_pct=None, intended_y_pct=None
+    )
+    assert findings == []
+
+
+def test_stage_overlap_discrepancy_skips_axis_when_observed_missing() -> None:
+    # No horizontally-adjacent pair to measure — observed x is None; must not
+    # fabricate a finding just because intended x is present.
+    findings = stage_overlap_discrepancy(
+        {"x": None, "y": 60.0}, intended_x_pct=10.0, intended_y_pct=10.0
+    )
+    assert len(findings) == 1
+    assert findings[0][0] == "y"
+
+
+# --- reassemble_stage ------------------------------------------------------
+
+
+def test_reassemble_stage_writes_tiles_at_offsets_with_later_wins() -> None:
+    """Two horizontally-adjacent tiles with 2 px overlap — the M=1 tile must
+    win in the overlap region (deterministic later-wins policy)."""
+    tile_h, tile_w = 4, 4
+    arr = np.zeros((2, 1, 1, tile_h, tile_w), dtype=np.uint16)
+    arr[0].fill(1)
+    arr[1].fill(2)
+    tiles_xarr = xr.DataArray(da.from_array(arr), dims=["M", "T", "C", "Y", "X"])
+    offsets = [(0, 0), (0, 2)]  # 2 px overlap in X
+    canvas = reassemble_stage(tiles_xarr, offsets, canvas_shape_yx=(4, 6))
+    data = canvas.data.compute()
+    # First 2 X cols: only M=0 (value 1)
+    assert np.all(data[..., :, 0:2] == 1)
+    # Overlap cols [2, 4): M=1 wrote over M=0
+    assert np.all(data[..., :, 2:4] == 2)
+    # Last 2 X cols: only M=1 (value 2)
+    assert np.all(data[..., :, 4:6] == 2)
+
+
+def test_reassemble_stage_returns_dask_backed_xarray() -> None:
+    arr = np.zeros((2, 1, 1, 4, 4), dtype=np.uint16)
+    tiles_xarr = xr.DataArray(da.from_array(arr), dims=["M", "T", "C", "Y", "X"])
+    canvas = reassemble_stage(tiles_xarr, [(0, 0), (0, 4)], canvas_shape_yx=(4, 8))
+    assert isinstance(canvas.data, da.Array)
+
+
+def test_reassemble_stage_raises_on_offsets_m_count_mismatch() -> None:
+    arr = np.zeros((2, 1, 1, 4, 4), dtype=np.uint16)
+    tiles_xarr = xr.DataArray(da.from_array(arr), dims=["M", "T", "C", "Y", "X"])
+    with pytest.raises(ValueError, match=r"offsets count \(1\).*M dim \(2\)"):
+        reassemble_stage(tiles_xarr, [(0, 0)], canvas_shape_yx=(4, 8))

@@ -22,6 +22,7 @@ from zarrmony.errors import (
     LayoutDowngradeWarning,
     LayoutMismatchError,
     MosaicMergedSiblingWarning,
+    MosaicPlacementWarning,
     OutputExistsError,
     ValidationWarning,
     ZarrmonyError,
@@ -34,9 +35,12 @@ from zarrmony.metadata.lif_channels import (
     extract_channels,
 )
 from zarrmony.metadata.lif_tiles import (
+    compute_stage_placements,
     extract_tile_layout,
     grid_shape,
     reassemble_grid,
+    reassemble_stage,
+    stage_overlap_discrepancy,
 )
 from zarrmony.naming import resolve_scene_dirnames, sanitize_scene_name
 from zarrmony.readers.default import derive_bioio_distribution
@@ -55,8 +59,13 @@ Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
 ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
 _VALID_LAYOUTS: tuple[Layout, ...] = ("auto", "per-scene", "bf2raw", "plate")
 
-LifMosaic = Literal["auto-stitch", "per-tile", "grid-stitch"]
-_VALID_LIF_MOSAIC: tuple[LifMosaic, ...] = ("auto-stitch", "per-tile", "grid-stitch")
+LifMosaic = Literal["auto-stitch", "per-tile", "grid-stitch", "stage-stitch"]
+_VALID_LIF_MOSAIC: tuple[LifMosaic, ...] = (
+    "auto-stitch",
+    "per-tile",
+    "grid-stitch",
+    "stage-stitch",
+)
 
 # Meters → micrometers (OME convention for <Plane> PositionX/Y/Z units).
 _METERS_TO_UM = 1_000_000.0
@@ -66,6 +75,12 @@ _METERS_TO_UM = 1_000_000.0
 # diagnose missing-pixel-at-seam risk when the acquisition intended overlap.
 _STITCHER_GRID_NAME = "zarrmony-grid"
 _GRID_OVERLAP_ASSUMPTION_PX = 0
+
+# Stage-stitch honours the acquisition's true intended overlap by placing each
+# tile at its stage µm position (converted through the scene's pixel size).
+# Recorded in the audit alongside tile_pixel_offsets + observed_overlap_pct so
+# downstream consumers can compare the placement to the LIF-declared intent.
+_STITCHER_STAGE_NAME = "zarrmony-stage"
 
 
 def _resolve_layout(
@@ -360,6 +375,17 @@ def convert(
       one-store-per-scene invariant. Strict: raises :class:`ValueError` with
       a clear message pointing at ``"per-tile"`` when tile metadata is
       incomplete. Composes with ``layout="plate"``.
+    - ``"stage-stitch"`` — reassembles a single canvas per scene by placing
+      each tile at its ``PosX``/``PosY`` stage µm position (converted to
+      pixels via the scene's physical pixel size). Honours the LIF-declared
+      intended overlap instead of grid-stitch's butt joints; later-placed
+      tiles overwrite earlier tiles in overlap regions (deterministic — M
+      order — no blending in this slice). Strict: raises :class:`ValueError`
+      naming what's missing (per-tile ``PosX``/``PosY`` or scene physical
+      pixel size) with ``"grid-stitch"`` named as the graceful escape. When
+      the observed vs LIF-declared overlap differs by >20% on either axis,
+      emits :class:`~zarrmony.errors.MosaicPlacementWarning` (placement
+      proceeds — helps catch pixel-size / unit-conversion bugs).
 
     Non-LIF readers ignore the flag entirely.
 
@@ -391,6 +417,18 @@ def convert(
             "per-tile output is incompatible with plate layout — a plate FOV "
             "is one image by spec; convert as flat (layout='per-scene' or "
             "layout='auto' with a flat reader) to get per-tile stores"
+        )
+    # Plate + stage-stitch is not yet wired end-to-end (the plate writer
+    # only knows how to swap in grid-stitch's reassembly today). Reject
+    # explicitly so users don't silently get bioio-lif auto-stitched plate
+    # FOVs when they asked for stage-based placement; convert flat to get
+    # a stage-stitched canvas per scene, or use grid-stitch under plate.
+    if effective_layout == "plate" and lif_mosaic == "stage-stitch":
+        raise LayoutMismatchError(
+            "stage-stitch is not yet supported under plate layout; convert "
+            "flat (layout='per-scene' or layout='auto' with a flat reader) "
+            "to get stage-based placement, or pass lif_mosaic='grid-stitch' "
+            "to keep the plate structure with butt-jointed FOVs."
         )
 
     config = {
@@ -470,6 +508,113 @@ def _tile_shape_from_reader(reader: Any) -> dict[str, int] | None:
     if y is None or x is None:
         return None
     return {"Y": int(y), "X": int(x)}
+
+
+def _stage_pixel_sizes_um(reader: Any) -> tuple[float | None, float | None]:
+    """Read the current scene's Y/X physical pixel size in µm from the reader.
+
+    Returns ``(y_um, x_um)``; either may be ``None`` when the reader can't
+    report it. Callers wanting a hard error on missing values (stage-stitch)
+    let :func:`compute_stage_placements` do the raising — that keeps the error
+    text co-located with the escape hint pointing at ``lif_mosaic="grid-stitch"``.
+    """
+    px = getattr(reader, "physical_pixel_sizes", None)
+    if px is None:
+        return None, None
+    y = getattr(px, "Y", None)
+    x = getattr(px, "X", None)
+    return (float(y) if y is not None else None, float(x) if x is not None else None)
+
+
+def _stage_stitch_mosaic_summary(
+    tile_layout: dict | None,
+    *,
+    tile_count: int,
+    tile_shape_yx: dict[str, int] | None,
+    tile_pixel_offsets: list[tuple[int, int]],
+    observed_overlap_pct: dict[str, float | None],
+) -> dict:
+    """Audit's ``mosaic`` block for a stage-stitched scene.
+
+    Records ``stitcher="zarrmony-stage"`` and the placement-specific fields
+    ``tile_pixel_offsets`` + ``observed_overlap_pct``. Merges in the extracted
+    tile positions and LIF-declared intended overlaps so downstream consumers
+    can compare observed vs intended without re-parsing the source XML.
+    """
+    summary: dict = {
+        "stitched": True,
+        "stitcher": _STITCHER_STAGE_NAME,
+        "tile_count": tile_count,
+        "tile_pixel_offsets": [
+            {"m_index": i, "y_px": int(oy), "x_px": int(ox)}
+            for i, (oy, ox) in enumerate(tile_pixel_offsets)
+        ],
+        "observed_overlap_pct": {
+            "x": observed_overlap_pct.get("x"),
+            "y": observed_overlap_pct.get("y"),
+        },
+    }
+    if tile_shape_yx is not None:
+        summary["tile_shape"] = tile_shape_yx
+    if tile_layout is not None:
+        summary.update(tile_layout)
+    return summary
+
+
+def _run_stage_stitch(
+    reader: Any,
+    scene_index: int,
+    scene_name: str,
+) -> tuple[Any, dict]:
+    """Reassemble the current mosaic scene via stage-µm placement.
+
+    Returns ``(canvas_xarr, mosaic_summary)`` — the caller passes the canvas to
+    :func:`write_scene` via ``xarr_override`` and attaches the mosaic summary
+    to the scene record. Emits :class:`MosaicPlacementWarning` when observed
+    vs intended overlap diverges past the tolerance (see
+    :func:`stage_overlap_discrepancy`).
+
+    Raises :class:`ValueError` (from :func:`compute_stage_placements`) when the
+    required inputs are missing — per-tile ``PosX``/``PosY`` or scene physical
+    pixel size — with ``lif_mosaic="grid-stitch"`` named as the escape hatch.
+    """
+    tiles_xarr = reader.tiles_xarray_dask_data
+    tile_count = int(tiles_xarr.sizes["M"])
+    tile_h = int(tiles_xarr.sizes["Y"])
+    tile_w = int(tiles_xarr.sizes["X"])
+    px_y_um, px_x_um = _stage_pixel_sizes_um(reader)
+    scene_xml = find_scene_xml(reader)
+    tile_layout = extract_tile_layout(scene_xml) if scene_xml is not None else None
+    offsets, canvas_shape_yx, observed = compute_stage_placements(
+        tile_layout,
+        pixel_size_x_um=px_x_um,
+        pixel_size_y_um=px_y_um,
+        tile_h=tile_h,
+        tile_w=tile_w,
+    )
+    intended_x = tile_layout.get("intended_overlap_x_pct") if tile_layout else None
+    intended_y = tile_layout.get("intended_overlap_y_pct") if tile_layout else None
+    discrepancies = stage_overlap_discrepancy(observed, intended_x, intended_y)
+    for axis, obs, intended in discrepancies:
+        warnings.warn(
+            f"scene {scene_index} ({scene_name!r}): stage-stitch observed "
+            f"overlap on axis {axis.upper()} is {obs:.2f}%, but LIF metadata "
+            f"declares {intended:.2f}% intended overlap "
+            f"(|{obs:.2f} - {intended:.2f}| / {intended:.2f} > 20%). "
+            f"This usually indicates a pixel-size / unit-conversion bug — the "
+            f"placement proceeded anyway but expect visibly wrong seam widths.",
+            MosaicPlacementWarning,
+            stacklevel=3,
+        )
+    canvas = reassemble_stage(tiles_xarr, offsets, canvas_shape_yx)
+    summary = _stage_stitch_mosaic_summary(
+        tile_layout,
+        tile_count=tile_count,
+        tile_shape_yx=_tile_shape_from_reader(reader),
+        tile_pixel_offsets=offsets,
+        observed_overlap_pct=observed,
+    )
+    return canvas, summary
 
 
 def _grid_stitch_mosaic_summary(
@@ -572,6 +717,13 @@ def _convert_per_scene(
             continue
 
         grid_stitch_mode = lif_mosaic == "grid-stitch" and reassembly_eligible
+        stage_stitch_mode = lif_mosaic == "stage-stitch" and reassembly_eligible
+        # Either reassembly mode consumes the raw M-intact tiles surface and
+        # replaces the auto-stitch mosaic_summary with a mode-specific block;
+        # `write_scene`'s auto-stitch summary would mislabel the record with
+        # stitcher="bioio-lif" and the wrong overlap fields in both cases.
+        reassembly_mode = grid_stitch_mode or stage_stitch_mode
+
         store_path = store_paths[scene_index]
         # Per-store refuse-overwrite (don't blow away the whole output dir).
         _check_output(store_path, force=force)
@@ -596,6 +748,8 @@ def _convert_per_scene(
         # overlap_assumption_px; we attach a grid-stitch mosaic block below.
         grid_tile_layout: dict | None = None
         grid_tile_count = 0
+        stage_mosaic_summary: dict | None = None
+        override_xarr = None
         if grid_stitch_mode:
             grid_tiles_xarr = reader.tiles_xarray_dask_data
             grid_tile_count = int(grid_tiles_xarr.sizes["M"])
@@ -603,9 +757,11 @@ def _convert_per_scene(
             grid_tile_layout = (
                 extract_tile_layout(scene_xml) if scene_xml is not None else None
             )
-            grid_xarr = reassemble_grid(grid_tiles_xarr, grid_tile_layout)
-        else:
-            grid_xarr = None
+            override_xarr = reassemble_grid(grid_tiles_xarr, grid_tile_layout)
+        elif stage_stitch_mode:
+            override_xarr, stage_mosaic_summary = _run_stage_stitch(
+                reader, scene_index, scene_name
+            )
 
         scene_record = write_scene(
             reader,
@@ -615,8 +771,8 @@ def _convert_per_scene(
             chunk_shape=chunk_shape,
             channels=channels,
             image_name=scene_name,
-            xarr_override=grid_xarr,
-            record_mosaic_summary=not grid_stitch_mode,
+            xarr_override=override_xarr,
+            record_mosaic_summary=not reassembly_mode,
         )
         scene_record["store_path"] = store_path
         scene_record["dirname"] = dirnames[scene_index]
@@ -626,6 +782,8 @@ def _convert_per_scene(
                 tile_count=grid_tile_count,
                 tile_shape_yx=_tile_shape_from_reader(reader),
             )
+        elif stage_stitch_mode and stage_mosaic_summary is not None:
+            scene_record["mosaic"] = stage_mosaic_summary
 
         metadata_warnings: list[dict] = []
         ome_image: Image | None = None

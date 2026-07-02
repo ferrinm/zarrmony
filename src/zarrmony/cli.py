@@ -114,7 +114,7 @@ def _parse_chunk_shape(
 )
 @click.option(
     "--lif-mosaic",
-    type=click.Choice(["auto-stitch", "per-tile", "grid-stitch"]),
+    type=click.Choice(["auto-stitch", "per-tile", "grid-stitch", "stage-stitch"]),
     default="auto-stitch",
     show_default=True,
     help=(
@@ -129,7 +129,11 @@ def _parse_chunk_shape(
         "at (field_y[i]*tile_H, field_x[i]*tile_W) from LIF FieldX/FieldY "
         "(butt joints, no overlap); fixes M-scan-order placement while "
         "preserving one-store-per-scene; raises on incomplete tile metadata. "
-        "Other readers ignore this flag. See ADR-0005."
+        "'stage-stitch' places each tile at its PosX/PosY stage µm position "
+        "(converted via the scene's pixel size); honours the LIF-declared "
+        "intended overlap; raises on missing PosX/PosY or scene pixel size "
+        "and warns (MosaicPlacementWarning) when observed vs intended overlap "
+        "diverges past 20%. Other readers ignore this flag. See ADR-0005."
     ),
 )
 def convert_cmd(
