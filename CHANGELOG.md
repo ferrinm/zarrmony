@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Fourth value on `lif_mosaic`: `"stage-stitch"` reassembles a single canvas
+  per scene by placing each tile at its LIF `PosX`/`PosY` stage µm position
+  (converted to pixels via the scene's physical pixel size), normalised to a
+  common `(0, 0)` and snapped to integer pixels. Later-M tiles overwrite
+  earlier tiles in overlap regions (deterministic later-wins; no blending in
+  this slice), so the canvas honours the acquisition's declared 5–15% overlap
+  instead of grid-stitch's butt joints. Strict on inputs: raises `ValueError`
+  naming what's missing (per-tile `PosX`/`PosY` or scene physical pixel size
+  X/Y) with `lif_mosaic="grid-stitch"` named as the graceful escape.
+  Sanity-checks the placement by comparing observed vs LIF-declared overlap
+  on each axis; emits `MosaicPlacementWarning` (new warning class) when they
+  diverge by >20% — catches pixel-size / unit-conversion bugs without failing
+  conversion. Audit carries `mosaic.stitcher="zarrmony-stage"`,
+  `mosaic.tile_pixel_offsets=[{m_index, y_px, x_px}, ...]`, and
+  `mosaic.observed_overlap_pct={x, y}` alongside the existing
+  `intended_overlap_*_pct` fields. Powered by new pure-function helpers
+  `zarrmony.metadata.lif_tiles.compute_stage_placements`,
+  `reassemble_stage`, and `stage_overlap_discrepancy`. (#40)
+
 ## [0.5.0] - 2026-07-01
 
 ### Added

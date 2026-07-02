@@ -15,11 +15,16 @@ from zarrmony.readers.plate import PlateLayout
 
 @dataclass
 class FakePhysicalPixelSizes:
-    """Stand-in for bioio's PhysicalPixelSizes namedtuple."""
+    """Stand-in for bioio's PhysicalPixelSizes namedtuple.
+
+    Y/X allow ``None`` so stage-stitch tests can simulate a scene whose reader
+    can't report a physical pixel size (bioio-lif surfaces None for some
+    non-calibrated confocals).
+    """
 
     Z: float | None = None
-    Y: float = 1.0
-    X: float = 1.0
+    Y: float | None = 1.0
+    X: float | None = 1.0
 
 
 @dataclass
@@ -43,6 +48,20 @@ class TileScene:
     t: int = 1
 
 
+def _fmt_tile_attr(key: str, value: object) -> str:
+    """Format one ``<Tile>`` attribute, omitting it entirely when ``value`` is None.
+
+    Lets stage-stitch tests build a fixture where a specific tile is missing
+    ``PosX``/``PosY`` (to exercise the fail-loud path) without regressing the
+    grid-stitch fixtures that assume every attribute is populated.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f' {key}="{value:.10f}"'
+    return f' {key}="{value}"'
+
+
 def _build_lif_tilescan_metadata(scene: "TileScene") -> str:
     """LIF-shaped XML blob with one ``<Image>`` carrying tile + overlap entries.
 
@@ -52,8 +71,13 @@ def _build_lif_tilescan_metadata(scene: "TileScene") -> str:
     one and only scene index).
     """
     tile_xml = "".join(
-        f'<Tile FieldX="{t["field_x"]}" FieldY="{t["field_y"]}"'
-        f' PosX="{t["pos_x_m"]:.10f}" PosY="{t["pos_y_m"]:.10f}" PosZ="{t["pos_z_m"]:.10f}" />'
+        "<Tile"
+        + _fmt_tile_attr("FieldX", t.get("field_x"))
+        + _fmt_tile_attr("FieldY", t.get("field_y"))
+        + _fmt_tile_attr("PosX", t.get("pos_x_m"))
+        + _fmt_tile_attr("PosY", t.get("pos_y_m"))
+        + _fmt_tile_attr("PosZ", t.get("pos_z_m"))
+        + " />"
         for t in scene.tiles
     )
     overlap_attrs = []

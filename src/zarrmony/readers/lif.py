@@ -33,14 +33,17 @@ declared intended overlap (extracted via :mod:`zarrmony.metadata.lif_tiles`)
 when available, and the :class:`MosaicStitchingWarning` quotes that overlap
 in its text so the user can predict the stripe width.
 
-ADR-0005 adds two opt-in writer paths that consume the raw M-intact tile
+ADR-0005 adds three opt-in writer paths that consume the raw M-intact tile
 xarray via :attr:`tiles_xarray_dask_data` and sidestep the bioio-lif stitcher
 entirely: ``lif_mosaic="per-tile"`` writes one OME-Zarr per tile carrying the
 stage position in each tile's ``<Plane>``; ``lif_mosaic="grid-stitch"``
 reassembles a single canvas by placing tile M=i at
 ``(field_y[i]*tile_H, field_x[i]*tile_W)`` from the LIF ``FieldX``/``FieldY``
 indices, fixing bioio-lif's M-scan-order placement bug on a butt-jointed
-canvas. Both share the eligibility predicate :meth:`is_mosaic_reassembly_eligible`
+canvas; ``lif_mosaic="stage-stitch"`` places each tile at its ``PosX``/``PosY``
+stage µm position (converted via the scene's physical pixel size) so the
+canvas honours the LIF-declared intended overlap instead of butt joints. All
+three share the eligibility predicate :meth:`is_mosaic_reassembly_eligible`
 (mosaic scene with no ``_Merged`` sibling). The proxy stays thin — reader
 exposes the raw tiles surface, ``api.convert()`` owns strategy dispatch.
 
@@ -190,11 +193,13 @@ class _MosaicAwareLifReader:
             f"declared FieldX/FieldY grid indices, so visual layout may not "
             f"match acquisition. {overlap_clause}. No vendor-stitched sibling "
             f"('{scene_name}{_MERGED_SUFFIX}') was found; consider re-running "
-            f'with lif_mosaic="per-tile" to write each tile as its own '
-            f"OME-Zarr (pixel-correct, no seams), or "
-            f'lif_mosaic="grid-stitch" to place tiles correctly on a single '
-            f"canvas by their grid indices (butt joints — seams remain if the "
-            f"acquisition had overlap), or an external stitcher (ASHLAR, "
+            f'with lif_mosaic="stage-stitch" to place tiles at their true '
+            f"stage µm positions (honours declared overlap; one canvas per "
+            f'scene), lif_mosaic="grid-stitch" to fix arrangement on a butt-'
+            f"jointed canvas by FieldX/FieldY indices (seams remain if the "
+            f'acquisition had overlap), lif_mosaic="per-tile" to write each '
+            f"tile as its own OME-Zarr (pixel-correct, no seams — external "
+            f"stitcher must reassemble), or an external stitcher (ASHLAR, "
             f"m2stitch, BigStitcher) if boundary correctness matters."
         )
 
