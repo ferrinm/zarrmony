@@ -212,11 +212,22 @@ def _channels_for_scene(
 
 
 def _scene_channel_count(reader: Any) -> int:
-    """The current scene's C size, from the reader's public xarray surface.
+    """The current scene's C size, from the reader's public metadata surface.
 
-    Mirrors how :func:`inspect` reads dims/sizes (no coupling to writer
-    internals). A scene with no ``C`` dim has one implicit channel.
+    Prefers ``channel_names`` — a side-effect-free read that bioio-lif populates
+    per scene — and falls back to the xarray dims read only when it's missing
+    or empty. The dims read is fine for non-LIF readers but on a
+    :class:`~zarrmony.readers.lif._MosaicAwareLifReader` mosaic scene it
+    triggers :class:`~zarrmony.errors.MosaicStitchingWarning` for every call,
+    which would fire once per mosaic scene during :func:`_lif_scene_channels`
+    dispatch — even when the writer eventually routes through a
+    reassembly path (stage-stitch, grid-stitch, per-tile) that never touches
+    the bioio-lif stitcher. A scene with neither ``channel_names`` nor a ``C``
+    dim has one implicit channel.
     """
+    names = getattr(reader, "channel_names", None) or []
+    if names:
+        return len(names)
     xarr = reader.xarray_dask_data
     return int(xarr.sizes["C"]) if "C" in xarr.dims else 1
 

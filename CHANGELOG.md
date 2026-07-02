@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-02
+
+### Fixed
+
+- `MosaicStitchingWarning` no longer fires on every mosaic scene during a
+  LIF conversion when the cascade actually routes the scene through
+  `stage-stitch` or `grid-stitch`. `_scene_channel_count()` used to read the
+  scene's C size via `reader.xarray_dask_data`, which on the LIF proxy trips
+  the auto-stitch warning as a side effect; it now prefers the
+  side-effect-free `reader.channel_names` and only falls back to the xarray
+  dims read when the reader doesn't expose channel names. On a 48-scene
+  mosaic LIF that cascades to stage-stitch, stderr goes from 48 false-alarm
+  warnings to zero. Explicit `lif_mosaic="bioio-lif"` still fires the
+  warning per scene (that path legitimately runs the 1-pixel-overlap
+  stitcher). (#46)
+
 ## [0.7.0] - 2026-07-02
 
 ### Changed (BREAKING)

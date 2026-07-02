@@ -22,7 +22,7 @@ import pytest
 from tests.conftest import FakePhysicalPixelSizes, FakeReader, TileScene
 from zarrmony import api as api_module
 from zarrmony import convert
-from zarrmony.errors import MosaicPlacementWarning
+from zarrmony.errors import MosaicPlacementWarning, MosaicStitchingWarning
 from zarrmony.readers.plugin import ReaderPlugin
 
 
@@ -270,3 +270,59 @@ def test_explicit_stage_stitch_bypasses_cascade_flag(
     mosaic = _get_mosaic(result)
     assert mosaic["stitcher"] == "zarrmony-stage"
     assert mosaic.get("cascade_selected") is not True
+
+
+# ---------- 8. No MosaicStitchingWarning on cascade-selected scenes (#46) ----
+
+
+class _WarnOnStitchedAccessReader(FakeReader):
+    """FakeReader that emits :class:`MosaicStitchingWarning` on every
+    ``xarray_dask_data`` access, mirroring
+    :class:`~zarrmony.readers.lif._MosaicAwareLifReader`.
+
+    Lets api-level tests observe whether the writer inadvertently walked the
+    stitched surface for a scene that the cascade will route through a
+    reassembly path — the whole point of #46 is that
+    :func:`_scene_channel_count` used to fire this warning during the
+    channel-count check on *every* mosaic scene, regardless of which stitcher
+    actually produced the pixels.
+    """
+
+    @property
+    def xarray_dask_data(self):  # type: ignore[override]
+        warnings.warn(
+            "bioio-lif is auto-stitching mosaic tiles",
+            MosaicStitchingWarning,
+            stacklevel=2,
+        )
+        return super().xarray_dask_data
+
+
+def test_cascade_to_stage_emits_no_mosaic_stitching_warning(
+    tmp_path: Path, patched_reader
+) -> None:
+    """Under the cascade default, a scene that resolves to stage-stitch must
+    NOT trigger MosaicStitchingWarning — the bioio-lif stitcher is not
+    running, so warning about it is a false alarm (#46). The channel-count
+    check inside _lif_scene_channels used to walk the stitched surface
+    (reader.xarray_dask_data), firing the warning once per scene even when
+    the cascade never dispatched the bioio-lif path.
+    """
+    scene = TileScene(tiles=_tiles_with(stage=True, grid=True), tile_yx=TILE_YX)
+    reader = _WarnOnStitchedAccessReader(
+        scenes=["Position 1"],
+        dims="TCZYX",
+        shape=(1, 1, 1, TILE_YX[0], TILE_YX[1]),
+        channel_names=["DAPI"],
+        pixel_sizes=FakePhysicalPixelSizes(Y=1.0, X=1.0),
+        per_tile_scenes={0: scene},
+    )
+    patched_reader(reader)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", MosaicPlacementWarning)
+        warnings.simplefilter("error", MosaicStitchingWarning)
+        result = convert("/tmp/x.lif", tmp_path / "out", pyramid_min_size=4)
+
+    mosaic = _get_mosaic(result)
+    assert mosaic["stitcher"] == "zarrmony-stage"
