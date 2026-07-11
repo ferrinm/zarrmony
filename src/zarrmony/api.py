@@ -15,7 +15,7 @@ from ome_types import OME
 from ome_types.model import Image, Pixels, PixelType
 
 from zarrmony import _validate
-from zarrmony._storage import size_on_disk
+from zarrmony._storage import format_bytes, size_on_disk
 from zarrmony.audit import build_audit_record, write_audit_record
 from zarrmony.errors import (
     ExtractorWarning,
@@ -1343,9 +1343,11 @@ def inspect(input_path: str | Path) -> dict:
                 ),
             }
         )
+    input_bytes = size_on_disk(input_path)
     info: dict[str, Any] = {
         "input_path": str(input_path),
-        "size_bytes": size_on_disk(input_path),
+        "size_bytes": input_bytes,
+        "size_human": format_bytes(input_bytes),
         "reader_plugin": {
             "name": plugin.name,
             "source": plugin.source,

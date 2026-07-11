@@ -217,7 +217,7 @@ def inspect_cmd(input_path: str, as_json: bool) -> None:
     rp = info["reader_plugin"]
     plugin_str = rp["distribution"] or rp["name"]
     click.echo(f"Input:  {info['input_path']}")
-    click.echo(f"Size:   {format_bytes(info['size_bytes'])}")
+    click.echo(f"Size:   {info['size_human']}")
     click.echo(f"Plugin: {plugin_str}")
     if "plate_layout" in info:
         click.echo(_format_plate_summary(info["plate_layout"]))

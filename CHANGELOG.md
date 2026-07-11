@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `size_human` field alongside `size_bytes` in the audit record's `input`
+  block (persisted at `attrs.zarrmony.input.size_human`) and in the
+  `zarrmony.api.inspect()` return dict. Formatted via `format_bytes`
+  (base‑1024, `ls -lh`‑style `KB`/`MB`/`GB` labels) so consumers reading
+  `zarr.json` or `zarrmony inspect --json` output can read the size at a
+  glance without post-processing. (#49)
+
+### Changed
+
+- `AUDIT_SCHEMA_VERSION` bumped from `5` → `6` to signal the new
+  `input.size_human` field. Reading old stores is unaffected (the field is
+  additive); consumers pinned to schema `5` should widen their pin. (#49)
+
 ## [0.7.1] - 2026-07-02
 
 ### Fixed

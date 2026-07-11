@@ -301,6 +301,7 @@ def test_inspect_returns_size_bytes_for_file_input(
 
     info = inspect(str(src))
     assert info["size_bytes"] == 2048
+    assert info["size_human"] == "2.0 KB"
 
 
 def test_inspect_returns_recursive_size_bytes_for_directory_input(
@@ -315,6 +316,7 @@ def test_inspect_returns_recursive_size_bytes_for_directory_input(
 
     info = inspect(str(src))
     assert info["size_bytes"] == 1000
+    assert info["size_human"] == "1000 B"
 
 
 def test_inspect_includes_plate_layout_for_plate_reader(

@@ -47,6 +47,7 @@ def test_build_audit_record_minimum_keys(tmp_path: Path) -> None:
     assert audit["reader_plugin"]["match_score"] == 100
     assert audit["input"]["path"].endswith("input.czi")
     assert audit["input"]["size_bytes"] == 1024
+    assert audit["input"]["size_human"] == "1.0 KB"
     assert "mtime_iso" in audit["input"]
     assert "sha256" not in audit["input"]
     assert audit["config"] == {"pyramid_min_size": 256}
@@ -75,6 +76,7 @@ def test_build_audit_record_directory_input_reports_recursive_size(
         finished_at=_ts("2026-05-02T10:00:01"),
     )
     assert audit["input"]["size_bytes"] == 2000
+    assert audit["input"]["size_human"] == "2.0 KB"
 
 
 def test_build_audit_record_with_checksum(tmp_path: Path) -> None:

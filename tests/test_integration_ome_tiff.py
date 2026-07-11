@@ -43,8 +43,9 @@ def test_per_scene_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
     assert audit["reader_plugin"]["source"] == "builtin"
     assert audit["reader_plugin"]["match_score"] == 0
-    assert audit["audit_schema_version"] == 5
+    assert audit["audit_schema_version"] == 6
     assert audit["input"]["size_bytes"] > 0
+    assert audit["input"]["size_human"]
 
     # bioio's synth scene name is "Image:0".
     store = out / f"{audit['per_scene'][0]['scene_name'].replace(':', '_')}.ome.zarr"
@@ -147,7 +148,7 @@ def test_bf2raw_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
 
     assert audit["reader_plugin"]["name"] == "bioio"
     assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
-    assert audit["audit_schema_version"] == 5
+    assert audit["audit_schema_version"] == 6
     assert len(audit["per_scene"]) == 1
 
     with open(out / "zarr.json") as f:

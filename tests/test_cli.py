@@ -417,6 +417,7 @@ def test_inspect_json_output_includes_size_bytes(
     assert result.exit_code == 0
     parsed = json.loads(result.output)
     assert parsed["size_bytes"] == 16
+    assert parsed["size_human"] == "16 B"
     # The human-readable "Size:" line is text-only — JSON output shouldn't have it.
     assert "Size:" not in result.output
 

@@ -22,10 +22,10 @@ from pathlib import Path
 from typing import Any
 
 from zarrmony import __version__
-from zarrmony._storage import open_root_group, size_on_disk
+from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
-AUDIT_SCHEMA_VERSION = 5
+AUDIT_SCHEMA_VERSION = 6
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:
@@ -37,6 +37,7 @@ def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, An
     if p.exists():
         st = p.stat()
         info["size_bytes"] = size_on_disk(p)
+        info["size_human"] = format_bytes(info["size_bytes"])
         info["mtime_iso"] = datetime.fromtimestamp(st.st_mtime).astimezone().isoformat()
         if checksum and p.is_file():
             h = hashlib.sha256()
