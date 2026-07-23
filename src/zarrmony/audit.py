@@ -4,8 +4,10 @@ Every conversion writes ``attrs["zarrmony"]`` at the root of the output store,
 recording: zarrmony version, the winning reader plugin (name, distribution,
 source, version, match score), the input file's path / size / mtime / optional
 SHA256, the conversion config the user passed, started/finished timestamps,
-per-scene records returned by ``write_scene``, and any extractor-failure
-warnings.
+per-scene records returned by ``write_scene`` (which for LIF conversions may
+carry an ``objective`` sub-dict with ``nominal_magnification`` /
+``numerical_aperture`` / ``immersion`` / ``model`` / ``working_distance_um``),
+and any extractor-failure warnings.
 
 Stored as a top-level ``attrs.zarrmony`` (not under ``attrs.ome``) to keep the
 spec-defined namespace clean. ``audit_schema_version`` is bumped whenever this
@@ -25,7 +27,12 @@ from zarrmony import __version__
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
-AUDIT_SCHEMA_VERSION = 6
+# 7: adds optional ``per_scene[i].objective`` (nominal_magnification /
+#    numerical_aperture / immersion / model / working_distance_um) from the
+#    LIF objective-lens extractor. Missing fields are omitted; scenes with no
+#    objective info omit the ``objective`` key entirely. Purely additive:
+#    consumers pinned to 6 can widen their pin. (#52)
+AUDIT_SCHEMA_VERSION = 7
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:

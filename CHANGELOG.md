@@ -7,30 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (BREAKING)
-
-- Default per-channel display colors now come from the fluorophore's emission
-  midpoint (falling back to excitation, then dye-name substring) mapped onto
-  the Nature Methods "Points of View" CMY / green palette
-  (`cyan / green / yellow / magenta / white`). Existing files with red-family
-  channels will render with different colors than they did under v0.8: on the
-  reporter's real file (DAPI 405 nm / Alexa 546 555 nm / Alexa 647 651 nm),
-  colors now render as cyan / magenta / white instead of the collision-prone
-  substring-match output. Users who need the old dye-brand true-color scheme
-  should pin their preferred hex per channel via
-  `convert(channel_colors={<name>: "<hex6>"})`. (ADR-0007, #51)
-- `zarrmony.metadata.channel_colors.NAME_COLORS` and `PALETTE` are removed.
-  Callers importing them will fail at import time — the failure is loud on
-  purpose so a silent behavior change is impossible. Replace `NAME_COLORS`
-  with `DYE_TO_BAND` (semantics: name → band color, not name → dye color)
-  and `PALETTE` with `UNKNOWN_PALETTE`. (#51)
-- `zarrmony.metadata.channel_colors.color_for_channel` is removed. Use
-  `assign_colors(...)` (batch) or the single-channel helpers
-  `color_for_emission_nm`, `color_for_excitation_nm`, `color_for_dye_name`
-  which cleanly separate the three fallback stages. (#51)
-
 ### Added
 
+- Per-scene objective-lens extraction for Leica LIF conversions. When a LIF
+  scene's XML carries objective attributes (on
+  `<ATLConfocalSettingDefinition>` and/or `<Objective>` elements), the audit
+  record now surfaces them under
+  `attrs.zarrmony.per_scene[i].objective` with any subset of the keys
+  `nominal_magnification`, `numerical_aperture`, `immersion`, `model`,
+  `working_distance_um`. Missing individual fields are omitted from the dict
+  (never `null` / `0`); scenes with no objective info at all omit the
+  `objective` key entirely rather than persist an empty dict. (#52)
+- Per-scene `OME/METADATA.ome.xml` now emits a top-level
+  `<Instrument><Objective/></Instrument>` populated from the same LIF
+  extraction, plus per-image `<InstrumentRef/>` and `<ObjectiveSettings/>`
+  references so downstream tooling (napari, OMERO, `ome_types.from_xml`)
+  reads the objective as standards-compliant OME metadata. Non-LIF readers
+  and LIF scenes with no objective info emit the pre-#52 no-instrument
+  shape unchanged. Both per-scene and per-tile (`lif_mosaic="per-tile"`)
+  write paths participate. (#52)
 - `convert(..., channel_colors="source-file")` — new opt-in mode that trusts
   the source file's stored per-channel color when present (LIF
   `<ChannelDescription LUTName>`, OME-XML `<Channel Color>`), falling through
@@ -57,6 +52,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emission-band scheme, why colorblind CMY over dye-true-color, exact band
   boundaries, the `source-file` opt-in, the collision policy, and the
   interpretation of the "555 nm" ambiguity in the reporting session. (#51)
+
+### Changed
+
+- `AUDIT_SCHEMA_VERSION` bumped from `6` → `7` to signal the new optional
+  `per_scene[i].objective` sub-dict. Reading old stores is unaffected (the
+  field is additive); consumers pinned to schema `6` should widen their pin.
+  (#52)
+
+### Changed (BREAKING)
+
+- Default per-channel display colors now come from the fluorophore's emission
+  midpoint (falling back to excitation, then dye-name substring) mapped onto
+  the Nature Methods "Points of View" CMY / green palette
+  (`cyan / green / yellow / magenta / white`). Existing files with red-family
+  channels will render with different colors than they did under v0.8: on the
+  reporter's real file (DAPI 405 nm / Alexa 546 555 nm / Alexa 647 651 nm),
+  colors now render as cyan / magenta / white instead of the collision-prone
+  substring-match output. Users who need the old dye-brand true-color scheme
+  should pin their preferred hex per channel via
+  `convert(channel_colors={<name>: "<hex6>"})`. (ADR-0007, #51)
+- `zarrmony.metadata.channel_colors.NAME_COLORS` and `PALETTE` are removed.
+  Callers importing them will fail at import time — the failure is loud on
+  purpose so a silent behavior change is impossible. Replace `NAME_COLORS`
+  with `DYE_TO_BAND` (semantics: name → band color, not name → dye color)
+  and `PALETTE` with `UNKNOWN_PALETTE`. (#51)
+- `zarrmony.metadata.channel_colors.color_for_channel` is removed. Use
+  `assign_colors(...)` (batch) or the single-channel helpers
+  `color_for_emission_nm`, `color_for_excitation_nm`, `color_for_dye_name`
+  which cleanly separate the three fallback stages. (#51)
 
 ## [0.8.0] - 2026-07-10
 
