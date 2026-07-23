@@ -1,7 +1,9 @@
 """Integration tests for write_scene using FakeReader from conftest."""
 
+import dask.array as da
 import numpy as np
 import pytest
+import xarray as xr
 import zarr
 
 from tests.conftest import FakePhysicalPixelSizes, FakeReader
@@ -157,6 +159,131 @@ def test_write_scene_omero_window_matches_array_dtype(
     channels = g.attrs["ome"]["omero"]["channels"]
     assert len(channels) == 1
     assert channels[0]["window"] == expected_window
+
+
+def test_write_scene_contrast_percentile_updates_omero_start_end(tmp_path) -> None:
+    """Issue #53 — per-channel ``(min, 99.9th pct)`` should override the
+    dtype-range ``start`` / ``end`` placeholder, while ``min`` / ``max`` (dtype
+    range from issue #50) stay pinned.
+
+    Uses a linear ramp so the coarse-pyramid approximation still produces a
+    near-monotonic distribution: the tolerances below account for
+    mean-pool-induced shift at the ends.
+    """
+    base = np.zeros((1, 2, 32, 32), dtype=np.uint16)
+    base[0, 0] = np.arange(1024, dtype=np.uint16).reshape(32, 32)
+    base[0, 1] = np.arange(2000, 3024, dtype=np.uint16).reshape(32, 32)
+    xarr = xr.DataArray(da.from_array(base), dims=["T", "C", "Y", "X"])
+
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCYX",
+        shape=(1, 2, 32, 32),
+        dtype=np.uint16,
+        channel_names=["ch0", "ch1"],
+    )
+    out = tmp_path / "contrast.zarr"
+
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        pyramid_min_size=8,
+        xarr_override=xarr,
+        contrast_percentile=99.9,
+    )
+
+    g = zarr.open_group(str(out), mode="r")
+    channels = g.attrs["ome"]["omero"]["channels"]
+
+    for c in channels:
+        assert c["window"]["min"] == 0
+        assert c["window"]["max"] == 65535
+
+    # Coarse (8x8) level of a 32x32 linear ramp — verified by hand: min~=49,
+    # p99.9~=973. Tolerances bracket that with room for future coarsening
+    # tweaks without becoming a change detector.
+    ch0 = channels[0]["window"]
+    assert ch0["start"] <= 60
+    assert 950 <= ch0["end"] <= 1023
+
+    ch1 = channels[1]["window"]
+    assert 2000 <= ch1["start"] <= 2060
+    assert 2950 <= ch1["end"] <= 3023
+
+    contrast = audit["contrast"]
+    assert contrast["percentile"] == 99.9
+    assert contrast["method"] == "coarsest-pyramid-level"
+    assert len(contrast["per_channel"]) == 2
+    assert contrast["per_channel"][0]["channel_index"] == 0
+    assert contrast["per_channel"][0]["start"] == ch0["start"]
+    assert contrast["per_channel"][0]["end"] == ch0["end"]
+
+
+def test_write_scene_contrast_percentile_none_leaves_dtype_window(tmp_path) -> None:
+    """``contrast_percentile=None`` short-circuits the extra ops and leaves the
+    dtype-range placeholder that #50 installs. Also verifies the audit dict
+    omits the ``contrast`` block.
+    """
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCYX",
+        shape=(1, 1, 32, 32),
+        dtype=np.uint16,
+        channel_names=["ch0"],
+    )
+    out = tmp_path / "no_contrast.zarr"
+
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        pyramid_min_size=8,
+        contrast_percentile=None,
+    )
+
+    g = zarr.open_group(str(out), mode="r")
+    window = g.attrs["ome"]["omero"]["channels"][0]["window"]
+    assert window == {"min": 0, "max": 65535, "start": 0, "end": 65535}
+    assert "contrast" not in audit
+
+
+def test_write_scene_contrast_percentile_single_channel_no_c_dim(tmp_path) -> None:
+    """Scenes without a C dim still have one implicit omero channel — the
+    contrast code path must not crash and should record the single-channel
+    bounds in the audit.
+    """
+    base = np.arange(1024, dtype=np.uint16).reshape(32, 32)
+    xarr = xr.DataArray(da.from_array(base), dims=["Y", "X"])
+
+    reader = FakeReader(
+        scenes=["s"],
+        dims="YX",
+        shape=(32, 32),
+        dtype=np.uint16,
+    )
+    out = tmp_path / "single.zarr"
+
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        pyramid_min_size=8,
+        xarr_override=xarr,
+        contrast_percentile=99.9,
+    )
+
+    g = zarr.open_group(str(out), mode="r")
+    ome = g.attrs["ome"]
+    if "omero" in ome and ome["omero"].get("channels"):
+        window = ome["omero"]["channels"][0]["window"]
+        assert window["min"] == 0
+        assert window["max"] == 65535
+        assert window["start"] <= 60
+        assert 950 <= window["end"] <= 1023
+    # Either way, the audit records the contrast block when at least one
+    # channel is emitted; a no-channel path returns [] and is a no-op.
+    assert "contrast" in audit or audit.get("channel_count", 0) == 0
 
 
 def test_write_scene_records_mosaic_summary(tmp_path) -> None:

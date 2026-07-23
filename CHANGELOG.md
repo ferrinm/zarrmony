@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Data-driven omero display window: `convert()` (and the `zarrmony convert`
+  CLI) now computes per-channel `(min, 99.9th percentile)` on the pyramid
+  write pass and writes them into `omero.channels[i].window.start` / `.end`,
+  so uint16/uint32/float fluorescence stores open with sensible auto-contrast
+  in napari / OMERO on first click instead of appearing black. Fused into the
+  same `da.compute` call as the pyramid writes — raw data is read once. The
+  quantile is computed on the coarsest pyramid level (recorded in the audit
+  as `contrast.method = "coarsest-pyramid-level"`) so the sort stays cheap
+  even for 80+ GB LIF inputs. New keyword: `convert(..., contrast_percentile=99.9)`
+  — pass a different float in `(0, 100)` to shift the tail, or `None` to skip
+  the extra ops and keep the dtype-range placeholder from issue #50. CLI
+  mirrors: `--contrast-percentile FLOAT` and `--no-contrast`. The audit
+  records the resolved percentile under `config.contrast_percentile` and the
+  per-channel bounds under `per_scene[i].contrast.per_channel[]`. Also
+  backfills `_channels_for_current_scene` in the plate writer to pass
+  `window=_dtype_window(reader.dtype)` (closing the #50 gap on plate FOVs).
+  (#53)
 - Per-scene objective-lens extraction for Leica LIF conversions. When a LIF
   scene's XML carries objective attributes (on
   `<ATLConfocalSettingDefinition>` and/or `<Objective>` elements), the audit

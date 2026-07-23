@@ -113,6 +113,25 @@ def _parse_chunk_shape(
     ),
 )
 @click.option(
+    "--contrast-percentile",
+    type=float,
+    default=99.9,
+    show_default=True,
+    help=(
+        "Data-driven omero display window: per-channel (min, Nth percentile) "
+        "computed off the coarsest pyramid level and written into "
+        "omero.channels[i].window.start/end. Fused into the pyramid write so "
+        "raw data is read once. Pass -1 (or use --no-contrast) to disable and "
+        "keep the dtype-range placeholder from issue #50."
+    ),
+)
+@click.option(
+    "--no-contrast",
+    "no_contrast",
+    is_flag=True,
+    help="Skip percentile-based contrast; leave window.start/end at the dtype range.",
+)
+@click.option(
     "--lif-mosaic",
     type=click.Choice(
         ["auto-stitch", "per-tile", "grid-stitch", "stage-stitch", "bioio-lif"]
@@ -149,6 +168,8 @@ def convert_cmd(
     layout: str,
     pyramid_min_size: int,
     chunk_shape: tuple[int, ...] | None,
+    contrast_percentile: float,
+    no_contrast: bool,
     force: bool,
     checksum: bool,
     validate: bool,
@@ -161,6 +182,14 @@ def convert_cmd(
     ``<scene>.ome.zarr`` per scene under OUTPUT, plate-shaped readers write
     a single OME-NGFF HCS plate store at OUTPUT.
     """
+    # --no-contrast wins over --contrast-percentile; either -1 sentinel or the
+    # flag disables percentile-based contrast at the API boundary.
+    resolved_contrast: float | None
+    if no_contrast or contrast_percentile < 0:
+        resolved_contrast = None
+    else:
+        resolved_contrast = contrast_percentile
+
     try:
         result = zm_api.convert(
             input_path=input_path,
@@ -168,6 +197,7 @@ def convert_cmd(
             layout=layout,
             pyramid_min_size=pyramid_min_size,
             chunk_shape=chunk_shape,
+            contrast_percentile=resolved_contrast,
             force=force,
             checksum=checksum,
             validate=validate,

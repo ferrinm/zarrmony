@@ -14,8 +14,18 @@ import numpy as np
 import xarray as xr
 from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 
+from zarrmony._storage import open_root_group
 from zarrmony.transforms import NGFF_AXIS_TYPE, NGFF_AXIS_UNIT, normalize_axes
 from zarrmony.writers.pyramid import build_pyramid, compute_level_shapes
+
+# Approximation label recorded in the audit whenever data-driven contrast runs.
+# The min + percentile are computed off the COARSEST pyramid level rather than
+# the base — the coarse level is derived from the base in the same dask graph,
+# so raw pixels are still read once (piggybacks on the pyramid write pass), and
+# the sort/quantile stays trivially cheap even for 80+ GB inputs. Mean-pooling
+# raises the observed min a hair and blurs the tail slightly; for a viewer
+# auto-contrast default the difference is well below what a human eye reads.
+_CONTRAST_METHOD = "coarsest-pyramid-level"
 
 
 class ZarrmonyWriter(OMEZarrWriter):
@@ -28,8 +38,20 @@ class ZarrmonyWriter(OMEZarrWriter):
         if not self._initialized:
             self._initialize()
 
-    def write_pyramid(self, level_arrays: Sequence[da.Array]) -> None:
-        """Write pre-computed per-level dask arrays into the on-disk pyramid."""
+    def write_pyramid(
+        self,
+        level_arrays: Sequence[da.Array],
+        *,
+        extra_ops: Sequence[da.Array] = (),
+    ) -> tuple[Any, ...]:
+        """Write pre-computed per-level dask arrays into the on-disk pyramid.
+
+        ``extra_ops`` are additional lazy dask values (e.g. per-channel min /
+        percentile) fused into the same ``da.compute`` call so the raw data is
+        read once — the pyramid write and the extras share the underlying
+        chunk reads. Returns a tuple of the computed values for ``extra_ops``
+        in the order they were passed; empty when no extras were provided.
+        """
         self.initialize()
         if len(level_arrays) != len(self.datasets):
             raise ValueError(
@@ -44,7 +66,9 @@ class ZarrmonyWriter(OMEZarrWriter):
                 ops.append(da.to_zarr(src, self.datasets[i], compute=False))
             else:
                 ops.append(da.store(src, self.datasets[i], lock=True, compute=False))
-        da.compute(*ops)
+        n_write = len(ops)
+        results = da.compute(*ops, *extra_ops)
+        return tuple(results[n_write:])
 
 
 def _physical_scales_for_dims(dims: Sequence[str], reader: Any) -> list[float]:
@@ -101,6 +125,86 @@ def _default_channels(channel_names: Sequence[str], dtype: np.dtype) -> list[Cha
     ]
 
 
+def _channel_contrast_ops(
+    coarse: da.Array,
+    dims: Sequence[str],
+    channel_count: int,
+    contrast_percentile: float,
+) -> list[da.Array]:
+    """Per-channel ``(min, percentile)`` lazy values on the coarsest pyramid level.
+
+    Returns a flat list of length ``2 * channel_count``: for channel ``i`` the
+    entries live at indices ``2*i`` (min) and ``2*i + 1`` (percentile). Callers
+    thread this list through :meth:`ZarrmonyWriter.write_pyramid`'s
+    ``extra_ops`` so the underlying chunk reads fuse with the pyramid writes,
+    then re-pair the results. Emits nothing (returns ``[]``) when the array
+    carries no channel dimension AND ``channel_count`` is zero, so the "no
+    omero channels to update" path stays a no-op.
+
+    Percentile is computed via :func:`dask.array.percentile`'s default
+    ``internal_method`` — no ``crick`` T-digest dependency — and only on the
+    coarse level, which for a typical microscopy scene is a few hundred KB per
+    channel. See ``_CONTRAST_METHOD`` for the approximation trade-off.
+    """
+    c_axis = dims.index("C") if "C" in dims else None
+    ops: list[da.Array] = []
+    for i in range(channel_count):
+        if c_axis is None:
+            ch = coarse
+        else:
+            idx: list[Any] = [slice(None)] * coarse.ndim
+            idx[c_axis] = i
+            ch = coarse[tuple(idx)]
+        flat = ch.ravel()
+        ops.append(flat.min())
+        ops.append(da.percentile(flat, [contrast_percentile])[0])
+    return ops
+
+
+def _pair_contrast_results(
+    results: Sequence[Any], channel_count: int
+) -> list[tuple[Any, Any]]:
+    """Pair a flat ``[ch0_min, ch0_pct, ch1_min, ch1_pct, ...]`` list into tuples."""
+    return [(results[2 * i], results[2 * i + 1]) for i in range(channel_count)]
+
+
+def _to_json_scalar(v: Any) -> Any:
+    """Cast a numpy 0-d scalar to a native Python type for JSON-serializable attrs."""
+    return v.item() if hasattr(v, "item") else v
+
+
+def _update_omero_window_start_end(
+    store_path: Any, per_channel_stats: Sequence[tuple[Any, Any]]
+) -> None:
+    """Rewrite ``omero.channels[i].window.start / .end`` in-place on ``store_path``.
+
+    Runs after :meth:`ZarrmonyWriter.write_pyramid` returns computed per-channel
+    contrast stats. Preserves ``min``/``max`` (dtype-range bounds set at
+    ``Channel`` construction time — see :func:`_dtype_window`) and only touches
+    ``start``/``end``. No-op when the store has no ``omero`` block or fewer
+    channels than stats (a defensive guard — the caller only computes stats
+    when ``channel_count`` matches the omero channels).
+    """
+    root = open_root_group(store_path, mode="a")
+    ome = dict(root.attrs.get("ome", {}))
+    omero = ome.get("omero")
+    if not omero:
+        return
+    channels = list(omero.get("channels", []))
+    if not channels:
+        return
+    for i, (min_v, pct_v) in enumerate(per_channel_stats):
+        if i >= len(channels):
+            break
+        window = dict(channels[i].get("window", {}))
+        window["start"] = _to_json_scalar(min_v)
+        window["end"] = _to_json_scalar(pct_v)
+        channels[i] = {**channels[i], "window": window}
+    omero = {**omero, "channels": channels}
+    ome = {**ome, "omero": omero}
+    root.attrs["ome"] = ome
+
+
 def write_scene(
     reader: Any,
     scene_index: int,
@@ -113,6 +217,7 @@ def write_scene(
     creator_info: dict | None = None,
     xarr_override: xr.DataArray | None = None,
     record_mosaic_summary: bool = True,
+    contrast_percentile: float | None = None,
 ) -> dict:
     """Convert one scene to an OME-Zarr image at ``store_path``.
 
@@ -126,6 +231,16 @@ def write_scene(
     in the returned audit dict — the per-tile path emits its own ``per_tile``
     discriminator at the audit caller, so attaching the scene-level mosaic
     summary to each tile's own audit would double-count and mislead.
+
+    ``contrast_percentile`` (issue #53) drives data-driven display contrast:
+    when set (a float in ``(0, 100)``, typically ``99.9``), per-channel ``(min,
+    percentile)`` values are computed off the coarsest pyramid level — fused
+    into the pyramid dask graph so the raw data is read once — and written into
+    the omero ``window.start`` / ``window.end`` fields, replacing the
+    dtype-range placeholders (issue #50). ``None`` skips the extra ops entirely
+    and leaves ``start`` / ``end`` matching ``min`` / ``max``. The audit dict
+    gets a ``contrast`` block naming the percentile, the approximation method
+    (see ``_CONTRAST_METHOD``), and the resolved per-channel bounds.
     """
     reader.set_scene(scene_index)
     scene_name = reader.scenes[scene_index]
@@ -172,7 +287,22 @@ def write_scene(
         chunk_shape=chunk_shape,
         creator_info=creator_info,
     )
-    writer.write_pyramid(pyramid)
+
+    # Only run the extra contrast ops when we actually have channels to update.
+    # A scene with no C dim and no `channels` argument has no omero.channels
+    # to rewrite, so there's nothing to compute; skipping keeps the pyramid
+    # write graph unchanged for that case.
+    run_contrast = contrast_percentile is not None and channel_count > 0
+    if run_contrast:
+        contrast_ops = _channel_contrast_ops(
+            pyramid[-1], dims, channel_count, float(contrast_percentile)
+        )
+        results = writer.write_pyramid(pyramid, extra_ops=contrast_ops)
+        contrast_stats = _pair_contrast_results(results, channel_count)
+        _update_omero_window_start_end(store_path, contrast_stats)
+    else:
+        writer.write_pyramid(pyramid)
+        contrast_stats = []
 
     record = {
         "scene_index": scene_index,
@@ -186,4 +316,17 @@ def write_scene(
     }
     if mosaic_summary is not None:
         record["mosaic"] = mosaic_summary
+    if run_contrast:
+        record["contrast"] = {
+            "percentile": float(contrast_percentile),
+            "method": _CONTRAST_METHOD,
+            "per_channel": [
+                {
+                    "channel_index": i,
+                    "start": _to_json_scalar(min_v),
+                    "end": _to_json_scalar(pct_v),
+                }
+                for i, (min_v, pct_v) in enumerate(contrast_stats)
+            ],
+        }
     return record
