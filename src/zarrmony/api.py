@@ -462,6 +462,7 @@ def convert(
     pyramid_min_size: int = 256,
     chunk_shape: Sequence[int] | None = None,
     channel_colors: ChannelColorSpec = None,
+    contrast_percentile: float | None = 99.9,
     force: bool = False,
     checksum: bool = False,
     validate: bool = True,
@@ -512,6 +513,17 @@ def convert(
 
     Non-LIF readers ignore the flag entirely.
 
+    ``contrast_percentile`` (issue #53) drives the omero display window's
+    ``start``/``end`` fields from actual data instead of the dtype range:
+
+    - ``99.9`` (default) — per-channel ``(min, 99.9th percentile)`` computed
+      from the coarsest pyramid level, fused into the pyramid write's dask
+      graph so raw data is read once. Fixes "everything opens black except
+      the brightest pixel" on uint16 fluorescence stores.
+    - ``float`` in ``(0, 100)`` — same shape, but at a different percentile.
+    - ``None`` — skip the extra ops; ``start``/``end`` stay pinned to the
+      dtype range (the issue-#50 behavior).
+
     ``channel_colors`` (ADR-0007) governs per-channel display colors:
 
     - ``None`` (default) — emission-band colorblind scheme (cyan/green/yellow/
@@ -542,6 +554,11 @@ def convert(
             f"channel_colors as a string must be {_SOURCE_FILE_MODE!r} "
             f"(got {channel_colors!r}); pass a dict for per-channel overrides "
             "or None for the emission-band scheme"
+        )
+    if contrast_percentile is not None and not (0.0 < contrast_percentile < 100.0):
+        raise ValueError(
+            f"contrast_percentile must be None or a float in (0, 100) exclusive; "
+            f"got {contrast_percentile!r}"
         )
 
     reader, plugin, match_score = get_reader(input_path)
@@ -592,6 +609,7 @@ def convert(
         "pyramid_min_size": pyramid_min_size,
         "chunk_shape": list(chunk_shape) if chunk_shape else None,
         "channel_colors": audit_channel_colors,
+        "contrast_percentile": contrast_percentile,
         "force": force,
         "checksum": checksum,
         "validate": validate,
@@ -609,6 +627,7 @@ def convert(
             pyramid_min_size=pyramid_min_size,
             chunk_shape=chunk_shape,
             channel_colors=channel_colors,
+            contrast_percentile=contrast_percentile,
             force=force,
             checksum=checksum,
             config=config,
@@ -626,6 +645,7 @@ def convert(
             pyramid_min_size=pyramid_min_size,
             chunk_shape=chunk_shape,
             channel_colors=channel_colors,
+            contrast_percentile=contrast_percentile,
             force=force,
             checksum=checksum,
             config=config,
@@ -641,6 +661,7 @@ def convert(
         pyramid_min_size=pyramid_min_size,
         chunk_shape=chunk_shape,
         channel_colors=channel_colors,
+        contrast_percentile=contrast_percentile,
         force=force,
         checksum=checksum,
         config=config,
@@ -816,6 +837,7 @@ def _convert_per_scene(
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
     channel_colors: ChannelColorSpec,
+    contrast_percentile: float | None,
     force: bool,
     checksum: bool,
     config: dict,
@@ -862,6 +884,7 @@ def _convert_per_scene(
                 pyramid_min_size=pyramid_min_size,
                 chunk_shape=chunk_shape,
                 channel_colors=channel_colors,
+                contrast_percentile=contrast_percentile,
                 force=force,
                 checksum=checksum,
                 config=config,
@@ -963,6 +986,7 @@ def _convert_per_scene(
             image_name=scene_name,
             xarr_override=override_xarr,
             record_mosaic_summary=not reassembly_mode,
+            contrast_percentile=contrast_percentile,
         )
         scene_record["store_path"] = store_path
         scene_record["dirname"] = dirnames[scene_index]
@@ -1107,6 +1131,7 @@ def _convert_per_tile_scene(
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
     channel_colors: ChannelColorSpec,
+    contrast_percentile: float | None,
     force: bool,
     checksum: bool,
     config: dict,
@@ -1189,6 +1214,7 @@ def _convert_per_tile_scene(
             # the audit's per-tile discriminator + tile_stores belong on the
             # audit's mosaic block, not duplicated under per_scene[0].mosaic.
             record_mosaic_summary=False,
+            contrast_percentile=contrast_percentile,
         )
         scene_record["store_path"] = store_path
         scene_record["tile_index"] = m
@@ -1310,6 +1336,7 @@ def _convert_bf2raw(
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
     channel_colors: ChannelColorSpec,
+    contrast_percentile: float | None,
     force: bool,
     checksum: bool,
     config: dict,
@@ -1339,6 +1366,7 @@ def _convert_bf2raw(
             chunk_shape=chunk_shape,
             channels=channels,
             image_name=scene_name,
+            contrast_percentile=contrast_percentile,
         )
 
         per_scene_records.append(scene_record)
@@ -1403,6 +1431,7 @@ def _convert_plate(
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
     channel_colors: ChannelColorSpec,
+    contrast_percentile: float | None,
     force: bool,
     checksum: bool,
     config: dict,
@@ -1444,6 +1473,7 @@ def _convert_plate(
         pyramid_min_size=pyramid_min_size,
         chunk_shape=chunk_shape,
         channel_colors=channel_colors,
+        contrast_percentile=contrast_percentile,
         ome_image_for_field=_ome_image_for_field,
         ome_xml_builder=build_combined_ome_xml,
         source_xml=source_xml,

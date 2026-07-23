@@ -35,7 +35,7 @@ from zarrmony.metadata.lif_tiles import (
     select_auto_stitch_cascade,
 )
 from zarrmony.readers.plate import PlateField, PlateLayout
-from zarrmony.writers.scene import write_scene
+from zarrmony.writers.scene import _dtype_window, write_scene
 
 NGFF_VERSION = "0.5"
 
@@ -183,7 +183,9 @@ def _channels_for_current_scene(
 
     Accepts the same ``channel_colors`` spec as ``convert()``: a dict per-channel
     override, the ``"source-file"`` sentinel (degrades to band-scheme on this
-    non-LIF path — see :func:`api._channels_for_scene`), or ``None``.
+    non-LIF path — see :func:`api._channels_for_scene`), or ``None``. Passes
+    ``window=`` so a plate FOV honours the dtype-range display bounds (issue
+    #50) rather than falling through to bioio-ome-zarr's 0–255 default.
     """
     channel_names = (
         list(reader.channel_names) if getattr(reader, "channel_names", None) else []
@@ -192,8 +194,10 @@ def _channels_for_current_scene(
         return None
     overrides = channel_colors if isinstance(channel_colors, dict) else None
     colors = colors_for_channels(channel_names, overrides=overrides)
+    window = _dtype_window(reader.dtype)
     return [
-        Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)
+        Channel(label=n, color=c, window=window)
+        for n, c in zip(channel_names, colors, strict=True)
     ]
 
 
@@ -265,6 +269,7 @@ def write_plate(
     pyramid_min_size: int = 256,
     chunk_shape: Sequence[int] | None = None,
     channel_colors: dict[str, str] | str | None = None,
+    contrast_percentile: float | None = None,
     ome_image_for_field: Any = None,
     ome_xml_builder: Any = None,
     source_xml: str | None = None,
@@ -381,6 +386,7 @@ def write_plate(
                 image_name=image_name,
                 xarr_override=grid_xarr,
                 record_mosaic_summary=not grid_stitch_this_fov,
+                contrast_percentile=contrast_percentile,
             )
             scene_record.update(
                 {

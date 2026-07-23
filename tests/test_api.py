@@ -231,6 +231,9 @@ def test_per_scene_omero_window_matches_reader_dtype(
     an OMERO display window spanning the reader's dtype range — not the
     bioio-ome-zarr ``Channel`` default of 0–255 that would make uint16 stores
     open black. Regression guard for #50.
+
+    Pinned to ``contrast_percentile=None`` so this test isolates the dtype-range
+    behavior; issue-#53 percentile contrast is exercised separately.
     """
     reader = FakeReader(
         scenes=["s"],
@@ -242,13 +245,96 @@ def test_per_scene_omero_window_matches_reader_dtype(
     patched_reader(reader)
     out = tmp_path / "out"
 
-    convert("/tmp/x.czi", out, pyramid_min_size=8)
+    convert("/tmp/x.czi", out, pyramid_min_size=8, contrast_percentile=None)
 
     g = zarr.open_group(str(out / "s.ome.zarr"), mode="r")
     channels = g.attrs["ome"]["omero"]["channels"]
     assert len(channels) == 2
     for c in channels:
         assert c["window"] == expected_window
+
+
+# ---------- contrast_percentile (issue #53) ----------
+
+
+def test_convert_records_contrast_percentile_in_audit_config(
+    tmp_path: Path, patched_reader
+) -> None:
+    """Integration guard: whatever the caller passes for ``contrast_percentile``
+    (including the default) surfaces in ``audit.config.contrast_percentile``,
+    and the scene record grows a ``contrast`` block naming the same percentile
+    plus the approximation method.
+    """
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCYX",
+        shape=(1, 1, 32, 32),
+        channel_names=["c0"],
+    )
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    convert("/tmp/x.czi", out, pyramid_min_size=8, contrast_percentile=95.0)
+
+    g = zarr.open_group(str(out / "s.ome.zarr"), mode="r")
+    audit = g.attrs["zarrmony"]
+    assert audit["config"]["contrast_percentile"] == 95.0
+    scene_contrast = audit["per_scene"][0]["contrast"]
+    assert scene_contrast["percentile"] == 95.0
+    assert scene_contrast["method"] == "coarsest-pyramid-level"
+    assert len(scene_contrast["per_channel"]) == 1
+
+
+def test_convert_contrast_percentile_none_records_none(
+    tmp_path: Path, patched_reader
+) -> None:
+    """``contrast_percentile=None`` records ``None`` in the config and omits
+    the per-scene ``contrast`` block. Wall-clock cost of the extra ops goes to
+    zero — the omero window stays at the dtype-range placeholder (issue #50).
+    """
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCYX",
+        shape=(1, 1, 32, 32),
+        channel_names=["c0"],
+    )
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    convert("/tmp/x.czi", out, pyramid_min_size=8, contrast_percentile=None)
+
+    g = zarr.open_group(str(out / "s.ome.zarr"), mode="r")
+    audit = g.attrs["zarrmony"]
+    assert audit["config"]["contrast_percentile"] is None
+    assert "contrast" not in audit["per_scene"][0]
+
+
+def test_convert_contrast_percentile_default_is_99_9(
+    tmp_path: Path, patched_reader
+) -> None:
+    """The default value must be ``99.9`` — the value the issue asks for as
+    the ready-to-use auto-contrast, without the caller having to opt in.
+    """
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCYX",
+        shape=(1, 1, 32, 32),
+        channel_names=["c0"],
+    )
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    convert("/tmp/x.czi", out, pyramid_min_size=8)
+
+    g = zarr.open_group(str(out / "s.ome.zarr"), mode="r")
+    audit = g.attrs["zarrmony"]
+    assert audit["config"]["contrast_percentile"] == 99.9
+
+
+@pytest.mark.parametrize("bad", [0.0, 100.0, -1.0, 101.0])
+def test_convert_contrast_percentile_out_of_range_raises(bad: float) -> None:
+    with pytest.raises(ValueError, match="contrast_percentile"):
+        convert("/tmp/x.czi", "/tmp/out", contrast_percentile=bad)
 
 
 # ---------- bf2raw mode (opt-in) ----------

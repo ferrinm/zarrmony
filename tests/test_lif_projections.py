@@ -279,6 +279,9 @@ def test_api_lif_omero_window_matches_reader_dtype(
     when constructing the OMERO display window. Same regression as #50 but for
     the LIF-identity branch that would otherwise ship 0–255 next to real
     fluorophore labels.
+
+    Pinned to ``contrast_percentile=None`` so this test isolates the dtype-range
+    behavior; issue-#53 percentile contrast is exercised separately.
     """
     xml = FIXTURE.read_text(encoding="utf-8")
     reader = FakeLifReader(
@@ -291,7 +294,7 @@ def test_api_lif_omero_window_matches_reader_dtype(
     _install(monkeypatch, reader)
     out = tmp_path / "out"
 
-    convert("/tmp/x.lif", out, pyramid_min_size=8)
+    convert("/tmp/x.lif", out, pyramid_min_size=8, contrast_percentile=None)
 
     g = zarr.open_group(str(out / "scene0.ome.zarr"), mode="r")
     channels = g.attrs["ome"]["omero"]["channels"]
