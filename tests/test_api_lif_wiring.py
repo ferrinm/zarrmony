@@ -134,24 +134,34 @@ class _ConfocalReader:
 
 
 def test_raising_scene_root_without_metadata_declines():
-    assert _lif_scene_channels(_Raising()) == (None, None)
+    assert _lif_scene_channels(_Raising()) == (None, None, None)
 
 
 def test_non_lif_falls_back():
-    assert _lif_scene_channels(_NonLif()) == (None, None)
+    assert _lif_scene_channels(_NonLif()) == (None, None, None)
 
 
-def test_count_mismatch_declines():
-    assert _lif_scene_channels(_CountMismatch()) == (None, None)
+def test_count_mismatch_declines_channels_but_still_surfaces_objective():
+    # Objective extraction is decoupled from the SizeC check — a garbled
+    # channel list must not drop the (still-valid) objective dict.
+    extracted, omero, objective = _lif_scene_channels(_CountMismatch())
+    assert extracted is None and omero is None
+    assert objective is not None and objective.get("nominal_magnification") == 20
 
 
 # --- plate fast path -------------------------------------------------------
 
 
 def test_happy_path_wiring():
-    extracted, omero = _lif_scene_channels(_Good())
+    extracted, omero, objective = _lif_scene_channels(_Good())
     assert extracted is not None and len(extracted) == 7
     assert [c.label for c in omero][1] == "ALEXA 594 (590 nm)"
+    # Objective co-extraction: same scene XML, same call — the fixture's
+    # ATLConfocalSettingDefinition carries a 20x/0.75 DRY objective.
+    assert objective is not None
+    assert objective["nominal_magnification"] == 20
+    assert objective["numerical_aperture"] == 0.75
+    assert objective["immersion"] == "Air"  # LIF "DRY" -> OME Air
 
 
 # --- confocal (scene_root raises -> metadata .//Image locator) -------------
@@ -160,7 +170,7 @@ def test_happy_path_wiring():
 def test_confocal_scene_yields_fluorophore_channels():
     r = _ConfocalReader()
     r.current_scene_index = 0
-    extracted, omero = _lif_scene_channels(r)
+    extracted, omero, _ = _lif_scene_channels(r)
     assert omero is not None, "confocal channel metadata is inert"
     assert [c.label for c in omero][1] == "ALEXA 594 (590 nm)"
     assert extracted[1]["excitation_nm"] == 590
@@ -169,16 +179,19 @@ def test_confocal_scene_yields_fluorophore_channels():
 def test_confocal_scene_is_located_positionally():
     r = _ConfocalReader()
     r.current_scene_index = 1
-    _, omero = _lif_scene_channels(r)
+    _, omero, _ = _lif_scene_channels(r)
     assert omero is not None
     assert [c.label for c in omero][1] == "B_Leica/ALEXA 594 (590 nm)"
 
 
 def test_confocal_count_mismatch_declines():
     r = _ConfocalReader(c=2)  # XML has 7 channels, array claims 2
-    assert _lif_scene_channels(r) == (None, None)
+    extracted, omero, objective = _lif_scene_channels(r)
+    assert (extracted, omero) == (None, None)
+    # Objective is still surfaced — see the plate-path test for the reason.
+    assert objective is not None
 
 
 def test_confocal_no_metadata_falls_back():
     r = _ConfocalReader(have_metadata=False)
-    assert _lif_scene_channels(r) == (None, None)
+    assert _lif_scene_channels(r) == (None, None, None)
