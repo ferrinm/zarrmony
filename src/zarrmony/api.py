@@ -63,6 +63,13 @@ Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
 ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
 _VALID_LAYOUTS: tuple[Layout, ...] = ("auto", "per-scene", "bf2raw", "plate")
 
+# ADR-0007: opt-in mode for ``channel_colors`` that uses the source file's own
+# stored per-channel color (LIF ``<ChannelDescription LUTName>``, OME-XML
+# ``<Channel Color>``) instead of the emission-band scheme. Channels without a
+# stored color fall through to the emission-band scheme.
+_SOURCE_FILE_MODE = "source-file"
+ChannelColorSpec = dict[str, str] | Literal["source-file"] | None
+
 LifMosaic = Literal[
     "auto-stitch", "per-tile", "grid-stitch", "stage-stitch", "bioio-lif"
 ]
@@ -199,16 +206,39 @@ def _try_get_ome_image(
     return ome.images[0], None
 
 
+def _split_channel_colors(
+    channel_colors: ChannelColorSpec,
+) -> tuple[dict[str, str] | None, bool]:
+    """Split the ``channel_colors`` API surface into (overrides, use_source_file).
+
+    ``None`` and dict pass through as ``(dict_or_None, False)``. The literal
+    string ``"source-file"`` — the ADR-0007 opt-in that trusts the reader's
+    stored per-channel color — becomes ``(None, True)`` so downstream code can
+    thread a single boolean flag without re-testing the sentinel.
+    """
+    if channel_colors == _SOURCE_FILE_MODE:
+        return None, True
+    return channel_colors, False
+
+
 def _channels_for_scene(
     reader: Any,
-    channel_colors: dict[str, str] | None,
+    channel_colors: ChannelColorSpec,
 ) -> list[Channel] | None:
+    """Name-based omero channels for readers that don't surface wavelength.
+
+    ``channel_colors="source-file"`` degrades to the emission-band scheme here
+    (the same as ``None``) — this path has no access to a reader-side stored
+    color. The LIF path (:func:`_lif_scene_channels`) handles ``"source-file"``
+    for real via the extracted ``LUTName``.
+    """
+    overrides, _use_source_file = _split_channel_colors(channel_colors)
     channel_names = (
         list(reader.channel_names) if getattr(reader, "channel_names", None) else []
     )
     if not channel_names:
         return None
-    colors = colors_for_channels(channel_names, overrides=channel_colors)
+    colors = colors_for_channels(channel_names, overrides=overrides)
     return [
         Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)
     ]
@@ -237,6 +267,7 @@ def _scene_channel_count(reader: Any) -> int:
 
 def _lif_scene_channels(
     reader: Any,
+    channel_colors: ChannelColorSpec = None,
 ) -> tuple[list[dict] | None, list[Channel] | None, dict | None]:
     """The LIF-vs-other decision, in one place.
 
@@ -293,9 +324,14 @@ def _lif_scene_channels(
             # Channel extraction fell through the count check, but the
             # objective is decoupled from SizeC — still surface it.
             return None, None, objective
+        overrides, use_source_file = _split_channel_colors(channel_colors)
         omero_channels = [
             Channel(label=o["label"], color=o["color"])
-            for o in channels_to_omero(extracted)
+            for o in channels_to_omero(
+                extracted,
+                overrides=overrides,
+                use_source_file=use_source_file,
+            )
         ]
         return extracted, omero_channels, objective
     except Exception:  # noqa: BLE001 — never break a conversion over metadata
@@ -303,12 +339,18 @@ def _lif_scene_channels(
 
 
 def _lif_ome_image(
-    extracted: list[dict], scene_index: int, name: str, scene_record: dict
+    extracted: list[dict],
+    scene_index: int,
+    name: str,
+    scene_record: dict,
+    channel_colors: ChannelColorSpec = None,
 ) -> Image | None:
     """A real per-scene OME ``Image`` carrying the extracted channel identities.
 
     Sizes come from ``scene_record`` (exactly as :func:`_stub_image` does); the
-    canonical ``<Channel>`` elements come from :func:`channels_to_ome_channels`.
+    canonical ``<Channel>`` elements come from :func:`channels_to_ome_channels`,
+    threaded with the same ``channel_colors`` spec as :func:`_lif_scene_channels`
+    so the omero block and OME-XML never disagree on per-channel color.
     ``extracted`` was already count-checked against the scene's C size in
     :func:`_lif_scene_channels`; the ``SizeC`` assertion here is belt-and-
     suspenders. Returns ``None`` on any surprise so the caller falls back to the
@@ -316,7 +358,12 @@ def _lif_ome_image(
     """
     try:
         image = _stub_image(scene_index, name, scene_record)
-        ome_channels = channels_to_ome_channels(extracted)
+        overrides, use_source_file = _split_channel_colors(channel_colors)
+        ome_channels = channels_to_ome_channels(
+            extracted,
+            overrides=overrides,
+            use_source_file=use_source_file,
+        )
         if len(ome_channels) != image.pixels.size_c:
             return None
         image.pixels.channels = ome_channels
@@ -411,7 +458,7 @@ def convert(
     layout: Layout = "auto",
     pyramid_min_size: int = 256,
     chunk_shape: Sequence[int] | None = None,
-    channel_colors: dict[str, str] | None = None,
+    channel_colors: ChannelColorSpec = None,
     force: bool = False,
     checksum: bool = False,
     validate: bool = True,
@@ -462,6 +509,19 @@ def convert(
 
     Non-LIF readers ignore the flag entirely.
 
+    ``channel_colors`` (ADR-0007) governs per-channel display colors:
+
+    - ``None`` (default) — emission-band colorblind scheme (cyan/green/yellow/
+      magenta/white). Emission midpoint → excitation → dye-name substring.
+      Residual collisions round-robin through ``UNKNOWN_PALETTE`` with a
+      :class:`~zarrmony.errors.ChannelColorCollisionWarning`.
+    - ``dict[str, str]`` — per-channel override map (``{name: "RRGGBB"}``).
+      Unmapped channels fall through to the emission-band scheme.
+    - ``"source-file"`` — use the source file's stored per-channel color
+      when present (LIF ``<ChannelDescription LUTName>``, OME-XML
+      ``<Channel Color>``); channels without a stored color fall through to
+      the emission-band scheme.
+
     Per-scene return shape: ``{"input": ..., "stores": [<per-store audit>, ...]}``.
     The ``bf2raw`` and ``plate`` shapes return the single bundle's audit dict;
     plate audits use the schema-3 ``fields`` + ``plate`` keys.
@@ -473,6 +533,12 @@ def convert(
     if lif_mosaic not in _VALID_LIF_MOSAIC:
         raise ValueError(
             f"lif_mosaic must be one of {list(_VALID_LIF_MOSAIC)} (got {lif_mosaic!r})"
+        )
+    if isinstance(channel_colors, str) and channel_colors != _SOURCE_FILE_MODE:
+        raise ValueError(
+            f"channel_colors as a string must be {_SOURCE_FILE_MODE!r} "
+            f"(got {channel_colors!r}); pass a dict for per-channel overrides "
+            "or None for the emission-band scheme"
         )
 
     reader, plugin, match_score = get_reader(input_path)
@@ -507,11 +573,22 @@ def convert(
             "to keep the plate structure with butt-jointed FOVs."
         )
 
+    # Preserve ``channel_colors`` verbatim in the audit config: the caller may
+    # have passed a dict, ``None``, or the ADR-0007 ``"source-file"`` sentinel,
+    # and downstream audit consumers should be able to distinguish all three.
+    # Only defensively copy a dict so a later user mutation doesn't leak into
+    # the audit record.
+    audit_channel_colors: ChannelColorSpec
+    if isinstance(channel_colors, dict):
+        audit_channel_colors = dict(channel_colors)
+    else:
+        audit_channel_colors = channel_colors
+
     config = {
         "layout": effective_layout,
         "pyramid_min_size": pyramid_min_size,
         "chunk_shape": list(chunk_shape) if chunk_shape else None,
-        "channel_colors": dict(channel_colors) if channel_colors else None,
+        "channel_colors": audit_channel_colors,
         "force": force,
         "checksum": checksum,
         "validate": validate,
@@ -735,7 +812,7 @@ def _convert_per_scene(
     output: str | Path,
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
-    channel_colors: dict[str, str] | None,
+    channel_colors: ChannelColorSpec,
     force: bool,
     checksum: bool,
     config: dict,
@@ -837,9 +914,14 @@ def _convert_per_scene(
         # channel identities, drive both omero (label/color) and the canonical
         # OME-XML <Channel>s from that identity; otherwise fall through to the
         # existing name-based path. (None, None, None) for everything non-LIF.
-        # ``lif_objective`` is decoupled from the channel-count check so a
-        # scene with a garbled channel list still surfaces its objective.
-        lif_extracted, lif_omero_channels, lif_objective = _lif_scene_channels(reader)
+        # The ``channel_colors`` spec (dict override, source-file mode, or the
+        # emission-band default) is threaded into both branches so overrides
+        # and source-file color hints apply uniformly. ``lif_objective`` is
+        # decoupled from the channel-count check so a scene with a garbled
+        # channel list still surfaces its objective.
+        lif_extracted, lif_omero_channels, lif_objective = _lif_scene_channels(
+            reader, channel_colors
+        )
         channels = (
             lif_omero_channels
             if lif_omero_channels is not None
@@ -902,7 +984,11 @@ def _convert_per_scene(
         ome_image: Image | None = None
         if lif_extracted is not None:
             ome_image = _lif_ome_image(
-                lif_extracted, scene_index, scene_name, scene_record
+                lif_extracted,
+                scene_index,
+                scene_name,
+                scene_record,
+                channel_colors=channel_colors,
             )
         if ome_image is None:
             # Non-LIF, or the LIF Image couldn't be built — existing behavior.
@@ -1017,7 +1103,7 @@ def _convert_per_tile_scene(
     output_str: str,
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
-    channel_colors: dict[str, str] | None,
+    channel_colors: ChannelColorSpec,
     force: bool,
     checksum: bool,
     config: dict,
@@ -1059,10 +1145,13 @@ def _convert_per_tile_scene(
 
     # Channel projection: as in per-scene mode, the LIF extracted identity wins;
     # otherwise fall through to the name-based path. Same channels for every
-    # tile of the same scene. Objective is likewise scene-scoped (one
-    # objective per scene, shared by all tiles) and re-attached to each
-    # tile's OME-XML below.
-    lif_extracted, lif_omero_channels, lif_objective = _lif_scene_channels(reader)
+    # tile of the same scene. ``channel_colors`` threads to both branches so
+    # dict overrides and ``"source-file"`` apply per-tile as they do per-scene.
+    # Objective is scene-scoped (one objective per scene, shared by all tiles)
+    # and re-attached to each tile's OME-XML below.
+    lif_extracted, lif_omero_channels, lif_objective = _lif_scene_channels(
+        reader, channel_colors
+    )
     channels = (
         lif_omero_channels
         if lif_omero_channels is not None
@@ -1110,7 +1199,11 @@ def _convert_per_tile_scene(
         ome_image: Image | None = None
         if lif_extracted is not None:
             ome_image = _lif_ome_image(
-                lif_extracted, scene_index, tile_image_name, scene_record
+                lif_extracted,
+                scene_index,
+                tile_image_name,
+                scene_record,
+                channel_colors=channel_colors,
             )
         if ome_image is None:
             ome_image, warning = _try_get_ome_image(reader, scene_index)
@@ -1213,7 +1306,7 @@ def _convert_bf2raw(
     output: str | Path,
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
-    channel_colors: dict[str, str] | None,
+    channel_colors: ChannelColorSpec,
     force: bool,
     checksum: bool,
     config: dict,
@@ -1306,7 +1399,7 @@ def _convert_plate(
     output: str | Path,
     pyramid_min_size: int,
     chunk_shape: Sequence[int] | None,
-    channel_colors: dict[str, str] | None,
+    channel_colors: ChannelColorSpec,
     force: bool,
     checksum: bool,
     config: dict,

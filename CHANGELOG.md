@@ -26,6 +26,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and LIF scenes with no objective info emit the pre-#52 no-instrument
   shape unchanged. Both per-scene and per-tile (`lif_mosaic="per-tile"`)
   write paths participate. (#52)
+- `convert(..., channel_colors="source-file")` — new opt-in mode that trusts
+  the source file's stored per-channel color when present (LIF
+  `<ChannelDescription LUTName>`, OME-XML `<Channel Color>`), falling through
+  to the emission-band scheme for channels without a stored color.
+  `config.channel_colors` in the audit record preserves the literal string
+  `"source-file"` verbatim so downstream tools can distinguish it from
+  `None` and from a per-channel dict. (ADR-0007, #51)
+- `ChannelColorCollisionWarning` — new warning class. Fires once per
+  conversion when two or more channels resolve to the same display color
+  (e.g. two far-red dyes both landing on white); later-in-order channels
+  round-robin through `UNKNOWN_PALETTE` skipping already-taken colors, and
+  the warning body names the reassigned channels. Suppress with the standard
+  `warnings.filterwarnings("ignore", category=ChannelColorCollisionWarning)`
+  or override deterministically with `channel_colors={<name>: <hex6>}`. (#51)
+- `zarrmony.metadata.channel_colors.EMISSION_BANDS`, `EXCITATION_BANDS`,
+  `DYE_TO_BAND`, `UNKNOWN_PALETTE`, and the batch entry point
+  `assign_colors(channels, *, source_file_colors=None, overrides=None)`. (#51)
+- `zarrmony.metadata.lif_channels.extract_channels` now surfaces an eighth
+  per-channel field, `lut_name` (the raw
+  `<ChannelDescription LUTName>` attribute), consumed by
+  `channel_colors="source-file"`. Additive to the identity dict; existing
+  consumers reading the seven original keys are unaffected. (#51)
+- ADR `docs/adr/0007-emission-band-channel-colors.md` documenting the
+  emission-band scheme, why colorblind CMY over dye-true-color, exact band
+  boundaries, the `source-file` opt-in, the collision policy, and the
+  interpretation of the "555 nm" ambiguity in the reporting session. (#51)
 
 ### Changed
 
@@ -33,6 +59,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `per_scene[i].objective` sub-dict. Reading old stores is unaffected (the
   field is additive); consumers pinned to schema `6` should widen their pin.
   (#52)
+
+### Changed (BREAKING)
+
+- Default per-channel display colors now come from the fluorophore's emission
+  midpoint (falling back to excitation, then dye-name substring) mapped onto
+  the Nature Methods "Points of View" CMY / green palette
+  (`cyan / green / yellow / magenta / white`). Existing files with red-family
+  channels will render with different colors than they did under v0.8: on the
+  reporter's real file (DAPI 405 nm / Alexa 546 555 nm / Alexa 647 651 nm),
+  colors now render as cyan / magenta / white instead of the collision-prone
+  substring-match output. Users who need the old dye-brand true-color scheme
+  should pin their preferred hex per channel via
+  `convert(channel_colors={<name>: "<hex6>"})`. (ADR-0007, #51)
+- `zarrmony.metadata.channel_colors.NAME_COLORS` and `PALETTE` are removed.
+  Callers importing them will fail at import time — the failure is loud on
+  purpose so a silent behavior change is impossible. Replace `NAME_COLORS`
+  with `DYE_TO_BAND` (semantics: name → band color, not name → dye color)
+  and `PALETTE` with `UNKNOWN_PALETTE`. (#51)
+- `zarrmony.metadata.channel_colors.color_for_channel` is removed. Use
+  `assign_colors(...)` (batch) or the single-channel helpers
+  `color_for_emission_nm`, `color_for_excitation_nm`, `color_for_dye_name`
+  which cleanly separate the three fallback stages. (#51)
 
 ## [0.8.0] - 2026-07-10
 
