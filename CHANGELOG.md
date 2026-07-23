@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-scene objective-lens extraction for Leica LIF conversions. When a LIF
+  scene's XML carries objective attributes (on
+  `<ATLConfocalSettingDefinition>` and/or `<Objective>` elements), the audit
+  record now surfaces them under
+  `attrs.zarrmony.per_scene[i].objective` with any subset of the keys
+  `nominal_magnification`, `numerical_aperture`, `immersion`, `model`,
+  `working_distance_um`. Missing individual fields are omitted from the dict
+  (never `null` / `0`); scenes with no objective info at all omit the
+  `objective` key entirely rather than persist an empty dict. (#52)
+- Per-scene `OME/METADATA.ome.xml` now emits a top-level
+  `<Instrument><Objective/></Instrument>` populated from the same LIF
+  extraction, plus per-image `<InstrumentRef/>` and `<ObjectiveSettings/>`
+  references so downstream tooling (napari, OMERO, `ome_types.from_xml`)
+  reads the objective as standards-compliant OME metadata. Non-LIF readers
+  and LIF scenes with no objective info emit the pre-#52 no-instrument
+  shape unchanged. Both per-scene and per-tile (`lif_mosaic="per-tile"`)
+  write paths participate. (#52)
+
+### Changed
+
+- `AUDIT_SCHEMA_VERSION` bumped from `6` → `7` to signal the new optional
+  `per_scene[i].objective` sub-dict. Reading old stores is unaffected (the
+  field is additive); consumers pinned to schema `6` should widen their pin.
+  (#52)
+
 ## [0.8.0] - 2026-07-10
 
 ### Added

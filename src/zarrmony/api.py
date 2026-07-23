@@ -43,13 +43,16 @@ from zarrmony.metadata.lif_tiles import (
     select_auto_stitch_cascade,
     stage_overlap_discrepancy,
 )
+from zarrmony.metadata.objective import extract_objective
 from zarrmony.naming import resolve_scene_dirnames, sanitize_scene_name
 from zarrmony.readers.default import derive_bioio_distribution
 from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import (
+    attach_objective_to_image,
     attach_stage_position_plane,
     build_combined_ome_xml,
+    build_instrument_from_objective,
     build_ome_xml_for_scene,
 )
 from zarrmony.writers.per_scene import write_per_scene_metadata
@@ -232,16 +235,33 @@ def _scene_channel_count(reader: Any) -> int:
     return int(xarr.sizes["C"]) if "C" in xarr.dims else 1
 
 
-def _lif_scene_channels(reader: Any) -> tuple[list[dict] | None, list[Channel] | None]:
+def _lif_scene_channels(
+    reader: Any,
+) -> tuple[list[dict] | None, list[Channel] | None, dict | None]:
     """The LIF-vs-other decision, in one place.
 
-    Returns ``(extracted, omero_channels)`` when ``reader`` is a LIF reader whose
-    current scene yields channel identities AND that identity count matches the
-    scene's C size; otherwise ``(None, None)``. ``extracted`` is the raw
-    per-channel identity dicts (handed to :func:`_lif_ome_image` once scene sizes
-    are known); ``omero_channels`` is the display label/color list for
-    :func:`write_scene`. Both projections come from the same vetted extraction,
-    so omero and the OME-XML never disagree.
+    Returns ``(extracted, omero_channels, objective)``:
+
+    * ``extracted`` / ``omero_channels`` — per-channel identity dicts + the
+      display label/color list. Both are populated only when ``reader`` is a
+      LIF reader whose current scene yields channel identities AND that
+      identity count matches the scene's C size; otherwise both are ``None``.
+      Both projections come from the same vetted extraction, so omero and the
+      OME-XML never disagree.
+    * ``objective`` — the LIF objective-lens dict (issue #52), independently
+      derived from the same scene XML. Populated whenever
+      :func:`~zarrmony.metadata.objective.extract_objective` returns a
+      non-empty dict; ``None`` for a non-LIF reader, missing scene XML, or a
+      scene with no objective info at all. It carries only the keys the LIF
+      actually surfaced — missing individual fields (magnification, NA,
+      immersion, model, working distance) are omitted rather than nulled. The
+      audit records it under ``per_scene[i].objective`` and the per-scene
+      writer projects it into a top-level ``<Instrument><Objective/></Instrument>``.
+
+    Objective extraction is deliberately independent of the channel count
+    check: a LIF scene with a garbled channel list (mismatched SizeC) still
+    has a valid objective, and the audit shouldn't drop it just because we
+    also can't determine the fluorophores. Both extractors are fail-closed.
 
     Locating the scene XML is two-tier (see :func:`find_scene_xml`):
 
@@ -251,30 +271,35 @@ def _lif_scene_channels(reader: Any) -> tuple[list[dict] | None, list[Channel] |
     2. the document-order ``<Image>`` locator (``.//Image[current_scene_index]``,
        per bioio-lif PR #52) — the fallback that makes confocal scenes work.
 
-    The count check matters: the omero block and OME-XML ``Pixels/@SizeC`` must
-    describe the channels the array actually has. If extraction and data
-    disagree in EITHER direction — too few or too many identities (corruption,
-    partial metadata) — we decline the projection rather than mislabel the image.
+    The count check matters for channels: the omero block and OME-XML
+    ``Pixels/@SizeC`` must describe the channels the array actually has. If
+    extraction and data disagree in EITHER direction — too few or too many
+    identities (corruption, partial metadata) — we decline the *channel*
+    projection rather than mislabel the image. Objective extraction has no
+    such coupling.
 
-    Fail-safe: any failure — not a LIF reader, no/garbage scene XML, an empty or
-    count-mismatched extraction, or any unexpected reader-surface error — returns
-    ``(None, None)`` so callers fall back cleanly to the existing name-based
-    path. Metadata never crashes a conversion.
+    Fail-safe: any failure — not a LIF reader, no/garbage scene XML, or any
+    unexpected reader-surface error — returns ``(None, None, None)`` so
+    callers fall back cleanly to the existing name-based path. Metadata never
+    crashes a conversion.
     """
     try:
         scene_xml = find_scene_xml(reader)
         if scene_xml is None:
-            return None, None
+            return None, None, None
         extracted = extract_channels(scene_xml)
+        objective = extract_objective(scene_xml)
         if not extracted or len(extracted) != _scene_channel_count(reader):
-            return None, None
+            # Channel extraction fell through the count check, but the
+            # objective is decoupled from SizeC — still surface it.
+            return None, None, objective
         omero_channels = [
             Channel(label=o["label"], color=o["color"])
             for o in channels_to_omero(extracted)
         ]
-        return extracted, omero_channels
+        return extracted, omero_channels, objective
     except Exception:  # noqa: BLE001 — never break a conversion over metadata
-        return None, None
+        return None, None, None
 
 
 def _lif_ome_image(
@@ -296,6 +321,34 @@ def _lif_ome_image(
             return None
         image.pixels.channels = ome_channels
         return image
+    except Exception:  # noqa: BLE001 — never break a conversion over metadata
+        return None
+
+
+def _instrument_for_objective(
+    objective: dict | None, image: Image | None, scene_index: int
+) -> Any | None:
+    """Build the per-image ``<Instrument>`` from ``objective`` and attach refs.
+
+    Returns the ``Instrument`` (for the caller to hand to
+    :func:`build_ome_xml_for_scene`) when ``objective`` is non-empty and
+    ``image`` is present; otherwise ``None`` — the pre-#52 shape. Scoped IDs
+    include ``scene_index`` so a bf2raw / plate consumer parsing a combined
+    OME-XML sees distinct instruments per image.
+
+    Never raises: objective is metadata, and metadata never breaks a
+    conversion.
+    """
+    if not objective or image is None:
+        return None
+    try:
+        instrument = build_instrument_from_objective(
+            objective,
+            instrument_id=f"Instrument:{scene_index}",
+            objective_id=f"Objective:{scene_index}:0",
+        )
+        attach_objective_to_image(image, instrument=instrument)
+        return instrument
     except Exception:  # noqa: BLE001 — never break a conversion over metadata
         return None
 
@@ -783,8 +836,10 @@ def _convert_per_scene(
         # LIF-vs-other decision in one place: for a LIF scene with extractable
         # channel identities, drive both omero (label/color) and the canonical
         # OME-XML <Channel>s from that identity; otherwise fall through to the
-        # existing name-based path. (None, None) for everything non-LIF.
-        lif_extracted, lif_omero_channels = _lif_scene_channels(reader)
+        # existing name-based path. (None, None, None) for everything non-LIF.
+        # ``lif_objective`` is decoupled from the channel-count check so a
+        # scene with a garbled channel list still surfaces its objective.
+        lif_extracted, lif_omero_channels, lif_objective = _lif_scene_channels(reader)
         channels = (
             lif_omero_channels
             if lif_omero_channels is not None
@@ -861,7 +916,15 @@ def _convert_per_scene(
                 )
                 ome_image = _stub_image(scene_index, scene_name, scene_record)
 
-        ome_xml = build_ome_xml_for_scene(ome_image)
+        # LIF objective (issue #52): audit gets the raw dict; OME-XML gets a
+        # top-level <Instrument><Objective/></Instrument> plus a per-image
+        # <ObjectiveSettings/> reference. Both are omitted for non-LIF readers
+        # and for LIF scenes that surfaced no objective info at all.
+        if lif_objective:
+            scene_record["objective"] = lif_objective
+        instrument = _instrument_for_objective(lif_objective, ome_image, scene_index)
+
+        ome_xml = build_ome_xml_for_scene(ome_image, instrument)
         write_per_scene_metadata(
             store_path,
             ome_xml=ome_xml,
@@ -996,8 +1059,10 @@ def _convert_per_tile_scene(
 
     # Channel projection: as in per-scene mode, the LIF extracted identity wins;
     # otherwise fall through to the name-based path. Same channels for every
-    # tile of the same scene.
-    lif_extracted, lif_omero_channels = _lif_scene_channels(reader)
+    # tile of the same scene. Objective is likewise scene-scoped (one
+    # objective per scene, shared by all tiles) and re-attached to each
+    # tile's OME-XML below.
+    lif_extracted, lif_omero_channels, lif_objective = _lif_scene_channels(reader)
     channels = (
         lif_omero_channels
         if lif_omero_channels is not None
@@ -1078,7 +1143,14 @@ def _convert_per_tile_scene(
             position_z_um=pos_z_um,
         )
 
-        ome_xml = build_ome_xml_for_scene(ome_image)
+        # LIF objective (issue #52): the scene's objective is shared across
+        # all tiles; every tile store gets its own audit copy and its own
+        # <Instrument> so any tile store remains fully self-describing.
+        if lif_objective:
+            scene_record["objective"] = lif_objective
+        instrument = _instrument_for_objective(lif_objective, ome_image, scene_index)
+
+        ome_xml = build_ome_xml_for_scene(ome_image, instrument)
         write_per_scene_metadata(
             store_path,
             ome_xml=ome_xml,
