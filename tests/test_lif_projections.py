@@ -14,6 +14,8 @@ Covers:
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
+import pytest
 import zarr
 from ome_types import from_xml
 
@@ -260,6 +262,42 @@ def test_api_lif_channel_count_mismatch_falls_back(tmp_path: Path, monkeypatch) 
     # The omero block also stays consistent: never 7 labels on a 2-channel image.
     g = zarr.open_group(str(store), mode="r")
     assert len(g.attrs["ome"]["omero"]["channels"]) == 2
+
+
+@pytest.mark.parametrize(
+    "dtype, expected_window",
+    [
+        (np.uint8, {"min": 0, "max": 255, "start": 0, "end": 255}),
+        (np.uint16, {"min": 0, "max": 65535, "start": 0, "end": 65535}),
+        (np.float32, {"min": 0.0, "max": 1.0, "start": 0.0, "end": 1.0}),
+    ],
+)
+def test_api_lif_omero_window_matches_reader_dtype(
+    tmp_path: Path, monkeypatch, dtype, expected_window
+) -> None:
+    """The LIF ``_lif_scene_channels`` path must also honor the reader's dtype
+    when constructing the OMERO display window. Same regression as #50 but for
+    the LIF-identity branch that would otherwise ship 0–255 next to real
+    fluorophore labels.
+    """
+    xml = FIXTURE.read_text(encoding="utf-8")
+    reader = FakeLifReader(
+        scene_xml=xml,
+        scenes=["scene0"],
+        dims="CYX",
+        shape=(7, 16, 16),
+        dtype=dtype,
+    )
+    _install(monkeypatch, reader)
+    out = tmp_path / "out"
+
+    convert("/tmp/x.lif", out, pyramid_min_size=8)
+
+    g = zarr.open_group(str(out / "scene0.ome.zarr"), mode="r")
+    channels = g.attrs["ome"]["omero"]["channels"]
+    assert len(channels) == 7
+    for c in channels:
+        assert c["window"] == expected_window
 
 
 def test_api_lif_with_garbage_scene_root_falls_back(

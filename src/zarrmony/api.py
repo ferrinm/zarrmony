@@ -57,7 +57,7 @@ from zarrmony.writers.ome_xml import (
 )
 from zarrmony.writers.per_scene import write_per_scene_metadata
 from zarrmony.writers.plate import summarize_plate_layout, write_plate
-from zarrmony.writers.scene import write_scene
+from zarrmony.writers.scene import _dtype_window, write_scene
 
 Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
 ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
@@ -239,8 +239,10 @@ def _channels_for_scene(
     if not channel_names:
         return None
     colors = colors_for_channels(channel_names, overrides=overrides)
+    window = _dtype_window(reader.dtype)
     return [
-        Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)
+        Channel(label=n, color=c, window=window)
+        for n, c in zip(channel_names, colors, strict=True)
     ]
 
 
@@ -325,8 +327,9 @@ def _lif_scene_channels(
             # objective is decoupled from SizeC — still surface it.
             return None, None, objective
         overrides, use_source_file = _split_channel_colors(channel_colors)
+        window = _dtype_window(reader.dtype)
         omero_channels = [
-            Channel(label=o["label"], color=o["color"])
+            Channel(label=o["label"], color=o["color"], window=window)
             for o in channels_to_omero(
                 extracted,
                 overrides=overrides,

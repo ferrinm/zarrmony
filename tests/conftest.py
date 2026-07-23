@@ -122,6 +122,7 @@ class FakeReader:
         mosaic_summary: dict | None = None,
         skip_reasons: dict[int, str] | None = None,
         per_tile_scenes: dict[int, "TileScene"] | None = None,
+        dtype: np.typing.DTypeLike = np.uint16,
     ) -> None:
         self.scenes = tuple(scenes)
         self._dims = dims
@@ -136,6 +137,7 @@ class FakeReader:
         self.mosaic_summary = mosaic_summary
         self._skip_reasons = skip_reasons or {}
         self._per_tile_scenes = per_tile_scenes or {}
+        self._dtype = np.dtype(dtype)
 
     @property
     def skip_reason(self) -> str | None:
@@ -144,6 +146,16 @@ class FakeReader:
     @property
     def channel_names(self) -> list[str]:
         return self._channel_names
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Mirrors bioio's ``Reader.dtype`` — the pixel dtype of the current scene.
+
+        Held as a scalar attr so tests can vary it without allocating the full
+        xarray. The ``xarray_dask_data`` property honors this dtype when
+        materializing the fake pixel buffer.
+        """
+        return self._dtype
 
     def set_scene(self, idx: int | str) -> None:
         if isinstance(idx, str):
@@ -161,7 +173,9 @@ class FakeReader:
     @property
     def xarray_dask_data(self) -> xr.DataArray:
         # Fill with scene-index+1 so tests can assert "the right scene was read"
-        arr = np.full(self._shape, fill_value=self._current_scene + 1, dtype=np.uint16)
+        arr = np.full(
+            self._shape, fill_value=self._current_scene + 1, dtype=self._dtype
+        )
         coords: dict[str, list[str]] = {}
         if "C" in self._dims and self._channel_names:
             coords["C"] = self._channel_names
@@ -185,7 +199,7 @@ class FakeReader:
             scene.tile_yx[0],
             scene.tile_yx[1],
         )
-        arr = np.zeros(shape, dtype=np.uint16)
+        arr = np.zeros(shape, dtype=self._dtype)
         for i in range(m):
             arr[i].fill(i + 1)
         return xr.DataArray(da.from_array(arr), dims=["M", "T", "C", "Z", "Y", "X"])

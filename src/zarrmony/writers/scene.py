@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import dask.array as da
+import numpy as np
 import xarray as xr
 from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 
@@ -59,20 +60,45 @@ def _physical_scales_for_dims(dims: Sequence[str], reader: Any) -> list[float]:
     return [base[d] for d in dims]
 
 
-def _default_channels(channel_names: Sequence[str]) -> list[Channel]:
+def _dtype_window(dtype: np.dtype) -> dict[str, int | float]:
+    """OMERO display-window bounds spanning ``dtype``'s full range.
+
+    Integer dtypes → ``np.iinfo(dtype).min`` / ``max``; float dtypes → ``0.0`` /
+    ``1.0`` (OMERO convention for normalized floats). ``start`` / ``end`` mirror
+    ``min`` / ``max`` so first-open viewers see the full range unclipped —
+    percentile-based auto-contrast is a separate concern (see #50). Prevents
+    the bioio-ome-zarr ``Channel`` default of ``0``–``255`` from clamping
+    uint16/uint32/float32 pixels into a black-on-first-open display.
+    """
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        lo: int | float = int(info.min)
+        hi: int | float = int(info.max)
+    else:
+        lo, hi = 0.0, 1.0
+    return {"min": lo, "max": hi, "start": lo, "end": hi}
+
+
+def _default_channels(channel_names: Sequence[str], dtype: np.dtype) -> list[Channel]:
     """Emission-band-colored channels for readers that surface no wavelength.
 
     Reaches the ADR-0007 palette via the dye-name substring fallback in
     :func:`zarrmony.metadata.channel_colors.colors_for_channels` so a CZI/ND2/
     OME-TIFF scene named "DAPI"/"GFP"/"mCherry"/"Cy5" lands in the same
     colorblind slots as its LIF-source counterpart, and collisions are handled
-    identically.
+    identically. ``dtype`` drives the OMERO display window (see #50) so
+    uint16/uint32/float32 stores open with the full dtype range rather than
+    the bioio-ome-zarr 0–255 default.
     """
     from zarrmony.metadata.channel_colors import colors_for_channels
 
     names = list(channel_names)
     colors = colors_for_channels(names)
-    return [Channel(label=n, color=c) for n, c in zip(names, colors, strict=True)]
+    window = _dtype_window(dtype)
+    return [
+        Channel(label=n, color=c, window=window)
+        for n, c in zip(names, colors, strict=True)
+    ]
 
 
 def write_scene(
@@ -124,7 +150,7 @@ def write_scene(
             channel_names = [f"C:{i}" for i in range(canonical.sizes["C"])]
         else:
             channel_names = []
-        channels = _default_channels(channel_names)
+        channels = _default_channels(channel_names, canonical.dtype)
     channel_count = len(channels)
 
     axes_names = [d.lower() for d in dims]
