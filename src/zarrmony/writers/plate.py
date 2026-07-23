@@ -177,14 +177,21 @@ def _group_fields_by_well(
 
 
 def _channels_for_current_scene(
-    reader: Any, channel_colors: dict[str, str] | None
+    reader: Any, channel_colors: dict[str, str] | str | None
 ) -> list[Channel] | None:
+    """Emission-band-colored channels for a plate FOV.
+
+    Accepts the same ``channel_colors`` spec as ``convert()``: a dict per-channel
+    override, the ``"source-file"`` sentinel (degrades to band-scheme on this
+    non-LIF path — see :func:`api._channels_for_scene`), or ``None``.
+    """
     channel_names = (
         list(reader.channel_names) if getattr(reader, "channel_names", None) else []
     )
     if not channel_names:
         return None
-    colors = colors_for_channels(channel_names, overrides=channel_colors)
+    overrides = channel_colors if isinstance(channel_colors, dict) else None
+    colors = colors_for_channels(channel_names, overrides=overrides)
     return [
         Channel(label=n, color=c) for n, c in zip(channel_names, colors, strict=True)
     ]
@@ -257,7 +264,7 @@ def write_plate(
     plate_layout: PlateLayout,
     pyramid_min_size: int = 256,
     chunk_shape: Sequence[int] | None = None,
-    channel_colors: dict[str, str] | None = None,
+    channel_colors: dict[str, str] | str | None = None,
     ome_image_for_field: Any = None,
     ome_xml_builder: Any = None,
     source_xml: str | None = None,

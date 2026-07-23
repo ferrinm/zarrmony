@@ -80,9 +80,24 @@ def _dtype_window(dtype: np.dtype) -> dict[str, int | float]:
 
 
 def _default_channels(channel_names: Sequence[str], dtype: np.dtype) -> list[Channel]:
+    """Emission-band-colored channels for readers that surface no wavelength.
+
+    Reaches the ADR-0007 palette via the dye-name substring fallback in
+    :func:`zarrmony.metadata.channel_colors.colors_for_channels` so a CZI/ND2/
+    OME-TIFF scene named "DAPI"/"GFP"/"mCherry"/"Cy5" lands in the same
+    colorblind slots as its LIF-source counterpart, and collisions are handled
+    identically. ``dtype`` drives the OMERO display window (see #50) so
+    uint16/uint32/float32 stores open with the full dtype range rather than
+    the bioio-ome-zarr 0–255 default.
+    """
+    from zarrmony.metadata.channel_colors import colors_for_channels
+
+    names = list(channel_names)
+    colors = colors_for_channels(names)
     window = _dtype_window(dtype)
     return [
-        Channel(label=name, color="ffffff", window=window) for name in channel_names
+        Channel(label=n, color=c, window=window)
+        for n, c in zip(names, colors, strict=True)
     ]
 
 

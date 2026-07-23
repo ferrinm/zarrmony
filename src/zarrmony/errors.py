@@ -104,3 +104,17 @@ class MosaicMergedSiblingWarning(UserWarning):
     stitcher's 1-pixel-overlap assumption (see
     :class:`MosaicStitchingWarning`).
     """
+
+
+class ChannelColorCollisionWarning(UserWarning):
+    """Two or more channels resolved to the same display color.
+
+    Emitted by ``zarrmony.metadata.channel_colors.assign_colors`` when the
+    emission-band scheme (ADR-0007) lands two channels in the same colorblind
+    slot — for example, two far-red dyes both mapping to white. The first
+    channel in acquisition order keeps its natural band color; later channels
+    round-robin through ``UNKNOWN_PALETTE`` skipping already-assigned colors
+    and the warning names both the reassigned channel and the color it would
+    have taken. Users who want deterministic per-channel colors pass
+    ``convert(..., channel_colors={<channel>: "<hex6>"})`` to override.
+    """
