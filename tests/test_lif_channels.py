@@ -34,9 +34,25 @@ def test_each_channel_has_exactly_the_contract_keys() -> None:
         "excitation_nm",
         "emission_low_nm",
         "emission_high_nm",
+        "lut_name",
     }
     for channel in _channels():
         assert set(channel) == expected
+
+
+def test_lut_names_come_from_channel_description() -> None:
+    # Surfaced verbatim from <ChannelDescription LUTName=".."> so
+    # channel_colors="source-file" can consult it via parse_source_color.
+    lut_names = [c["lut_name"] for c in _channels()]
+    assert lut_names == [
+        "Blue",
+        "Gradient (233,141,52)",
+        "Gray",
+        "Green",
+        "Red",
+        "Yellow",
+        "Magenta",
+    ]
 
 
 def test_dyes_have_vendor_prefix_stripped() -> None:

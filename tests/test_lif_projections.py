@@ -20,6 +20,7 @@ from ome_types import from_xml
 from tests.conftest import FakeReader
 from zarrmony import api as api_module
 from zarrmony import convert
+from zarrmony.errors import ChannelColorCollisionWarning
 from zarrmony.metadata.lif_channels import (
     channels_to_ome_channels,
     channels_to_omero,
@@ -278,3 +279,202 @@ def test_api_lif_with_garbage_scene_root_falls_back(
 
     store = out / "s.ome.zarr"
     assert (store / "OME" / "METADATA.ome.xml").exists()
+
+
+# --- ADR-0007: channel_colors="source-file" and dict overrides -------------
+
+
+def _one_channel_lif_xml(*, lut_name: str, dye: str = "DAPI (dsDNA bound)") -> str:
+    """Minimal LIF-shaped XML for a single-channel scene with a LUTName hint.
+
+    The parser needs a ChannelDescription with a LUTName attribute plus a
+    valid sequence block so excitation/emission can attach; only the LUTName
+    is load-bearing for source-file-mode tests but the rest matches a real
+    Leica scene closely enough to route through the normal extraction path.
+    """
+    return f"""<Element><Data><Image><ImageDescription><Channels>
+      <ChannelDescription LUTName="{lut_name}">
+        <ChannelProperty><Key>DyeName</Key><Value>Leica/{dye}</Value></ChannelProperty>
+        <ChannelProperty><Key>DetectorName</Key><Value>HyD S 1</Value></ChannelProperty>
+        <ChannelProperty><Key>SequentialSettingIndex</Key><Value>0</Value></ChannelProperty>
+      </ChannelDescription>
+    </Channels></ImageDescription>
+    <Attachment Name="HardwareSetting"><LDM_Block_Sequential><LDM_Block_Sequential_List>
+      <ATLConfocalSettingDefinition>
+        <Detector Channel="1" Name="HyD S 1" IsActive="1"/>
+        <LaserLineSetting LaserLine="405" IntensityDev="5"/>
+        <MultiBand Channel="1" LeftWorld="430" RightWorld="480"/>
+      </ATLConfocalSettingDefinition>
+    </LDM_Block_Sequential_List></LDM_Block_Sequential></Attachment>
+    </Image></Data></Element>"""
+
+
+def test_api_source_file_mode_uses_stored_lut_color(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``channel_colors="source-file"`` swaps in the LIF LUTName color.
+
+    Emission (430–480 midpoint 455) would be cyan under the default; the
+    file's ``LUTName="Red"`` overrides that to plain red — the whole point of
+    source-file mode is to trust the reader's stored per-channel hint over
+    our band scheme.
+    """
+    reader = FakeLifReader(
+        scene_xml=_one_channel_lif_xml(lut_name="Red"),
+        scenes=["scene0"],
+        dims="CYX",
+        shape=(1, 16, 16),
+    )
+    _install(monkeypatch, reader)
+    out = tmp_path / "out"
+
+    convert("/tmp/x.lif", out, pyramid_min_size=8, channel_colors="source-file")
+
+    store = out / "scene0.ome.zarr"
+    g = zarr.open_group(str(store), mode="r")
+    colors = [c["color"] for c in g.attrs["ome"]["omero"]["channels"]]
+    assert colors == ["ff0000"]  # LUTName="Red" → plain red, not band cyan
+
+
+def test_api_source_file_mode_falls_through_when_lut_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # No LUTName attribute → source-file mode has nothing to consume, so the
+    # emission-band scheme takes over (405 nm exc / 430–480 nm emission → cyan).
+    xml = _one_channel_lif_xml(lut_name="")  # empty LUTName is treated as absent
+    xml = xml.replace('LUTName=""', "")
+    reader = FakeLifReader(
+        scene_xml=xml,
+        scenes=["scene0"],
+        dims="CYX",
+        shape=(1, 16, 16),
+    )
+    _install(monkeypatch, reader)
+    out = tmp_path / "out"
+
+    convert("/tmp/x.lif", out, pyramid_min_size=8, channel_colors="source-file")
+
+    store = out / "scene0.ome.zarr"
+    g = zarr.open_group(str(store), mode="r")
+    colors = [c["color"] for c in g.attrs["ome"]["omero"]["channels"]]
+    # Emission midpoint 455 → deep-blue band → cyan.
+    assert colors == ["00ffff"]
+
+
+def test_api_dict_override_wins_over_band_scheme(tmp_path: Path, monkeypatch) -> None:
+    # A dict override keyed on the cleaned dye ("DAPI") beats the emission band.
+    reader = FakeLifReader(
+        scene_xml=_one_channel_lif_xml(lut_name="Blue"),
+        scenes=["scene0"],
+        dims="CYX",
+        shape=(1, 16, 16),
+    )
+    _install(monkeypatch, reader)
+    out = tmp_path / "out"
+
+    convert(
+        "/tmp/x.lif",
+        out,
+        pyramid_min_size=8,
+        channel_colors={"DAPI": "112233"},
+    )
+
+    store = out / "scene0.ome.zarr"
+    g = zarr.open_group(str(store), mode="r")
+    colors = [c["color"] for c in g.attrs["ome"]["omero"]["channels"]]
+    assert colors == ["112233"]
+
+
+def test_convert_rejects_unknown_channel_colors_string(tmp_path: Path) -> None:
+    # Any string other than "source-file" is an error at the API surface —
+    # matches the ChannelColorSpec type and prevents typo-silent fallthrough.
+    import pytest
+
+    with pytest.raises(ValueError, match="source-file"):
+        convert(
+            "/tmp/x.lif",
+            tmp_path / "out",
+            pyramid_min_size=8,
+            channel_colors="soure-file",  # typo
+        )
+
+
+def test_convert_preserves_channel_colors_verbatim_in_audit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The audit's ``config.channel_colors`` records exactly what the user passed.
+
+    ADR-0007: downstream consumers must be able to tell "user passed None"
+    apart from "user passed a dict" apart from "user passed 'source-file'";
+    the audit is the only durable record.
+    """
+    reader = FakeLifReader(
+        scene_xml=_one_channel_lif_xml(lut_name="Green"),
+        scenes=["scene0"],
+        dims="CYX",
+        shape=(1, 16, 16),
+    )
+    _install(monkeypatch, reader)
+
+    result = convert(
+        "/tmp/x.lif",
+        tmp_path / "out",
+        pyramid_min_size=8,
+        channel_colors="source-file",
+    )
+    audit_config = result["stores"][0]["config"]
+    assert audit_config["channel_colors"] == "source-file"
+
+
+# --- ADR-0007: collision handling on a real projection ---------------------
+
+
+def test_channels_to_omero_reallocates_collisions() -> None:
+    """Two far-red channels both landing on white → second-in-order moves.
+
+    Exercises the projection surface end-to-end (not just ``assign_colors``)
+    so any regression in the LIF-side wiring is caught.
+    """
+    import warnings
+
+    channels = [
+        {"dye": "AF647", "emission_low_nm": 663, "emission_high_nm": 688},
+        {"dye": "AF680", "emission_low_nm": 680, "emission_high_nm": 720},
+    ]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        omero = channels_to_omero(channels)
+    assert omero[0]["color"] == "ffffff"
+    assert omero[1]["color"] != "ffffff"
+    assert any(
+        isinstance(w.message, ChannelColorCollisionWarning) for w in caught
+    ), "collision warning must fire"
+
+
+# --- ADR-0007: default writer path (non-LIF) uses band scheme via dye name -
+
+
+def test_non_lif_reader_default_channels_use_band_scheme(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``writers/scene.py::_default_channels`` reaches the emission bands.
+
+    A non-LIF reader with recognizable dye names ('DAPI', 'GFP', 'mCherry',
+    'AF647') should land those channels on the colorblind palette via the
+    dye-name substring fallback — no all-white fallback like the old default.
+    """
+    reader = FakeReader(
+        scenes=["s"],
+        dims="CYX",
+        shape=(4, 16, 16),
+        channel_names=["DAPI", "GFP", "mCherry", "AF647"],
+    )
+    _install(monkeypatch, reader)
+    out = tmp_path / "out"
+
+    convert("/tmp/x.czi", out, pyramid_min_size=8)
+
+    store = out / "s.ome.zarr"
+    g = zarr.open_group(str(store), mode="r")
+    colors = [c["color"] for c in g.attrs["ome"]["omero"]["channels"]]
+    assert colors == ["00ffff", "00ff00", "ff00ff", "ffffff"]

@@ -268,7 +268,13 @@ def extract_channels(scene_xml: str) -> list[dict]:
 
     Returns one dict per image channel, in acquisition (document) order, each
     with exactly the keys ``index``, ``dye``, ``fluor``, ``detector``,
-    ``excitation_nm``, ``emission_low_nm``, ``emission_high_nm``.
+    ``excitation_nm``, ``emission_low_nm``, ``emission_high_nm``, ``lut_name``.
+
+    ``lut_name`` is the raw ``<ChannelDescription LUTName>`` attribute (e.g.
+    ``"Green"``, ``"Blue"``, ``"Gradient (233,141,52)"``) or ``None`` when
+    absent — surfaced so ``channel_colors="source-file"`` can consult the
+    source's stored channel color (see
+    :func:`zarrmony.metadata.channel_colors.parse_source_color`).
 
     Fail-closed: any parse failure, unsafe input, or missing structure yields
     ``[]``. Individual undeterminable fields degrade to ``None`` rather than
@@ -291,6 +297,7 @@ def extract_channels(scene_xml: str) -> list[dict]:
             physical_channel = (
                 detector_to_channel.get(detector_name) if detector_name else None
             )
+            lut_name = channel_desc.attrib.get("LUTName") or None
 
             # Resolve which real sequence acquired this channel.
             block = None
@@ -314,6 +321,7 @@ def extract_channels(scene_xml: str) -> list[dict]:
                     "excitation_nm": excitation,
                     "emission_low_nm": emission_low,
                     "emission_high_nm": emission_high,
+                    "lut_name": lut_name,
                 }
             )
         return channels
@@ -350,18 +358,6 @@ def _clean_dye(dye: str | None) -> str | None:
     return _TRAILING_PARENTHETICAL.sub("", dye).strip() or None
 
 
-def _color_for(cleaned_dye: str | None, index: int) -> str:
-    """Heuristic hex color for a (cleaned) dye, palette-fallback by index.
-
-    Imported locally so the bioio-portable core stays stdlib-only on import:
-    ``zarrmony.metadata.channel_colors`` won't exist once ``extract_channels``
-    is lifted into ``bioio-lif``, but these projections stay zarrmony-side.
-    """
-    from zarrmony.metadata.channel_colors import color_for_channel
-
-    return color_for_channel(cleaned_dye or "", index)
-
-
 def _omero_label(
     cleaned_dye: str | None, excitation_nm: int | float | None
 ) -> str | None:
@@ -375,44 +371,109 @@ def _omero_label(
     return None
 
 
-def channels_to_omero(channels: list[dict]) -> list[dict]:
+def _resolve_colors(
+    channels: list[dict],
+    *,
+    use_source_file: bool,
+    overrides: dict[str, str] | None,
+) -> list[str]:
+    """Batch-resolve colors for the extracted channel identities.
+
+    Wraps ``zarrmony.metadata.channel_colors.assign_colors`` with two LIF-
+    specific pieces the caller shouldn't have to know about:
+
+    - When ``use_source_file`` is True, feeds the extracted ``lut_name`` through
+      :func:`parse_source_color` so ``channel_colors="source-file"`` picks up
+      Leica's LAS X per-channel color hint (``LUTName="Green"`` etc.).
+    - Attaches the cleaned dye as the channel's ``name`` field so overrides
+      keyed on the display name (``"DAPI"``) resolve alongside the raw dye.
+    """
+    from zarrmony.metadata.channel_colors import assign_colors, parse_source_color
+
+    infos: list[dict] = []
+    for ch in channels:
+        cleaned = _clean_dye(ch.get("dye"))
+        infos.append(
+            {
+                # `name` is what the omero label uses (the cleaned dye), so it
+                # matches what a user sees and would key overrides on.
+                "name": cleaned,
+                "dye": ch.get("dye"),
+                "fluor": ch.get("fluor"),
+                "excitation_nm": ch.get("excitation_nm"),
+                "emission_low_nm": ch.get("emission_low_nm"),
+                "emission_high_nm": ch.get("emission_high_nm"),
+            }
+        )
+    source_file_colors: list[str | None] | None = None
+    if use_source_file:
+        source_file_colors = [parse_source_color(ch.get("lut_name")) for ch in channels]
+    return assign_colors(
+        infos, source_file_colors=source_file_colors, overrides=overrides
+    )
+
+
+def channels_to_omero(
+    channels: list[dict],
+    *,
+    overrides: dict[str, str] | None = None,
+    use_source_file: bool = False,
+) -> list[dict]:
     """Project identity dicts into omero display ``{"label", "color"}`` dicts.
 
     One dict per input channel, in order. ``label`` follows the dye/excitation
-    ladder (``None`` only when neither is known); ``color`` is the cleaned dye's
-    heuristic hex (falling back to the palette by index), so it is always a valid
-    six-hex string even for an unnamed channel.
+    ladder (``None`` only when neither is known); ``color`` comes from the
+    emission-band scheme (ADR-0007) with collision reallocation via
+    :func:`assign_colors`, so it is always a valid six-hex string even for an
+    unnamed channel and no two channels in the batch land on the same color
+    unless every palette slot is already taken.
+
+    ``overrides`` lets the caller thread ``convert(channel_colors=...)`` down;
+    ``use_source_file=True`` implements ``channel_colors="source-file"`` by
+    parsing the extracted ``LUTName`` per channel.
     """
+    colors = _resolve_colors(
+        channels, use_source_file=use_source_file, overrides=overrides
+    )
     out: list[dict] = []
     for index, ch in enumerate(channels):
         cleaned_dye = _clean_dye(ch.get("dye"))
         out.append(
             {
                 "label": _omero_label(cleaned_dye, ch.get("excitation_nm")),
-                "color": _color_for(cleaned_dye, index),
+                "color": colors[index],
             }
         )
     return out
 
 
-def channels_to_ome_channels(channels: list[dict]) -> list[Channel]:
+def channels_to_ome_channels(
+    channels: list[dict],
+    *,
+    overrides: dict[str, str] | None = None,
+    use_source_file: bool = False,
+) -> list[Channel]:
     """Project identity dicts into canonical ome_types ``Channel`` elements.
 
     One ``Channel`` per input channel: ``id=Channel:0:<index>``, ``name`` the
     cleaned dye, ``fluor`` the full (un-cleaned) dye, excitation/emission with
-    ``nm`` units, and the same hex ``color`` as :func:`channels_to_omero`. Any
-    field whose source is ``None`` is omitted entirely rather than set to a
+    ``nm`` units, and the same hex ``color`` as :func:`channels_to_omero` (same
+    :func:`assign_colors` batch, so the OME-XML and omero blocks never disagree).
+    Any field whose source is ``None`` is omitted entirely rather than set to a
     bogus value, so the element never claims wavelengths it doesn't have.
     """
     # Local import: the bioio-portable core stays stdlib-only on module import.
     from ome_types.model import Channel
 
+    colors = _resolve_colors(
+        channels, use_source_file=use_source_file, overrides=overrides
+    )
     out: list[Channel] = []
     for index, ch in enumerate(channels):
         cleaned_dye = _clean_dye(ch.get("dye"))
         fields: dict = {
             "id": f"Channel:0:{index}",
-            "color": _color_for(cleaned_dye, index),
+            "color": colors[index],
         }
         if cleaned_dye is not None:
             fields["name"] = cleaned_dye

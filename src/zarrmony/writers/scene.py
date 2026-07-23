@@ -60,7 +60,19 @@ def _physical_scales_for_dims(dims: Sequence[str], reader: Any) -> list[float]:
 
 
 def _default_channels(channel_names: Sequence[str]) -> list[Channel]:
-    return [Channel(label=name, color="ffffff") for name in channel_names]
+    """Emission-band-colored channels for readers that surface no wavelength.
+
+    Reaches the ADR-0007 palette via the dye-name substring fallback in
+    :func:`zarrmony.metadata.channel_colors.colors_for_channels` so a CZI/ND2/
+    OME-TIFF scene named "DAPI"/"GFP"/"mCherry"/"Cy5" lands in the same
+    colorblind slots as its LIF-source counterpart, and collisions are handled
+    identically.
+    """
+    from zarrmony.metadata.channel_colors import colors_for_channels
+
+    names = list(channel_names)
+    colors = colors_for_channels(names)
+    return [Channel(label=n, color=c) for n, c in zip(names, colors, strict=True)]
 
 
 def write_scene(
