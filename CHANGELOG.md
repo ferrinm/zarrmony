@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- OMERO display window (`omero.channels[i].window`) now spans the array's
+  dtype range instead of the hardcoded 0–255. Both `Channel(...)` construction
+  sites (`api._lif_scene_channels` and `writers.scene._default_channels`, plus
+  the shared `api._channels_for_scene` name-based path) pass `window=` derived
+  from the reader dtype: integer dtypes use `np.iinfo(min, max)` and float
+  dtypes use `0.0`/`1.0` (OMERO convention for normalized floats). uint16 /
+  uint32 / float32 stores no longer open black in napari and OMERO because the
+  display window was clamping intensities into an 8-bit band. `start` / `end`
+  mirror `min` / `max` — percentile-based auto-contrast is out of scope for
+  this fix. (#50)
+
 ## [0.8.0] - 2026-07-10
 
 ### Added

@@ -8,6 +8,7 @@ import json
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pytest
 import zarr
 from ome_types import from_xml
@@ -210,6 +211,44 @@ def test_per_scene_sanitizes_scene_names_in_dirnames(
     # Original (unsanitized) scene_name preserved in audit + OME-XML.
     by_name = {s["scene_name"]: s for s in result["stores"]}
     assert set(by_name) == {"a/b", "c d"}
+
+
+# ---------- omero display window matches array dtype (#50) ----------
+
+
+@pytest.mark.parametrize(
+    "dtype, expected_window",
+    [
+        (np.uint8, {"min": 0, "max": 255, "start": 0, "end": 255}),
+        (np.uint16, {"min": 0, "max": 65535, "start": 0, "end": 65535}),
+        (np.float32, {"min": 0.0, "max": 1.0, "start": 0.0, "end": 1.0}),
+    ],
+)
+def test_per_scene_omero_window_matches_reader_dtype(
+    tmp_path: Path, patched_reader, dtype, expected_window
+) -> None:
+    """The ``_channels_for_scene`` api path (named channels, non-LIF) must ship
+    an OMERO display window spanning the reader's dtype range — not the
+    bioio-ome-zarr ``Channel`` default of 0–255 that would make uint16 stores
+    open black. Regression guard for #50.
+    """
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCYX",
+        shape=(1, 2, 32, 32),
+        channel_names=["DAPI", "GFP"],
+        dtype=dtype,
+    )
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    convert("/tmp/x.czi", out, pyramid_min_size=8)
+
+    g = zarr.open_group(str(out / "s.ome.zarr"), mode="r")
+    channels = g.attrs["ome"]["omero"]["channels"]
+    assert len(channels) == 2
+    for c in channels:
+        assert c["window"] == expected_window
 
 
 # ---------- bf2raw mode (opt-in) ----------

@@ -18,9 +18,16 @@ import copy
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
+
 from zarrmony.api import _lif_scene_channels
 
 FIX = Path(__file__).parent / "fixtures" / "lif_confocal_7ch.xml"
+
+# Every double below mirrors bioio's ``Reader.dtype`` surface (uint16 is the
+# LIF acquisition default) — ``_lif_scene_channels`` reads it to size the
+# OMERO display window per array-dtype range (issue #50).
+_DTYPE = np.dtype(np.uint16)
 
 
 class _Xarr:
@@ -37,6 +44,7 @@ class _Raising:
     can't be located either way, so it must decline (not crash)."""
 
     xarray_dask_data = _Xarr(7)
+    dtype = _DTYPE
 
     @property
     def scene_root(self):
@@ -47,12 +55,14 @@ class _NonLif:
     """Neither ``scene_root`` nor ``metadata`` — a non-LIF reader."""
 
     xarray_dask_data = _Xarr(7)
+    dtype = _DTYPE
 
 
 class _Good:
     """Plate-shaped reader: ``scene_root`` returns the scene ``<Element>`` directly."""
 
     xarray_dask_data = _Xarr(7)
+    dtype = _DTYPE
 
     @property
     def scene_root(self):
@@ -61,6 +71,7 @@ class _Good:
 
 class _CountMismatch:
     xarray_dask_data = _Xarr(2)
+    dtype = _DTYPE
 
     @property
     def scene_root(self):
@@ -102,6 +113,7 @@ class _ConfocalReader:
         self._md = _two_scene_metadata() if have_metadata else None
         self._c = c
         self.current_scene_index = 0
+        self.dtype = _DTYPE
 
     @property
     def metadata(self):
