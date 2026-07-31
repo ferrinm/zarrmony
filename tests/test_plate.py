@@ -182,12 +182,63 @@ def test_plate_end_to_end_writes_spec_conformant_store(
     f0 = audit["fields"][0]
     assert f0["row"] == "A"
     assert f0["column"] == "01"
+    assert f0["well_id"] == "A01"
     assert f0["field_path"] == "A/01/0"
     assert f0["field_name"] == "A01-f0"
     assert f0["acquisition_id"] == 1
+    # Every field carries well_id in <row-letter><col-number> format (#66).
+    assert [f["well_id"] for f in audit["fields"]] == ["A01", "A02", "B01", "B02"]
+    # The synthetic layout has no plate_id — key must be absent, not None.
+    assert "plate_id" not in audit["plate"]
+    # ...and the NGFF on-disk plate attr never carries plate_id.
+    assert "plate_id" not in plate
 
     # Audit is also persisted at the plate root.
     assert root_zj["attributes"]["zarrmony"] == audit
+
+
+def test_plate_id_surfaces_in_audit_and_inspect_when_reader_supplies_it(
+    tmp_path: Path, patched_reader
+) -> None:
+    """When PlateLayout carries plate_id, it lands in audit.plate.plate_id and
+    inspect().plate_layout.plate_id. The on-disk NGFF plate attr never
+    carries it (not a spec key). Covers ADR-0008 / #66."""
+    layout = PlateLayout(
+        name="synthetic-2x2",
+        rows=["A", "B"],
+        columns=["01", "02"],
+        acquisitions=[Acquisition(id=1, name="acq", maximumfieldcount=1)],
+        fields=[
+            PlateField(scene_index=0, row="A", column="01", acquisition_id=1),
+            PlateField(scene_index=1, row="A", column="02", acquisition_id=1),
+            PlateField(scene_index=2, row="B", column="01", acquisition_id=1),
+            PlateField(scene_index=3, row="B", column="02", acquisition_id=1),
+        ],
+        plate_id="Plate-BARCODE-123",
+    )
+    reader = FakeReader(
+        scenes=["s0", "s1", "s2", "s3"],
+        dims="TCYX",
+        shape=(1, 1, 16, 16),
+        layout_hint="plate",
+        plate_layout=layout,
+    )
+    patched_reader(reader)
+    out = tmp_path / "plate.ome.zarr"
+
+    audit = convert("/tmp/fake.czi", out, layout="plate", pyramid_min_size=8)
+
+    assert audit["plate"]["plate_id"] == "Plate-BARCODE-123"
+
+    with open(out / "zarr.json") as f:
+        root_zj = json.load(f)
+    # Not stamped into the OME-NGFF plate attr — audit-only surface.
+    assert "plate_id" not in root_zj["attributes"]["ome"]["plate"]
+
+    from zarrmony import inspect as zm_inspect
+
+    info = zm_inspect("/tmp/fake.czi")
+    assert info["plate_layout"]["plate_id"] == "Plate-BARCODE-123"
 
 
 def test_plate_against_flat_reader_raises_layout_mismatch(

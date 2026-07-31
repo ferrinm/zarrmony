@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zarrmony._constants` module by both `writers/plate.py` and
   `writers/bf2raw.py`, eliminating the risk of drift between the two writer
   paths and the audit. (ADR-0008, #70)
+- Plate audits now carry `attrs.zarrmony.fields[i].well_id` — the
+  concatenated `<row-letter><col-number>` well identifier (e.g. `"A03"`,
+  `"B12"`) matching Aperture BigQuery's expected `well_id` column format. Also
+  surfaces `attrs.zarrmony.plate.plate_id` and `inspect().plate_layout.plate_id`
+  when the plate reader populates `PlateLayout.plate_id` (a new optional
+  field on the dataclass). Missing `plate_id` → key omitted (no `null`);
+  missing extraction path in a reader → key absent. The NGFF-spec `attrs.ome.plate`
+  block does NOT gain `plate_id` (audit-only surface, since the NGFF 0.5 plate
+  schema does not define such a key). No built-in reader supplies `plate_id`
+  today — external plate reader adapters (Opera Phenix etc.) populate it via
+  `PlateLayout(plate_id=...)`. (ADR-0008, #66)
 
 ### Changed
 

@@ -205,11 +205,17 @@ def summarize_plate_layout(plate_layout: PlateLayout) -> dict[str, Any]:
 
     Mirrors the on-disk ``attrs.ome.plate`` and audit ``plate`` shape, derived
     purely from the layout (no pixel I/O). Used by :func:`zarrmony.inspect` to
-    surface plate context before a conversion runs.
+    surface plate context before a conversion runs. When
+    ``plate_layout.plate_id`` is populated, adds a ``plate_id`` key to the
+    returned dict (audit-only surface per ADR-0008 / #66; omitted when the
+    reader could not extract it).
     """
     well_groups = _group_fields_by_well(plate_layout)
     well_paths = [(r, c, len(fields)) for (r, c, fields) in well_groups]
-    return _build_plate_attr(plate_layout, well_paths)
+    plate_attr = _build_plate_attr(plate_layout, well_paths)
+    if plate_layout.plate_id is not None:
+        plate_attr["plate_id"] = plate_layout.plate_id
+    return plate_attr
 
 
 def _build_plate_attr(
@@ -391,6 +397,7 @@ def write_plate(
                 {
                     "row": row,
                     "column": column,
+                    "well_id": f"{row}{column}",
                     "field_path": field_path,
                     "field_name": f.field_name,
                     "acquisition_id": f.acquisition_id,
@@ -415,6 +422,15 @@ def write_plate(
     root = open_root_group(store_str, mode="a")
     root.attrs["ome"] = {"version": NGFF_VERSION, "plate": plate_attr}
 
+    # Audit-only plate dict — same shape as the on-disk NGFF plate attrs, plus
+    # the ADR-0008 / #66 `plate_id` key when the reader extracted it. The NGFF
+    # 0.5 plate schema does not define `plate_id`, so we don't stamp it into
+    # `attrs.ome.plate` (extra keys can trip strict validators). Consumers read
+    # the plate identifier from the audit block instead.
+    plate_attr_audit = dict(plate_attr)
+    if plate_layout.plate_id is not None:
+        plate_attr_audit["plate_id"] = plate_layout.plate_id
+
     for row, column, well_fields in well_groups:
         # Row group: structural only — no attrs per spec.
         root.require_group(row)
@@ -435,7 +451,7 @@ def write_plate(
             )
         _write_text(f"{store_str}/OME/source/{source_xml_filename}", source_xml)
 
-    return field_records, plate_attr
+    return field_records, plate_attr_audit
 
 
 __all__ = [

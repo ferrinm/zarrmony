@@ -56,6 +56,13 @@ class PlateLayout:
     ``rows`` and ``columns`` MUST list every physical row/column of the plate
     even when only some are imaged — sparse-plate semantics are the reader's
     responsibility (see ADR-0004 §Consequences).
+
+    ``plate_id`` is the source-file's plate identifier (CZI ``Plate`` element,
+    Opera Phenix plate barcode, etc.). Populated by the reader when the source
+    encodes it; ``None`` otherwise. Surfaces in the audit's ``plate`` block as
+    ``plate_id`` (per ADR-0008 / #66) and in ``inspect().plate_layout``; the
+    on-disk OME-NGFF ``attrs.ome.plate`` block does NOT carry it because the
+    NGFF 0.5 plate schema does not define such a key.
     """
 
     name: str
@@ -63,6 +70,7 @@ class PlateLayout:
     columns: list[str]
     acquisitions: list[Acquisition] = field(default_factory=list)
     fields: list[PlateField] = field(default_factory=list)
+    plate_id: str | None = None
 
 
 __all__ = ["Acquisition", "PlateField", "PlateLayout"]
