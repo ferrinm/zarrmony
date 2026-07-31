@@ -19,7 +19,18 @@ By default (`--layout auto`) the writer is chosen from the reader's `layout_hint
 pip install zarrmony
 ```
 
-Optional extras:
+### Readers
+
+Zarrmony dispatches to a reader plugin per input format. They come in three tiers:
+
+- **Built-in** (bundled by default): CZI, LIF, ND2.
+- **Optional extras** in this repo (opt-in via `pip install "zarrmony[<extra>]"`): OME-TIFF via the `ome-tiff` extra.
+- **External plugins** (separate PyPI distributions, entry-point registered):
+  - [`zarrmony-phenix`](https://github.com/ferrinm/zarrmony-phenix) — Opera Phenix (wraps `pyphenix.OperaPhenixReader`) — `pip install zarrmony-phenix`
+  - [`zarrmony-blaze`](https://github.com/ferrinm/zarrmony-blaze) — Miltenyi UltraMicroscope Blaze (MACS iQ-processed) — `pip install zarrmony-blaze`
+  - [`zarrmony-snouty`](https://github.com/ferrinm/zarrmony-snouty) — Snouty single-objective light-sheet — `pip install zarrmony-snouty`
+
+### Extras
 
 | Extra      | Adds                     | When you need it               |
 | ---------- | ------------------------ | ------------------------------ |
@@ -28,8 +39,6 @@ Optional extras:
 | `ome-tiff` | `bioio-ome-tiff`         | Reading OME-TIFF input         |
 | `all`      | All of the above         |                                |
 | `dev`      | pytest, ruff, pre-commit | Contributing                   |
-
-CZI, LIF, and ND2 reader plugins are included by default.
 
 ## Usage
 
