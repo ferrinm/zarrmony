@@ -21,6 +21,7 @@ def make_synth_ome_tiff(
     shape: tuple[int, ...] = (1, 2, 64, 64),
     channel_names: Sequence[str] | None = None,
     pixel_size_um: float = 0.5,
+    acquisition_date: str | None = None,
 ) -> Path:
     """Write a synthetic OME-TIFF at ``path``.
 
@@ -53,6 +54,7 @@ def make_synth_ome_tiff(
                 "axes": dims,
                 "Name": f"scene_{scene_idx}",
                 "Channel": {"Name": list(channel_names)} if channel_names else None,
+                "AcquisitionDate": acquisition_date,
                 **physical_meta,
             }
             metadata = {k: v for k, v in metadata.items() if v is not None}

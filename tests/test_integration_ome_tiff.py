@@ -94,6 +94,33 @@ def test_per_scene_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     assert [c["label"] for c in omero_channels] == ["DAPI", "GFP"]
 
 
+def test_per_scene_ome_tiff_surfaces_acquisition_date_from_ome_metadata(
+    tmp_path: Path,
+) -> None:
+    """ADR-0008 / #65: OME-TIFF's ``AcquisitionDate`` is projected into
+    ``per_scene[i].acquisition.date`` via the OME-metadata fallback."""
+    src = make_synth_ome_tiff(
+        tmp_path / "with_date.ome.tif",
+        n_scenes=1,
+        dims="TCYX",
+        shape=(1, 1, 16, 16),
+        channel_names=["DAPI"],
+        acquisition_date="2026-05-15T12:00:00",
+    )
+    out = tmp_path / "out"
+
+    result = convert(str(src), out, pyramid_min_size=8)
+
+    audit = result["stores"][0]
+    acquisition = audit["per_scene"][0]["acquisition"]
+    # ISO 8601 string, parses to the expected instant.
+    from datetime import datetime as _dt
+
+    assert _dt.fromisoformat(acquisition["date"]) == _dt.fromisoformat(
+        "2026-05-15T12:00:00"
+    )
+
+
 def test_per_scene_multi_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     src = make_synth_ome_tiff(
         tmp_path / "multi.ome.tif",

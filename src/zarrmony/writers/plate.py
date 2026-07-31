@@ -277,6 +277,8 @@ def write_plate(
     contrast_percentile: float | None = None,
     ome_image_for_field: Any = None,
     audit_channels_for_field: Any = None,
+    audit_objective_for_field: Any = None,
+    audit_acquisition_for_field: Any = None,
     ome_xml_builder: Any = None,
     source_xml: str | None = None,
     source_xml_filename: str | None = None,
@@ -300,6 +302,11 @@ def write_plate(
     ``scene_record["channels"]``. Kept as a callback so the writer does not
     depend on ``api.py``'s reader-vs-LIF dispatch — same inversion pattern as
     ``ome_image_for_field``.
+
+    ``audit_objective_for_field`` / ``audit_acquisition_for_field`` are the
+    ADR-0008 / #63–#65 siblings — one callback each, both taking a
+    ``scene_index`` and returning the ADR-shaped dict (or ``None`` when the
+    reader surfaced nothing).
 
     ``lif_mosaic="grid-stitch"`` reassembles each mosaic FOV's canvas from
     per-tile ``FieldX``/``FieldY`` indices before writing (butt joints), so
@@ -416,6 +423,14 @@ def write_plate(
                 audit_channels = audit_channels_for_field(f.scene_index)
                 if audit_channels is not None:
                     scene_record["channels"] = audit_channels
+            if audit_objective_for_field is not None:
+                audit_objective = audit_objective_for_field(f.scene_index)
+                if audit_objective:
+                    scene_record["objective"] = audit_objective
+            if audit_acquisition_for_field is not None:
+                audit_acquisition = audit_acquisition_for_field(f.scene_index)
+                if audit_acquisition:
+                    scene_record["acquisition"] = audit_acquisition
             if grid_stitch_this_fov:
                 scene_record["mosaic"] = _grid_stitch_fov_mosaic_summary(
                     grid_tile_layout,

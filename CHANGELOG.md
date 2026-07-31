@@ -34,6 +34,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used by all reader paths. `zarrmony.metadata.lif_channels.resolve_channel_colors`
   is the renamed / promoted public form of the previously-internal color
   batch resolver, so the audit's `color` value matches what the writer wrote.
+- Non-LIF per-scene objective + acquisition extraction (ADR-0008 / #63, #64,
+  #65). CZI / ND2 / OME-TIFF / any other bioio reader whose OME surface
+  exposes `instruments[0].objectives` / `instruments[0].microscope` /
+  `images[i].acquisition_date` now populates the same `objective` and
+  `acquisition` audit blocks the LIF path already emitted. Shared
+  extractor module: `zarrmony.metadata.ome_extractors` (public
+  `extract_objective_from_ome`, `extract_acquisition_from_ome`) — walks
+  `reader.ome_metadata` in fail-safe mode, returning the ADR-shaped dict
+  or `None`. `microscope` combines `Manufacturer` + `Model` into
+  `"Nikon Ti2"`-style strings; `microscope_serial` comes from the OME
+  `Microscope.serial_number`. `imaging_method` is deliberately NOT
+  populated by the shared OME projection — OME has no first-class
+  modality field; format-specific tokens ride on the LIF-only surface for
+  now. Also extends `inspect()` so pre-flight tooling sees the same
+  acquisition block via the OME fallback for non-LIF readers. (#63, #64, #65)
 - LIF per-scene acquisition/instrument extraction (ADR-0008 / #62). Every
   LIF scene's audit and `inspect()` output now surfaces an
   `acquisition: {date?, microscope?, microscope_serial?, imaging_method?}`

@@ -47,6 +47,10 @@ from zarrmony.metadata.lif_tiles import (
     stage_overlap_discrepancy,
 )
 from zarrmony.metadata.objective import extract_objective
+from zarrmony.metadata.ome_extractors import (
+    extract_acquisition_from_ome,
+    extract_objective_from_ome,
+)
 from zarrmony.naming import resolve_scene_dirnames, sanitize_scene_name
 from zarrmony.readers.default import derive_bioio_distribution
 from zarrmony.readers.plugin import ReaderPlugin, get_reader
@@ -350,6 +354,47 @@ def _lif_scene_channels(
         return extracted, omero_channels, objective, acquisition
     except Exception:  # noqa: BLE001 — never break a conversion over metadata
         return None, None, None, None
+
+
+def _audit_objective_for_scene(
+    reader: Any,
+    lif_objective: dict | None,
+    scene_index: int,
+) -> dict | None:
+    """LIF-extracted objective wins; else project from ``reader.ome_metadata``.
+
+    Covers ADR-0004 (LIF) + ADR-0008 / #63–#65 (CZI, ND2, default). Fail-safe:
+    any exception at either tier yields ``None`` so the scene's objective key
+    is simply absent.
+    """
+    if lif_objective:
+        return lif_objective
+    try:
+        ome = reader.ome_metadata
+    except Exception:  # noqa: BLE001 — heterogeneous bioio errors
+        return None
+    return extract_objective_from_ome(ome)
+
+
+def _audit_acquisition_for_scene(
+    reader: Any,
+    lif_acquisition: dict | None,
+    scene_index: int,
+) -> dict | None:
+    """LIF-extracted acquisition wins; else project from ``reader.ome_metadata``.
+
+    Covers ADR-0008 / #62 (LIF) + #63–#65 (CZI, ND2, default). OME cannot
+    surface ``imaging_method`` on its own (no first-class OME modality field),
+    so a scene whose reader only exposes OME metadata typically gets
+    ``{date?, microscope?, microscope_serial?}`` without ``imaging_method``.
+    """
+    if lif_acquisition:
+        return lif_acquisition
+    try:
+        ome = reader.ome_metadata
+    except Exception:  # noqa: BLE001 — heterogeneous bioio errors
+        return None
+    return extract_acquisition_from_ome(ome, image_index=0)
 
 
 def _audit_channels_for_scene(
@@ -1099,16 +1144,23 @@ def _convert_per_scene(
                 )
                 ome_image = _stub_image(scene_index, scene_name, scene_record)
 
-        # LIF objective (issue #52): audit gets the raw dict; OME-XML gets a
-        # top-level <Instrument><Objective/></Instrument> plus a per-image
-        # <ObjectiveSettings/> reference. Both are omitted for non-LIF readers
-        # and for LIF scenes that surfaced no objective info at all.
-        if lif_objective:
-            scene_record["objective"] = lif_objective
-        # ADR-0008 / #62: per-scene acquisition/instrument dict. Same rule as
-        # objective — audit-only, key omitted when the LIF extractor found nothing.
-        if lif_acquisition:
-            scene_record["acquisition"] = lif_acquisition
+        # ADR-0004 (#52) + ADR-0008 (#63–#65): the objective audit dict comes
+        # from the LIF extractor when available, else from
+        # `reader.ome_metadata.instruments[0].objectives[0]` for CZI / ND2 /
+        # OME-TIFF / default readers. The OME-XML `<Instrument><Objective/>`
+        # projection stays LIF-only (`_instrument_for_objective`) — non-LIF
+        # readers already carry their objective in `reader.ome_metadata` and
+        # the writer's OME-XML round-trips it.
+        audit_objective = _audit_objective_for_scene(reader, lif_objective, scene_index)
+        if audit_objective:
+            scene_record["objective"] = audit_objective
+        # ADR-0008 / #62 + #63–#65: acquisition/instrument dict, same
+        # LIF-then-OME fallback.
+        audit_acquisition = _audit_acquisition_for_scene(
+            reader, lif_acquisition, scene_index
+        )
+        if audit_acquisition:
+            scene_record["acquisition"] = audit_acquisition
         instrument = _instrument_for_objective(lif_objective, ome_image, scene_index)
 
         # ADR-0008 / #61: per-scene channel identity block, uniform across
@@ -1350,16 +1402,16 @@ def _convert_per_tile_scene(
             position_z_um=pos_z_um,
         )
 
-        # LIF objective (issue #52): the scene's objective is shared across
-        # all tiles; every tile store gets its own audit copy and its own
-        # <Instrument> so any tile store remains fully self-describing.
-        if lif_objective:
-            scene_record["objective"] = lif_objective
-        # ADR-0008 / #62: acquisition is scene-scoped too; every tile shares
-        # the scene's acquisition dict so a stray tile store still describes
-        # its acquisition context.
-        if lif_acquisition:
-            scene_record["acquisition"] = lif_acquisition
+        # Per-tile is LIF-only in practice, but keep the same LIF-then-OME
+        # fallback so any future non-LIF per-tile use has the audit surface.
+        audit_objective = _audit_objective_for_scene(reader, lif_objective, scene_index)
+        if audit_objective:
+            scene_record["objective"] = audit_objective
+        audit_acquisition = _audit_acquisition_for_scene(
+            reader, lif_acquisition, scene_index
+        )
+        if audit_acquisition:
+            scene_record["acquisition"] = audit_acquisition
         instrument = _instrument_for_objective(lif_objective, ome_image, scene_index)
 
         # ADR-0008 / #61: channel identity is scene-scoped; each tile store
@@ -1473,6 +1525,13 @@ def _convert_bf2raw(
         audit_channels = _audit_channels_for_scene(reader, None, channel_colors)
         if audit_channels is not None:
             scene_record["channels"] = audit_channels
+        # ADR-0008 / #63–#65: objective + acquisition from `reader.ome_metadata`.
+        audit_objective = _audit_objective_for_scene(reader, None, scene_index)
+        if audit_objective:
+            scene_record["objective"] = audit_objective
+        audit_acquisition = _audit_acquisition_for_scene(reader, None, scene_index)
+        if audit_acquisition:
+            scene_record["acquisition"] = audit_acquisition
 
         per_scene_records.append(scene_record)
         series_paths.append(str(scene_index))
@@ -1574,6 +1633,16 @@ def _convert_plate(
         lif_extracted, _, _, _ = _lif_scene_channels(reader, channel_colors)
         return _audit_channels_for_scene(reader, lif_extracted, channel_colors)
 
+    def _audit_objective_for_field(scene_index: int) -> dict | None:
+        # ADR-0004 (LIF) + ADR-0008 / #63–#65 (CZI/ND2/default) objective.
+        _, _, lif_objective, _ = _lif_scene_channels(reader, channel_colors)
+        return _audit_objective_for_scene(reader, lif_objective, scene_index)
+
+    def _audit_acquisition_for_field(scene_index: int) -> dict | None:
+        # ADR-0008 / #62 (LIF) + #63–#65 (CZI/ND2/default) acquisition.
+        _, _, _, lif_acquisition = _lif_scene_channels(reader, channel_colors)
+        return _audit_acquisition_for_scene(reader, lif_acquisition, scene_index)
+
     source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
     source_filename = (
         _source_xml_filename(input_path) if source_xml is not None else None
@@ -1589,6 +1658,8 @@ def _convert_plate(
         contrast_percentile=contrast_percentile,
         ome_image_for_field=_ome_image_for_field,
         audit_channels_for_field=_audit_channels_for_field,
+        audit_objective_for_field=_audit_objective_for_field,
+        audit_acquisition_for_field=_audit_acquisition_for_field,
         ome_xml_builder=build_combined_ome_xml,
         source_xml=source_xml,
         source_xml_filename=source_filename,
@@ -1653,15 +1724,24 @@ def inspect(input_path: str | Path) -> dict:
                 else None
             ),
         }
-        # ADR-0008 / #62: surface the LIF acquisition block in inspect() so
-        # pre-flight tooling can see it without paying for a full convert.
-        # Non-LIF readers (no scene_xml) skip cleanly. Same fail-safe as
-        # the convert path — metadata never crashes inspect().
+        # ADR-0008 / #62 (+#63–#65): surface the acquisition block in
+        # inspect() so pre-flight tooling can see it without paying for a
+        # full convert. LIF path uses the raw scene XML extractor; non-LIF
+        # falls back to `reader.ome_metadata`. Same fail-safe as the convert
+        # path — metadata never crashes inspect().
+        acquisition: dict | None = None
         scene_xml = find_scene_xml(reader)
         if scene_xml is not None:
             acquisition = extract_acquisition(scene_xml)
-            if acquisition:
-                scene_info["acquisition"] = acquisition
+        if not acquisition:
+            try:
+                ome = reader.ome_metadata
+            except Exception:  # noqa: BLE001 — heterogeneous bioio errors
+                ome = None
+            if ome is not None:
+                acquisition = extract_acquisition_from_ome(ome, image_index=0)
+        if acquisition:
+            scene_info["acquisition"] = acquisition
         scenes_info.append(scene_info)
     input_bytes = size_on_disk(input_path)
     info: dict[str, Any] = {
