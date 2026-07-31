@@ -15,9 +15,9 @@ from pathlib import Path
 
 import fsspec
 
+from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import open_root_group
 
-NGFF_VERSION = "0.5"
 BF2RAW_LAYOUT_VERSION = 3
 
 

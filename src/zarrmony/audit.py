@@ -3,11 +3,13 @@
 Every conversion writes ``attrs["zarrmony"]`` at the root of the output store,
 recording: zarrmony version, the winning reader plugin (name, distribution,
 source, version, match score), the input file's path / size / mtime / optional
-SHA256, the conversion config the user passed, started/finished timestamps,
-per-scene records returned by ``write_scene`` (which for LIF conversions may
-carry an ``objective`` sub-dict with ``nominal_magnification`` /
-``numerical_aperture`` / ``immersion`` / ``model`` / ``working_distance_um``),
-and any extractor-failure warnings.
+SHA256, the ``output`` block declaring the writer's OME-NGFF version (ADR-0008,
+one stable audit path so BigQuery ingest never hardcodes ``"0.5"``), the
+conversion config the user passed, started/finished timestamps, per-scene
+records returned by ``write_scene`` (which for LIF conversions may carry an
+``objective`` sub-dict with ``nominal_magnification`` / ``numerical_aperture``
+/ ``immersion`` / ``model`` / ``working_distance_um``), and any
+extractor-failure warnings.
 
 Stored as a top-level ``attrs.zarrmony`` (not under ``attrs.ome``) to keep the
 spec-defined namespace clean. ``audit_schema_version`` is bumped whenever this
@@ -24,15 +26,21 @@ from pathlib import Path
 from typing import Any
 
 from zarrmony import __version__
+from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
+# 8: adds top-level ``output: {ome_ngff_version}`` block sourced from the
+#    writer's ``NGFF_VERSION`` constant so downstream consumers (Aperture
+#    BigQuery ingest) have one stable audit path for the NGFF version instead
+#    of hardcoding ``"0.5"`` or reading the OME-NGFF ``attrs.ome.version``.
+#    Purely additive: consumers pinned to 7 can widen their pin. (#70, ADR-0008)
 # 7: adds optional ``per_scene[i].objective`` (nominal_magnification /
 #    numerical_aperture / immersion / model / working_distance_um) from the
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
-AUDIT_SCHEMA_VERSION = 7
+AUDIT_SCHEMA_VERSION = 8
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:
@@ -120,6 +128,7 @@ def build_audit_record(
             reader_plugin, match_score, distribution
         ),
         "input": _file_forensics(input_path, checksum=checksum),
+        "output": {"ome_ngff_version": NGFF_VERSION},
         "config": config,
         "conversion_started_at": started_at.isoformat(),
         "conversion_finished_at": finished_at.isoformat(),

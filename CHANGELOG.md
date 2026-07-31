@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Top-level `attrs.zarrmony.output` audit block, initially with a single key
+  `ome_ngff_version = "0.5"`, sourced from the writer's `NGFF_VERSION`
+  constant. Gives Aperture BigQuery ingest a single stable audit path for the
+  NGFF version instead of hardcoding `"0.5"` or reading a different
+  attribute. `NGFF_VERSION` is now imported from a shared
+  `zarrmony._constants` module by both `writers/plate.py` and
+  `writers/bf2raw.py`, eliminating the risk of drift between the two writer
+  paths and the audit. (ADR-0008, #70)
+
+### Changed
+
+- `AUDIT_SCHEMA_VERSION` bumped from `7` → `8` to signal the new top-level
+  `output` block. Reading old stores is unaffected (the field is additive);
+  consumers pinned to schema `7` should widen their pin. (#70)
+
 ## [0.9.0] - 2026-07-23
 
 ### Added

@@ -173,6 +173,7 @@ def test_plate_end_to_end_writes_spec_conformant_store(
     # ---- audit (return value == on-disk attrs.zarrmony) ----
     assert audit["audit_schema_version"] == AUDIT_SCHEMA_VERSION
     assert audit["layout"] == "plate"
+    assert audit["output"] == {"ome_ngff_version": "0.5"}
     assert "per_scene" not in audit
     assert len(audit["fields"]) == 4
     assert audit["plate"]["name"] == "synthetic-2x2"

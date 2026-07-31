@@ -160,6 +160,21 @@ def test_build_audit_record_includes_per_scene_and_warnings(tmp_path: Path) -> N
     assert audit["metadata_warnings"] == warnings
 
 
+def test_build_audit_record_carries_output_ome_ngff_version(tmp_path: Path) -> None:
+    """ADR-0008 / #70: writer's NGFF version is a first-class audit surface."""
+    src = tmp_path / "x.czi"
+    src.write_bytes(b"")
+    audit = build_audit_record(
+        input_path=src,
+        reader_plugin=_fake_plugin(),
+        match_score=100,
+        config={},
+        started_at=_ts("2026-05-02T10:00:00"),
+        finished_at=_ts("2026-05-02T10:00:01"),
+    )
+    assert audit["output"] == {"ome_ngff_version": "0.5"}
+
+
 def test_build_audit_record_reader_plugin_has_exact_keys(tmp_path: Path) -> None:
     """Pin the new reader_plugin dict shape per ADR-0001 / Q7."""
     src = tmp_path / "x.czi"

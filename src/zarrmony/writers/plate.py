@@ -24,6 +24,7 @@ import fsspec
 from bioio_ome_zarr.writers import Channel
 from ome_types.model import Image
 
+from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import open_root_group
 from zarrmony.errors import LayoutDowngradeWarning, PlateLayoutError
 from zarrmony.metadata._lif_scene import find_scene_xml
@@ -36,8 +37,6 @@ from zarrmony.metadata.lif_tiles import (
 )
 from zarrmony.readers.plate import PlateField, PlateLayout
 from zarrmony.writers.scene import _dtype_window, write_scene
-
-NGFF_VERSION = "0.5"
 
 _WELL_KEY_RE = re.compile(r"([A-Za-z]+)(\d+)")
 
