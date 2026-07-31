@@ -30,11 +30,21 @@ from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
-# 8: adds top-level ``output: {ome_ngff_version}`` block sourced from the
-#    writer's ``NGFF_VERSION`` constant so downstream consumers (Aperture
-#    BigQuery ingest) have one stable audit path for the NGFF version instead
-#    of hardcoding ``"0.5"`` or reading the OME-NGFF ``attrs.ome.version``.
-#    Purely additive: consumers pinned to 7 can widen their pin. (#70, ADR-0008)
+# 8: adds three additive audit surfaces per ADR-0008:
+#    - top-level ``output: {ome_ngff_version}`` block sourced from the writer's
+#      ``NGFF_VERSION`` constant so downstream consumers (Aperture BigQuery
+#      ingest) have one stable audit path for the NGFF version instead of
+#      hardcoding ``"0.5"`` or reading the OME-NGFF ``attrs.ome.version``. (#70)
+#    - per-scene / per-field ``channels`` list carrying the ADR-0008 9-key
+#      channel identity shape (index / name / dye / fluor / excitation_nm /
+#      emission_low_nm / emission_high_nm / color / lut_name). (#61)
+#    - per-scene / per-field ``acquisition`` block carrying date, microscope,
+#      microscope_serial, and imaging_method. LIF-only initially; CZI / ND2 /
+#      default follow in #63–#65. (#62)
+#    - per-field ``well_id`` and audit-only ``plate.plate_id`` in plate audits.
+#      (#66)
+#    All keys are additive and optional — consumers pinned to 7 can widen
+#    their pin without changes.
 # 7: adds optional ``per_scene[i].objective`` (nominal_magnification /
 #    numerical_aperture / immersion / model / working_distance_um) from the
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no

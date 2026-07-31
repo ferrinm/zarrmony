@@ -28,6 +28,7 @@ from zarrmony.errors import (
     ZarrmonyError,
 )
 from zarrmony.metadata._lif_scene import find_scene_xml
+from zarrmony.metadata.acquisition import extract_acquisition
 from zarrmony.metadata.audit_channels import from_lif_extracted, from_ome_channels
 from zarrmony.metadata.channel_colors import colors_for_channels
 from zarrmony.metadata.lif_channels import (
@@ -272,10 +273,10 @@ def _scene_channel_count(reader: Any) -> int:
 def _lif_scene_channels(
     reader: Any,
     channel_colors: ChannelColorSpec = None,
-) -> tuple[list[dict] | None, list[Channel] | None, dict | None]:
+) -> tuple[list[dict] | None, list[Channel] | None, dict | None, dict | None]:
     """The LIF-vs-other decision, in one place.
 
-    Returns ``(extracted, omero_channels, objective)``:
+    Returns ``(extracted, omero_channels, objective, acquisition)``:
 
     * ``extracted`` / ``omero_channels`` — per-channel identity dicts + the
       display label/color list. Both are populated only when ``reader`` is a
@@ -292,11 +293,18 @@ def _lif_scene_channels(
       immersion, model, working distance) are omitted rather than nulled. The
       audit records it under ``per_scene[i].objective`` and the per-scene
       writer projects it into a top-level ``<Instrument><Objective/></Instrument>``.
+    * ``acquisition`` — the LIF acquisition/instrument dict (issue #62 /
+      ADR-0008), independently derived from the same scene XML. Populated
+      whenever :func:`~zarrmony.metadata.acquisition.extract_acquisition`
+      returns a non-empty dict. Carries any subset of
+      ``{date, microscope, microscope_serial, imaging_method}`` — same
+      omit-on-absent rule as ``objective``.
 
-    Objective extraction is deliberately independent of the channel count
-    check: a LIF scene with a garbled channel list (mismatched SizeC) still
-    has a valid objective, and the audit shouldn't drop it just because we
-    also can't determine the fluorophores. Both extractors are fail-closed.
+    Objective and acquisition extraction are deliberately independent of the
+    channel count check: a LIF scene with a garbled channel list (mismatched
+    SizeC) still has a valid objective and acquisition date, and the audit
+    shouldn't drop them just because we also can't determine the fluorophores.
+    All three extractors are fail-closed.
 
     Locating the scene XML is two-tier (see :func:`find_scene_xml`):
 
@@ -314,20 +322,21 @@ def _lif_scene_channels(
     such coupling.
 
     Fail-safe: any failure — not a LIF reader, no/garbage scene XML, or any
-    unexpected reader-surface error — returns ``(None, None, None)`` so
+    unexpected reader-surface error — returns ``(None, None, None, None)`` so
     callers fall back cleanly to the existing name-based path. Metadata never
     crashes a conversion.
     """
     try:
         scene_xml = find_scene_xml(reader)
         if scene_xml is None:
-            return None, None, None
+            return None, None, None, None
         extracted = extract_channels(scene_xml)
         objective = extract_objective(scene_xml)
+        acquisition = extract_acquisition(scene_xml)
         if not extracted or len(extracted) != _scene_channel_count(reader):
             # Channel extraction fell through the count check, but the
-            # objective is decoupled from SizeC — still surface it.
-            return None, None, objective
+            # objective + acquisition are decoupled from SizeC — still surface them.
+            return None, None, objective, acquisition
         overrides, use_source_file = _split_channel_colors(channel_colors)
         window = _dtype_window(reader.dtype)
         omero_channels = [
@@ -338,9 +347,9 @@ def _lif_scene_channels(
                 use_source_file=use_source_file,
             )
         ]
-        return extracted, omero_channels, objective
+        return extracted, omero_channels, objective, acquisition
     except Exception:  # noqa: BLE001 — never break a conversion over metadata
-        return None, None, None
+        return None, None, None, None
 
 
 def _audit_channels_for_scene(
@@ -1003,9 +1012,12 @@ def _convert_per_scene(
         # and source-file color hints apply uniformly. ``lif_objective`` is
         # decoupled from the channel-count check so a scene with a garbled
         # channel list still surfaces its objective.
-        lif_extracted, lif_omero_channels, lif_objective = _lif_scene_channels(
-            reader, channel_colors
-        )
+        (
+            lif_extracted,
+            lif_omero_channels,
+            lif_objective,
+            lif_acquisition,
+        ) = _lif_scene_channels(reader, channel_colors)
         channels = (
             lif_omero_channels
             if lif_omero_channels is not None
@@ -1093,6 +1105,10 @@ def _convert_per_scene(
         # and for LIF scenes that surfaced no objective info at all.
         if lif_objective:
             scene_record["objective"] = lif_objective
+        # ADR-0008 / #62: per-scene acquisition/instrument dict. Same rule as
+        # objective — audit-only, key omitted when the LIF extractor found nothing.
+        if lif_acquisition:
+            scene_record["acquisition"] = lif_acquisition
         instrument = _instrument_for_objective(lif_objective, ome_image, scene_index)
 
         # ADR-0008 / #61: per-scene channel identity block, uniform across
@@ -1243,9 +1259,12 @@ def _convert_per_tile_scene(
     # dict overrides and ``"source-file"`` apply per-tile as they do per-scene.
     # Objective is scene-scoped (one objective per scene, shared by all tiles)
     # and re-attached to each tile's OME-XML below.
-    lif_extracted, lif_omero_channels, lif_objective = _lif_scene_channels(
-        reader, channel_colors
-    )
+    (
+        lif_extracted,
+        lif_omero_channels,
+        lif_objective,
+        lif_acquisition,
+    ) = _lif_scene_channels(reader, channel_colors)
     channels = (
         lif_omero_channels
         if lif_omero_channels is not None
@@ -1336,6 +1355,11 @@ def _convert_per_tile_scene(
         # <Instrument> so any tile store remains fully self-describing.
         if lif_objective:
             scene_record["objective"] = lif_objective
+        # ADR-0008 / #62: acquisition is scene-scoped too; every tile shares
+        # the scene's acquisition dict so a stray tile store still describes
+        # its acquisition context.
+        if lif_acquisition:
+            scene_record["acquisition"] = lif_acquisition
         instrument = _instrument_for_objective(lif_objective, ome_image, scene_index)
 
         # ADR-0008 / #61: channel identity is scene-scoped; each tile store
@@ -1547,7 +1571,7 @@ def _convert_plate(
         # scene already (write_plate calls set_scene before invoking the
         # per-FOV callbacks); we thread lif_extracted for the LIF-plate case
         # so the audit's colors match what the writer wrote.
-        lif_extracted, _, _ = _lif_scene_channels(reader, channel_colors)
+        lif_extracted, _, _, _ = _lif_scene_channels(reader, channel_colors)
         return _audit_channels_for_scene(reader, lif_extracted, channel_colors)
 
     source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
@@ -1608,29 +1632,37 @@ def inspect(input_path: str | Path) -> dict:
         reader.set_scene(i)
         xarr = reader.xarray_dask_data
         px = getattr(reader, "physical_pixel_sizes", None)
-        scenes_info.append(
-            {
-                "index": i,
-                "name": name,
-                "dims": list(xarr.dims),
-                "shape": tuple(int(s) for s in xarr.shape),
-                "dtype": str(xarr.dtype),
-                "channel_names": (
-                    list(reader.channel_names)
-                    if "C" in xarr.dims and getattr(reader, "channel_names", None)
-                    else []
-                ),
-                "physical_pixel_sizes": (
-                    {
-                        "Z": getattr(px, "Z", None),
-                        "Y": getattr(px, "Y", None),
-                        "X": getattr(px, "X", None),
-                    }
-                    if px is not None
-                    else None
-                ),
-            }
-        )
+        scene_info: dict[str, Any] = {
+            "index": i,
+            "name": name,
+            "dims": list(xarr.dims),
+            "shape": tuple(int(s) for s in xarr.shape),
+            "dtype": str(xarr.dtype),
+            "channel_names": (
+                list(reader.channel_names)
+                if "C" in xarr.dims and getattr(reader, "channel_names", None)
+                else []
+            ),
+            "physical_pixel_sizes": (
+                {
+                    "Z": getattr(px, "Z", None),
+                    "Y": getattr(px, "Y", None),
+                    "X": getattr(px, "X", None),
+                }
+                if px is not None
+                else None
+            ),
+        }
+        # ADR-0008 / #62: surface the LIF acquisition block in inspect() so
+        # pre-flight tooling can see it without paying for a full convert.
+        # Non-LIF readers (no scene_xml) skip cleanly. Same fail-safe as
+        # the convert path — metadata never crashes inspect().
+        scene_xml = find_scene_xml(reader)
+        if scene_xml is not None:
+            acquisition = extract_acquisition(scene_xml)
+            if acquisition:
+                scene_info["acquisition"] = acquisition
+        scenes_info.append(scene_info)
     input_bytes = size_on_disk(input_path)
     info: dict[str, Any] = {
         "input_path": str(input_path),

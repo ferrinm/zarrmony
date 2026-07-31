@@ -213,6 +213,13 @@ def test_api_lif_path_writes_real_channels(tmp_path: Path, monkeypatch) -> None:
     for c in omero["channels"]:
         assert isinstance(c["color"], str) and len(c["color"]) == 6
 
+    # ADR-0008 / #62: the audit block carries the acquisition/instrument
+    # dict projected from the same LIF fixture.
+    scene_record = g.attrs["zarrmony"]["per_scene"][0]
+    assert scene_record["acquisition"]["microscope"] == "STELLARIS 8"
+    assert scene_record["acquisition"]["microscope_serial"] == "8300000404"
+    assert scene_record["acquisition"]["imaging_method"] == ["confocal"]
+
     # ADR-0008 / #61: the audit block also carries the extracted channel
     # identity, projected into the shared 9-key shape. Same colors as omero.
     audit_channels = g.attrs["zarrmony"]["per_scene"][0]["channels"]

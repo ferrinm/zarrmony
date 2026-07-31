@@ -34,6 +34,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used by all reader paths. `zarrmony.metadata.lif_channels.resolve_channel_colors`
   is the renamed / promoted public form of the previously-internal color
   batch resolver, so the audit's `color` value matches what the writer wrote.
+- LIF per-scene acquisition/instrument extraction (ADR-0008 / #62). Every
+  LIF scene's audit and `inspect()` output now surfaces an
+  `acquisition: {date?, microscope?, microscope_serial?, imaging_method?}`
+  dict, with each key optional and the block omitted entirely when nothing
+  extractable is present. `microscope` prefers the LIF
+  `HardwareSetting.SystemTypeName` (Leica's brand-and-model string, e.g.
+  `"STELLARIS 8"`); `microscope_serial` comes from
+  `SystemSerialNumber`; `date` is decoded from the `<TimeStamp>` FILETIME
+  ticks into an ISO 8601 UTC string; `imaging_method` is a `list[str]` of
+  OME-conventional modality tokens (`"confocal"`, `"widefield_fluorescence"`,
+  `"spinning_disk_confocal"`, etc.). CZI / ND2 / OME-TIFF follow-ons in
+  #63–#65 land the same block shape on those reader paths.
+  New helper module `zarrmony.metadata.acquisition` (public
+  `extract_acquisition`). (#62)
 - Plate audits now carry `attrs.zarrmony.fields[i].well_id` — the
   concatenated `<row-letter><col-number>` well identifier (e.g. `"A03"`,
   `"B12"`) matching Aperture BigQuery's expected `well_id` column format. Also

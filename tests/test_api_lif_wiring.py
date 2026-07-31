@@ -134,26 +134,30 @@ class _ConfocalReader:
 
 
 def test_raising_scene_root_without_metadata_declines():
-    assert _lif_scene_channels(_Raising()) == (None, None, None)
+    assert _lif_scene_channels(_Raising()) == (None, None, None, None)
 
 
 def test_non_lif_falls_back():
-    assert _lif_scene_channels(_NonLif()) == (None, None, None)
+    assert _lif_scene_channels(_NonLif()) == (None, None, None, None)
 
 
 def test_count_mismatch_declines_channels_but_still_surfaces_objective():
-    # Objective extraction is decoupled from the SizeC check — a garbled
-    # channel list must not drop the (still-valid) objective dict.
-    extracted, omero, objective = _lif_scene_channels(_CountMismatch())
+    # Objective + acquisition extraction are decoupled from the SizeC check —
+    # a garbled channel list must not drop the (still-valid) objective dict
+    # or the acquisition/instrument block.
+    extracted, omero, objective, acquisition = _lif_scene_channels(_CountMismatch())
     assert extracted is None and omero is None
     assert objective is not None and objective.get("nominal_magnification") == 20
+    # The fixture carries HardwareSetting.SystemTypeName = "STELLARIS 8".
+    assert acquisition is not None
+    assert acquisition.get("microscope") == "STELLARIS 8"
 
 
 # --- plate fast path -------------------------------------------------------
 
 
 def test_happy_path_wiring():
-    extracted, omero, objective = _lif_scene_channels(_Good())
+    extracted, omero, objective, acquisition = _lif_scene_channels(_Good())
     assert extracted is not None and len(extracted) == 7
     assert [c.label for c in omero][1] == "ALEXA 594 (590 nm)"
     # Objective co-extraction: same scene XML, same call — the fixture's
@@ -162,6 +166,13 @@ def test_happy_path_wiring():
     assert objective["nominal_magnification"] == 20
     assert objective["numerical_aperture"] == 0.75
     assert objective["immersion"] == "Air"  # LIF "DRY" -> OME Air
+    # Acquisition co-extraction (ADR-0008 / #62): the fixture carries a
+    # STELLARIS 8 HardwareSetting and enough ATLConfocalSettingDefinition
+    # blocks to identify the imaging modality as confocal.
+    assert acquisition is not None
+    assert acquisition["microscope"] == "STELLARIS 8"
+    assert acquisition["microscope_serial"] == "8300000404"
+    assert acquisition["imaging_method"] == ["confocal"]
 
 
 # --- confocal (scene_root raises -> metadata .//Image locator) -------------
@@ -170,7 +181,7 @@ def test_happy_path_wiring():
 def test_confocal_scene_yields_fluorophore_channels():
     r = _ConfocalReader()
     r.current_scene_index = 0
-    extracted, omero, _ = _lif_scene_channels(r)
+    extracted, omero, _, _ = _lif_scene_channels(r)
     assert omero is not None, "confocal channel metadata is inert"
     assert [c.label for c in omero][1] == "ALEXA 594 (590 nm)"
     assert extracted[1]["excitation_nm"] == 590
@@ -179,19 +190,20 @@ def test_confocal_scene_yields_fluorophore_channels():
 def test_confocal_scene_is_located_positionally():
     r = _ConfocalReader()
     r.current_scene_index = 1
-    _, omero, _ = _lif_scene_channels(r)
+    _, omero, _, _ = _lif_scene_channels(r)
     assert omero is not None
     assert [c.label for c in omero][1] == "B_Leica/ALEXA 594 (590 nm)"
 
 
 def test_confocal_count_mismatch_declines():
     r = _ConfocalReader(c=2)  # XML has 7 channels, array claims 2
-    extracted, omero, objective = _lif_scene_channels(r)
+    extracted, omero, objective, acquisition = _lif_scene_channels(r)
     assert (extracted, omero) == (None, None)
-    # Objective is still surfaced — see the plate-path test for the reason.
+    # Objective + acquisition are still surfaced — see the plate-path test.
     assert objective is not None
+    assert acquisition is not None
 
 
 def test_confocal_no_metadata_falls_back():
     r = _ConfocalReader(have_metadata=False)
-    assert _lif_scene_channels(r) == (None, None, None)
+    assert _lif_scene_channels(r) == (None, None, None, None)
