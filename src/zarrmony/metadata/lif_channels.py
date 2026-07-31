@@ -371,11 +371,11 @@ def _omero_label(
     return None
 
 
-def _resolve_colors(
+def resolve_channel_colors(
     channels: list[dict],
     *,
-    use_source_file: bool,
-    overrides: dict[str, str] | None,
+    use_source_file: bool = False,
+    overrides: dict[str, str] | None = None,
 ) -> list[str]:
     """Batch-resolve colors for the extracted channel identities.
 
@@ -432,7 +432,7 @@ def channels_to_omero(
     ``use_source_file=True`` implements ``channel_colors="source-file"`` by
     parsing the extracted ``LUTName`` per channel.
     """
-    colors = _resolve_colors(
+    colors = resolve_channel_colors(
         channels, use_source_file=use_source_file, overrides=overrides
     )
     out: list[dict] = []
@@ -465,7 +465,7 @@ def channels_to_ome_channels(
     # Local import: the bioio-portable core stays stdlib-only on module import.
     from ome_types.model import Channel
 
-    colors = _resolve_colors(
+    colors = resolve_channel_colors(
         channels, use_source_file=use_source_file, overrides=overrides
     )
     out: list[Channel] = []

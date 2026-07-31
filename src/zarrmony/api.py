@@ -28,11 +28,13 @@ from zarrmony.errors import (
     ZarrmonyError,
 )
 from zarrmony.metadata._lif_scene import find_scene_xml
+from zarrmony.metadata.audit_channels import from_lif_extracted, from_ome_channels
 from zarrmony.metadata.channel_colors import colors_for_channels
 from zarrmony.metadata.lif_channels import (
     channels_to_ome_channels,
     channels_to_omero,
     extract_channels,
+    resolve_channel_colors,
 )
 from zarrmony.metadata.lif_tiles import (
     compute_stage_placements,
@@ -339,6 +341,62 @@ def _lif_scene_channels(
         return extracted, omero_channels, objective
     except Exception:  # noqa: BLE001 — never break a conversion over metadata
         return None, None, None
+
+
+def _audit_channels_for_scene(
+    reader: Any,
+    lif_extracted: list[dict] | None,
+    channel_colors: ChannelColorSpec,
+) -> list[dict] | None:
+    """Project the current scene's channels into the ADR-0008 audit shape (#61).
+
+    Two branches: LIF-extracted identities (from the scene-XML extractor) take
+    priority when present, threaded through the same
+    :func:`resolve_channel_colors` batch the omero block uses so the audit's
+    ``color`` field matches what the writer wrote. Otherwise, project from
+    ``reader.ome_metadata.images[0].pixels.channels`` (the surface CZI / ND2 /
+    OME-TIFF and other bioio readers already expose) and resolve colors from
+    the reader's ``channel_names`` via :func:`colors_for_channels` — same
+    method as :func:`_channels_for_scene`.
+
+    Returns ``None`` when no channel identity is extractable at all (missing
+    ``ome_metadata``, empty channel list, or reader-side error), so callers
+    omit the ``channels`` key entirely for that scene per the ADR's
+    omit-not-null rule. Never raises: metadata never breaks a conversion.
+    """
+    overrides, use_source_file = _split_channel_colors(channel_colors)
+    if lif_extracted:
+        try:
+            colors = resolve_channel_colors(
+                lif_extracted,
+                use_source_file=use_source_file,
+                overrides=overrides,
+            )
+        except Exception:  # noqa: BLE001 — never crash audit
+            colors = None
+        return from_lif_extracted(lif_extracted, colors=colors)
+    try:
+        ome = reader.ome_metadata
+    except Exception:  # noqa: BLE001 — heterogeneous bioio errors
+        return None
+    if ome is None or not getattr(ome, "images", None):
+        return None
+    pixels = getattr(ome.images[0], "pixels", None)
+    ome_channels = list(getattr(pixels, "channels", None) or []) if pixels else []
+    if not ome_channels:
+        return None
+    channel_names = (
+        list(reader.channel_names) if getattr(reader, "channel_names", None) else []
+    )
+    try:
+        colors = (
+            colors_for_channels(channel_names, overrides=overrides)
+            if channel_names
+            else None
+        )
+    except Exception:  # noqa: BLE001 — never crash audit
+        colors = None
+    return from_ome_channels(ome_channels, colors=colors)
 
 
 def _lif_ome_image(
@@ -1037,6 +1095,14 @@ def _convert_per_scene(
             scene_record["objective"] = lif_objective
         instrument = _instrument_for_objective(lif_objective, ome_image, scene_index)
 
+        # ADR-0008 / #61: per-scene channel identity block, uniform across
+        # LIF (from the extractor) and non-LIF (from reader.ome_metadata).
+        audit_channels = _audit_channels_for_scene(
+            reader, lif_extracted, channel_colors
+        )
+        if audit_channels is not None:
+            scene_record["channels"] = audit_channels
+
         ome_xml = build_ome_xml_for_scene(ome_image, instrument)
         write_per_scene_metadata(
             store_path,
@@ -1272,6 +1338,14 @@ def _convert_per_tile_scene(
             scene_record["objective"] = lif_objective
         instrument = _instrument_for_objective(lif_objective, ome_image, scene_index)
 
+        # ADR-0008 / #61: channel identity is scene-scoped; each tile store
+        # carries its own copy so a stray tile remains fully self-describing.
+        audit_channels = _audit_channels_for_scene(
+            reader, lif_extracted, channel_colors
+        )
+        if audit_channels is not None:
+            scene_record["channels"] = audit_channels
+
         ome_xml = build_ome_xml_for_scene(ome_image, instrument)
         write_per_scene_metadata(
             store_path,
@@ -1369,6 +1443,13 @@ def _convert_bf2raw(
             contrast_percentile=contrast_percentile,
         )
 
+        # ADR-0008 / #61: per-scene channel identity block. bf2raw takes the
+        # non-LIF path unconditionally — the LIF plugin routes through
+        # per-scene, never bf2raw — so no lif_extracted to thread through.
+        audit_channels = _audit_channels_for_scene(reader, None, channel_colors)
+        if audit_channels is not None:
+            scene_record["channels"] = audit_channels
+
         per_scene_records.append(scene_record)
         series_paths.append(str(scene_index))
 
@@ -1461,6 +1542,14 @@ def _convert_plate(
             return _stub_image(scene_index, scene_record["scene_name"], scene_record)
         return ome_image
 
+    def _audit_channels_for_field(scene_index: int) -> list[dict] | None:
+        # ADR-0008 / #61: audit channels per FOV. Reader is on the current
+        # scene already (write_plate calls set_scene before invoking the
+        # per-FOV callbacks); we thread lif_extracted for the LIF-plate case
+        # so the audit's colors match what the writer wrote.
+        lif_extracted, _, _ = _lif_scene_channels(reader, channel_colors)
+        return _audit_channels_for_scene(reader, lif_extracted, channel_colors)
+
     source_xml = _serialize_source_metadata(getattr(reader, "metadata", None))
     source_filename = (
         _source_xml_filename(input_path) if source_xml is not None else None
@@ -1475,6 +1564,7 @@ def _convert_plate(
         channel_colors=channel_colors,
         contrast_percentile=contrast_percentile,
         ome_image_for_field=_ome_image_for_field,
+        audit_channels_for_field=_audit_channels_for_field,
         ome_xml_builder=build_combined_ome_xml,
         source_xml=source_xml,
         source_xml_filename=source_filename,

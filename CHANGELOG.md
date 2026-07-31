@@ -17,6 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zarrmony._constants` module by both `writers/plate.py` and
   `writers/bf2raw.py`, eliminating the risk of drift between the two writer
   paths and the audit. (ADR-0008, #70)
+- Per-scene channel identity in every reader path: `per_scene[i].channels`
+  (flat layout) / `fields[i].channels` (plate layout) now carry one dict per
+  channel in acquisition order, with the ADR-0008 9-key shape
+  (`{index, name, dye?, fluor?, excitation_nm?, emission_low_nm?,
+  emission_high_nm?, color?, lut_name?}`). LIF persists the extractor's
+  already-parsed identity verbatim (dropping the LIF-internal `detector`
+  field); CZI / ND2 / OME-TIFF / default project from
+  `reader.ome_metadata.images[0].pixels.channels`. Missing per-channel fields
+  are omitted (never emitted as `null`) so consumers can distinguish "reader
+  didn't extract this field" from "reader tried and got nothing." Per-tile
+  (`lif_mosaic="per-tile"`) writes stamp the same block onto every tile store
+  so each remains fully self-describing. (ADR-0008, #61)
+- New helper module `zarrmony.metadata.audit_channels` (public functions
+  `from_lif_extracted`, `from_ome_channels`) implements the shared projection
+  used by all reader paths. `zarrmony.metadata.lif_channels.resolve_channel_colors`
+  is the renamed / promoted public form of the previously-internal color
+  batch resolver, so the audit's `color` value matches what the writer wrote.
 - Plate audits now carry `attrs.zarrmony.fields[i].well_id` — the
   concatenated `<row-letter><col-number>` well identifier (e.g. `"A03"`,
   `"B12"`) matching Aperture BigQuery's expected `well_id` column format. Also

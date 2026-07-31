@@ -102,6 +102,7 @@ def _synthetic_plate_reader() -> FakeReader:
         shape=(1, 1, 16, 16),
         layout_hint="plate",
         plate_layout=_synthetic_2x2_layout(),
+        channel_names=["DAPI"],
     )
 
 
@@ -188,6 +189,14 @@ def test_plate_end_to_end_writes_spec_conformant_store(
     assert f0["acquisition_id"] == 1
     # Every field carries well_id in <row-letter><col-number> format (#66).
     assert [f["well_id"] for f in audit["fields"]] == ["A01", "A02", "B01", "B02"]
+    # ADR-0008 / #61: per-field channels block. FakeReader exposes one DAPI
+    # channel per scene; every field carries the same shape via the OME
+    # projection.
+    for field in audit["fields"]:
+        assert "channels" in field
+        assert len(field["channels"]) == 1
+        assert field["channels"][0]["index"] == 0
+        assert field["channels"][0]["name"] == "DAPI"
     # The synthetic layout has no plate_id — key must be absent, not None.
     assert "plate_id" not in audit["plate"]
     # ...and the NGFF on-disk plate attr never carries plate_id.
@@ -222,6 +231,7 @@ def test_plate_id_surfaces_in_audit_and_inspect_when_reader_supplies_it(
         shape=(1, 1, 16, 16),
         layout_hint="plate",
         plate_layout=layout,
+        channel_names=["DAPI"],
     )
     patched_reader(reader)
     out = tmp_path / "plate.ome.zarr"

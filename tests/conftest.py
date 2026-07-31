@@ -8,7 +8,7 @@ import dask.array as da
 import numpy as np
 import xarray as xr
 from ome_types import OME
-from ome_types.model import Image, Pixels, PixelType
+from ome_types.model import Channel, Image, Pixels, PixelType
 
 from zarrmony.readers.plate import PlateLayout
 
@@ -219,6 +219,10 @@ class FakeReader:
             raise RuntimeError("simulated ome_metadata failure")
         size_map = dict(zip(self._dims, self._shape, strict=True))
         scene_name = self.scenes[self._current_scene]
+        ome_channels = [
+            Channel(id=f"Channel:0:{i}", name=n)
+            for i, n in enumerate(self._channel_names)
+        ]
         return OME(
             images=[
                 Image(
@@ -233,6 +237,7 @@ class FakeReader:
                         size_t=size_map.get("T", 1),
                         dimension_order="XYZCT",
                         type=PixelType.UINT16,
+                        channels=ome_channels,
                     ),
                 )
             ]

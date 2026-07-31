@@ -213,6 +213,21 @@ def test_api_lif_path_writes_real_channels(tmp_path: Path, monkeypatch) -> None:
     for c in omero["channels"]:
         assert isinstance(c["color"], str) and len(c["color"]) == 6
 
+    # ADR-0008 / #61: the audit block also carries the extracted channel
+    # identity, projected into the shared 9-key shape. Same colors as omero.
+    audit_channels = g.attrs["zarrmony"]["per_scene"][0]["channels"]
+    assert len(audit_channels) == 7
+    assert audit_channels[0]["index"] == 0
+    assert audit_channels[0]["name"] == "DAPI"
+    assert audit_channels[0]["dye"] == "DAPI (dsDNA bound)"
+    assert audit_channels[0]["fluor"] == "DAPI (dsDNA bound)"
+    assert audit_channels[0]["excitation_nm"] == 405
+    assert audit_channels[0]["emission_low_nm"] == 430
+    assert audit_channels[0]["emission_high_nm"] == 499
+    assert audit_channels[0]["color"] == omero["channels"][0]["color"]
+    # LIF-internal `detector` never surfaces in the audit shape.
+    assert all("detector" not in c for c in audit_channels)
+
 
 def test_api_non_lif_reader_is_untouched(tmp_path: Path, monkeypatch) -> None:
     # No scene_root -> the LIF decision is a no-op and the name-based path runs.

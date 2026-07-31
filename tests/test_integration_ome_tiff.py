@@ -48,6 +48,21 @@ def test_per_scene_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     assert audit["input"]["size_human"]
     assert audit["output"] == {"ome_ngff_version": "0.5"}
 
+    # ADR-0008 / #61: per-scene channels block, projected from OME-TIFF's
+    # already-parsed <Channel> elements. Two channels ("DAPI", "GFP"), each
+    # with an index, a name, and a color; wavelengths are absent from this
+    # synthetic fixture so those keys are omitted (never null).
+    channels_block = audit["per_scene"][0]["channels"]
+    assert len(channels_block) == 2
+    assert [c["index"] for c in channels_block] == [0, 1]
+    assert [c["name"] for c in channels_block] == ["DAPI", "GFP"]
+    for c in channels_block:
+        assert "color" in c and len(c["color"]) == 6
+        # No excitation/emission on the synthetic fixture — must be absent.
+        assert "excitation_nm" not in c
+        assert "emission_low_nm" not in c
+        assert "emission_high_nm" not in c
+
     # bioio's synth scene name is "Image:0".
     store = out / f"{audit['per_scene'][0]['scene_name'].replace(':', '_')}.ome.zarr"
     assert store.is_dir()
@@ -152,6 +167,8 @@ def test_bf2raw_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     assert audit["audit_schema_version"] == 8
     assert audit["output"] == {"ome_ngff_version": "0.5"}
     assert len(audit["per_scene"]) == 1
+    # ADR-0008 / #61 channels block populates on bf2raw layout too.
+    assert [c["name"] for c in audit["per_scene"][0]["channels"]] == ["DAPI", "GFP"]
 
     with open(out / "zarr.json") as f:
         root = json.load(f)
