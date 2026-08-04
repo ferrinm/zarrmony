@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-04
+
 ### Added
 
 - Top-level `attrs.zarrmony.output` audit block, initially with a single key
