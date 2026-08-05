@@ -31,6 +31,7 @@ from zarrmony.metadata._lif_scene import find_scene_xml
 from zarrmony.metadata.acquisition import extract_acquisition
 from zarrmony.metadata.audit_channels import from_lif_extracted, from_ome_channels
 from zarrmony.metadata.channel_colors import colors_for_channels
+from zarrmony.metadata.czi_acquisition import extract_czi_acquisition
 from zarrmony.metadata.lif_channels import (
     channels_to_ome_channels,
     channels_to_omero,
@@ -46,6 +47,7 @@ from zarrmony.metadata.lif_tiles import (
     select_auto_stitch_cascade,
     stage_overlap_discrepancy,
 )
+from zarrmony.metadata.nd2_acquisition import extract_nd2_acquisition
 from zarrmony.metadata.objective import extract_objective
 from zarrmony.metadata.ome_extractors import (
     extract_acquisition_from_ome,
@@ -402,12 +404,39 @@ def _reader_acquisition_extras(reader: Any) -> dict | None:
     return extras
 
 
+def _vendor_acquisition_extras(reader: Any) -> dict | None:
+    """Dispatch to a vendor-specific acquisition extractor (issues #77, #78).
+
+    Fills gaps the OME projection can't — bioio-czi emits
+    ``Microscope.manufacturer = "Zeiss"`` but leaves the model empty, and
+    bioio-nd2 doesn't populate ``<Microscope>`` at all. The relevant strings
+    live in the raw CZI XML (``reader.metadata``) and ND2's ``text_info()``
+    respectively, so we dispatch by the reader class's module.
+
+    Sits between LIF and OME in the ``setdefault`` layering — vendor
+    extractor beats OME (so ``"Zeiss Axioscan 7"`` wins over ``"Zeiss"``),
+    but LIF still beats vendor (LIF is a different reader entirely).
+
+    Fail-safe throughout — a raising extractor or a missing module both yield
+    no extras.
+    """
+    module = getattr(type(reader), "__module__", "") or ""
+    try:
+        if module.startswith("bioio_czi"):
+            return extract_czi_acquisition(getattr(reader, "metadata", None))
+        if module.startswith("bioio_nd2"):
+            return extract_nd2_acquisition(reader)
+    except Exception:  # noqa: BLE001 — never crash audit over vendor extraction
+        return None
+    return None
+
+
 def _audit_acquisition_for_scene(
     reader: Any,
     lif_acquisition: dict | None,
     scene_index: int,
 ) -> dict | None:
-    """Compose the per-scene acquisition dict from three layered sources.
+    """Compose the per-scene acquisition dict from four layered sources.
 
     Precedence (uniform ``setdefault`` — first source that populates a key
     wins; later sources fill only remaining gaps):
@@ -417,16 +446,23 @@ def _audit_acquisition_for_scene(
        first crack because bioio-lif's OME projection is unreliable for
        Leica-native fields (``SystemTypeName``, ``SystemSerialNumber``, the
        ``HardwareSetting`` modality hints).
-    2. **OME projection** — :func:`extract_acquisition_from_ome` reads
-       ``reader.ome_metadata`` and now surfaces ``imaging_method`` from
+    2. **Vendor extractor** (CZI / ND2) — :func:`_vendor_acquisition_extras`
+       dispatches to :mod:`zarrmony.metadata.czi_acquisition` or
+       :mod:`zarrmony.metadata.nd2_acquisition` based on the reader's
+       module. Sits above OME because bioio-czi's OME projection emits only
+       ``"Zeiss"`` (no model) and bioio-nd2 omits ``<Microscope>``
+       entirely — the vendor extractors fill the gap with
+       ``"Zeiss Axioscan 7"`` / ``"Nikon Ti2"`` etc. (issues #77, #78).
+    3. **OME projection** — :func:`extract_acquisition_from_ome` reads
+       ``reader.ome_metadata`` and surfaces ``imaging_method`` from
        per-channel ``<Channel AcquisitionMode>``. For LIF scenes this fills
-       gaps the LIF extractor missed (e.g. imaging_method when the
-       ``HardwareSetting`` header lacks ``DataSourceTypeName``); for CZI /
-       ND2 / OME-TIFF this is the primary extractor.
-    3. **Reader hook** — :func:`_reader_acquisition_extras` calls the
+       gaps the LIF extractor missed; for CZI / ND2 / OME-TIFF this
+       populates ``date`` and ``imaging_method`` (and ``microscope`` for
+       any file the vendor tier didn't cover).
+    4. **Reader hook** — :func:`_reader_acquisition_extras` calls the
        soft-optional ``reader.acquisition_audit`` (issue #76). Reserved for
        cases where a reader knows its modality (SmartSPIM = light_sheet by
-       construction) but neither the LIF extractor nor OME's
+       construction) but neither the LIF/vendor extractors nor OME's
        ``AcquisitionMode`` surface produces it. ``setdefault`` semantics
        mean the hook can never override a source-file-derived extraction —
        if OME says ``["confocal"]`` and the hook claims ``["light_sheet"]``,
@@ -434,10 +470,13 @@ def _audit_acquisition_for_scene(
 
     Fail-safe throughout: any exception at any tier yields no contribution
     from that tier; the block is composed from what did succeed. Returns
-    ``None`` when all three sources came back empty so the audit omits the
+    ``None`` when all sources came back empty so the audit omits the
     ``acquisition`` key entirely.
     """
     base: dict = dict(lif_acquisition) if lif_acquisition else {}
+    vendor_dict = _vendor_acquisition_extras(reader) or {}
+    for key, value in vendor_dict.items():
+        base.setdefault(key, value)
     try:
         ome = reader.ome_metadata
     except Exception:  # noqa: BLE001 — heterogeneous bioio errors
@@ -1778,21 +1817,23 @@ def inspect(input_path: str | Path) -> dict:
                 else None
             ),
         }
-        # ADR-0008 / #62 (+#63–#65 / #76): surface the acquisition block in
-        # inspect() so pre-flight tooling can see it without paying for a
-        # full convert. Same 3-tier composition as the convert path
-        # (:func:`_audit_acquisition_for_scene`): LIF scene-XML extractor
-        # first, OME projection ``setdefault``-fills any gaps (including
-        # ``imaging_method`` from per-channel ``AcquisitionMode``), and the
-        # soft-optional ``reader.acquisition_audit`` hook fills whatever
-        # neither extractor produced. Same fail-safe throughout — metadata
-        # never crashes inspect().
+        # ADR-0008 / #62 (+#63–#65 / #76 / #77 / #78): surface the acquisition
+        # block in inspect() so pre-flight tooling sees it without paying for a
+        # full convert. Same 4-tier composition as the convert path
+        # (:func:`_audit_acquisition_for_scene`): LIF scene-XML extractor,
+        # vendor-specific extractor (CZI / ND2 microscope model), OME
+        # projection, then the soft-optional ``reader.acquisition_audit``
+        # hook — each layer ``setdefault``-fills gaps left by earlier ones.
+        # Same fail-safe throughout — metadata never crashes inspect().
         scene_xml = find_scene_xml(reader)
         base: dict = {}
         if scene_xml is not None:
             lif_extracted = extract_acquisition(scene_xml)
             if lif_extracted:
                 base.update(lif_extracted)
+        vendor_dict = _vendor_acquisition_extras(reader) or {}
+        for key, value in vendor_dict.items():
+            base.setdefault(key, value)
         try:
             ome = reader.ome_metadata
         except Exception:  # noqa: BLE001 — heterogeneous bioio errors

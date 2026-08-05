@@ -95,13 +95,17 @@ A plain instance attribute (`self.acquisition_audit = {...}`) works too;
 either shape is accepted. Returning `None` or a non-dict yields no extras.
 
 **Precedence — `setdefault` layering.** Zarrmony composes
-`per_scene[i].acquisition` in three tiers, first source wins per key:
+`per_scene[i].acquisition` in four tiers, first source wins per key:
 
 1. LIF scene-XML extractor (LIF scenes only).
-2. OME projection from `reader.ome_metadata` — populates `date`,
+2. Vendor-specific extractors (CZI raw XML → microscope model; ND2 SDK
+   `text_info().capturing` → microscope model). Fills gaps bioio's OME
+   projection leaves — bioio-czi emits only `"Zeiss"` and bioio-nd2 omits
+   `<Microscope>` entirely.
+3. OME projection from `reader.ome_metadata` — populates `date`,
    `microscope`, `microscope_serial`, and `imaging_method` (from per-channel
    `<Channel AcquisitionMode>`).
-3. `reader.acquisition_audit` — fills only keys neither of the above
+4. `reader.acquisition_audit` — fills only keys none of the above
    populated.
 
 The hook can never override a source-file-derived extraction. If bioio's

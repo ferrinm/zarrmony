@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-05
+
+### Added
+
+- CZI microscope-model extraction from the raw vendor XML: new
+  `zarrmony.metadata.czi_acquisition.extract_czi_acquisition` reads
+  `Metadata/Information/Instrument/Microscopes/Microscope[@Name]` from
+  `reader.metadata` and returns `{"microscope": "Zeiss <Model>"}`
+  (`"Zeiss Axioscan 7"`, `"Zeiss LSM 980"`, etc.). Fills the model gap
+  bioio-czi's OME projection leaves — the OME `<Microscope>` element on
+  CZI files ships with `Manufacturer="Zeiss"` but empty `Model`, so
+  `per_scene[i].acquisition.microscope` used to land as just `"Zeiss"`
+  and was indistinguishable across Axio Scan, LSM 900/980, Elyra,
+  Celldiscoverer, and Lattice Lightsheet. XXE-hardened parser (rejects
+  DOCTYPE / ENTITY declarations, size-capped) matches the LIF extractor. (#77)
+- ND2 microscope extraction from `nd2.ND2File(...).text_info()`: new
+  `zarrmony.metadata.nd2_acquisition.extract_nd2_acquisition` reopens the
+  ND2 file via the Nikon SDK and reads the free-text `capturing` field
+  (typically `"NIS-Elements 5.42\nNikon Instruments Inc.\nTi2-E"`), dropping
+  vendor/software lines and prepending `"Nikon "` to the microscope stand
+  when needed. Fills the `microscope` slot bioio-nd2's OME projection omits
+  entirely — previously ND2 scenes shipped with no `microscope` key at all.
+  Fail-safe when the `nd2` package isn't installed or the SDK raises. (#78)
+
+### Changed
+
+- `_audit_acquisition_for_scene` gains a vendor-specific tier between the
+  LIF extractor and the OME projection: `bioio_czi`-shaped readers dispatch
+  to the CZI vendor extractor, `bioio_nd2` to the ND2 one. Dispatch keys
+  on the reader class's `__module__` so no reader-side changes are needed.
+  Precedence remains uniform `setdefault` — vendor beats OME (so
+  `"Zeiss Axioscan 7"` wins over `"Zeiss"`), LIF still beats vendor, and
+  the reader `acquisition_audit` hook still fills only gaps none of the
+  above populated. Same 4-tier composition applied to `inspect()`. (#77, #78)
+- Plugin authoring guide §2 `acquisition_audit` subsection updated to
+  document the new 4-tier precedence order.
+
 ## [0.11.0] - 2026-08-05
 
 ### Added

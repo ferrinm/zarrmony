@@ -20,6 +20,14 @@ standardised OME surface distinct from ``Instrument.Microscope.Type`` (which is
 body-type: Upright / Inverted / etc., not modality). A scene whose channels
 were acquired with different modes (bright-field reference + confocal detail,
 e.g.) surfaces every mode encountered, deduped in first-seen order.
+
+The ``microscope`` string this projection emits combines ``Microscope``
+manufacturer + model into ``"Nikon Ti2"``-style output. bioio-czi's XSLT
+projection fills only the manufacturer half (``"Zeiss"``) and bioio-nd2 skips
+the ``<Microscope>`` element entirely — vendor-specific extractors
+(:mod:`zarrmony.metadata.czi_acquisition`,
+:mod:`zarrmony.metadata.nd2_acquisition`) run above this projection in
+:func:`zarrmony.api._audit_acquisition_for_scene` to fill the model gap.
 """
 
 from __future__ import annotations
