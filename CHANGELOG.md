@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-05
+
 ### Added
 
 - Non-LIF `imaging_method` extraction: `extract_acquisition_from_ome` now
@@ -68,32 +70,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path so pre-flight tooling sees identical output to the convert-time
   audit.
 
-### HITL release gate
+### HITL validation
 
-**Do not publish this release until real-data validation passes on 1–2
-representative datasets per reader.** The OME `Channel.AcquisitionMode`
-projection is code-complete but its coverage depends on whether bioio-czi,
-bioio-nd2, and bioio-ome-tiff actually populate the field in practice. Run
-`zarrmony convert` on:
+Real-data inspect() passes across every currently-supported reader:
 
-- **CZI** (in-tree) — e.g. a Zeiss LSM 980 confocal file → expect
-  `["confocal"]`; a Zeiss spinning-disk file → expect `["spinning_disk_confocal"]`.
-- **ND2** (in-tree) — e.g. a Nikon Ti2 confocal file → expect `["confocal"]`.
-- **LIF** (in-tree) — regression check: LIF extractor still wins (LIF's own
-  `["confocal"]` unchanged); OME fills any gaps.
-- **`zarrmony-snouty`** (external) — expect `["light_sheet"]` (via the
-  `acquisition_audit` hook if OME doesn't populate it).
-- **`zarrmony-phenix`** (external) — expect `["widefield_fluorescence"]`
-  or `["confocal"]` depending on the Phenix mode.
-- **`zarrmony-blaze`** (external) — expect `["light_sheet"]`.
+- **LIF Thunder AF 6000LX widefield** — `["widefield_fluorescence"]`, plus
+  `["widefield_fluorescence", "bright_field"]` for a multi-modal scene, and
+  `date` now populated via the new `TimeStampList` parser.
+- **LIF SP8 confocal**, **LIF STELLARIS 8 confocal** — `["confocal"]`,
+  microscope + serial, `date` now populated (previously missing).
+- **CZI Zeiss Axioscan (widefield fluorescence)** —
+  `["widefield_fluorescence"]` via OME `Channel.AcquisitionMode`.
+- **ND2 Nikon spinning disk** — `["spinning_disk_confocal"]` via OME
+  `Channel.AcquisitionMode`.
+- **Snouty HT-SOLS light-sheet** — `["light_sheet"]` via `acquisition_audit`
+  hook (external plugin).
+- **Blaze Miltenyi UltraMicroscope light-sheet** — `["light_sheet"]` via
+  hook (external plugin).
+- **Phenix Opera Phenix** — `["spinning_disk_confocal"]` via hook
+  (external plugin).
 
-Read `attrs.zarrmony.audit.per_scene[i].acquisition.imaging_method` from
-each output store and confirm the token matches the true modality. Readers
-where the OME projection comes back empty on real files need either a
-vendor-specific in-tree extractor (LIF pattern) or the `acquisition_audit`
-hook wired in the external plugin (SmartSPIM pattern) — file per-reader
-follow-up tickets and hold the release tag until each is either
-resolved or explicitly accepted as a known gap.
+Known partial gaps (deferred to follow-up tickets, not blocking):
+`microscope` on CZI ships as just `"Zeiss"` (bioio-czi omits Model on
+Axioscan) and is entirely missing on ND2 (bioio-nd2 doesn't populate the
+OME `<Microscope>` element); Phenix has no `date` yet. Each is filed
+separately.
 
 ## [0.10.0] - 2026-08-04
 
