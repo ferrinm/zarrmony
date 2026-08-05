@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-05
+
+### Added
+
+- Generic reader-kwargs passthrough on `convert()` and `inspect()`: both
+  gain an optional `reader_kwargs: dict[str, Any] | None = None` that is
+  forwarded verbatim to the winning plugin's `open()` as `**kwargs`. The
+  CLI grows a matching repeatable `--reader-kwarg KEY=VALUE` option on
+  `zarrmony convert` and `zarrmony inspect`. Motivating case: reaching
+  `zarrmony-smartspim` v0.2.0's `metadata_path=` sidecar override from
+  the public API and CLI without instantiating the reader directly, so a
+  read-only SmartSPIM export directory can be paired with a sidecar JSON
+  stored elsewhere:
+
+  ```python
+  from zarrmony import inspect
+  inspect(
+      "/Volumes/PD_external_WuLab-ro/56502",
+      reader_kwargs={"metadata_path": "/gdrive/.../metadata_56502.json"},
+  )
+  ```
+
+  ```bash
+  zarrmony inspect /mnt/readonly/56502 \
+    --reader-kwarg metadata_path=/writable/metadata_56502.json
+  ```
+
+  Values from the CLI stay as strings; readers coerce internally
+  (`SmartSpimReader` casts `metadata_path` to a `Path`). Duplicate CLI
+  keys fail loud (rather than silent last-wins). Unknown kwargs surface
+  as the reader constructor's native `TypeError` — zarrmony deliberately
+  does not validate the shape, deferring a plugin-side kwarg schema
+  until a second plugin needs the same discovery mechanism. (#79)
+
+### Changed
+
+- `ReaderPlugin.open`'s type widens from `Callable[[Path], ReaderProtocol]`
+  to `Callable[..., ReaderProtocol]`. Existing plugins whose `open()`
+  accepts only a path see `**{}` and behave identically — backwards
+  compatible for every registered built-in (`bioio`, `bioio-czi`,
+  `bioio-lif`, `bioio-nd2`) and every external plugin
+  (`zarrmony-smartspim`, `zarrmony-snouty`, `zarrmony-blaze`,
+  `zarrmony-phenix`). `get_reader(path)` grows an optional
+  `reader_kwargs=` and forwards it via `plugin.open(p, **(reader_kwargs
+  or {}))`.
+- Reader-plugin authoring guide gains a subsection under §4 documenting
+  how to declare a reader-specific keyword argument on `open()` and how
+  the passthrough reaches it from the API and CLI.
+
 ## [0.12.0] - 2026-08-05
 
 ### Added
