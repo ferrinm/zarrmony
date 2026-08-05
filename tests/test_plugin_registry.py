@@ -220,3 +220,60 @@ def test_no_matching_plugin_error_names_input_path() -> None:
 
     with pytest.raises(NoMatchingPluginError, match=r"/tmp/uniquely-named-input\.xyz"):
         get_reader("/tmp/uniquely-named-input.xyz")
+
+
+# --- Case 6: reader_kwargs passthrough (issue #79) ------------------------
+
+
+def test_reader_kwargs_forwarded_to_plugin_open() -> None:
+    """A plugin whose open() accepts a kwarg receives it verbatim."""
+    seen: dict[str, Any] = {}
+
+    def _open(p: Path, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return ("opened", p, kwargs)
+
+    register_plugin(ReaderPlugin(name="kwargs-aware", match=lambda _p: 100, open=_open))
+
+    reader, _plugin, _score = get_reader(
+        "/tmp/anything.xyz",
+        reader_kwargs={"metadata_path": "/writable/sidecar.json"},
+    )
+    assert seen == {"metadata_path": "/writable/sidecar.json"}
+    assert reader == (
+        "opened",
+        Path("/tmp/anything.xyz"),
+        {"metadata_path": "/writable/sidecar.json"},
+    )
+
+
+def test_reader_kwargs_default_none_matches_positional_only_open() -> None:
+    """A plugin whose open() takes only path still works with no reader_kwargs."""
+
+    def _open(p: Path) -> Any:
+        return ("opened", p)
+
+    register_plugin(
+        ReaderPlugin(name="positional-only", match=lambda _p: 100, open=_open)
+    )
+
+    reader, _plugin, _score = get_reader("/tmp/anything.xyz")
+    assert reader == ("opened", Path("/tmp/anything.xyz"))
+
+    # Explicit empty dict is equivalent to None — no forwarded kwargs.
+    reader2, _plugin2, _score2 = get_reader("/tmp/anything.xyz", reader_kwargs={})
+    assert reader2 == ("opened", Path("/tmp/anything.xyz"))
+
+
+def test_reader_kwargs_unknown_kwarg_raises_typeerror() -> None:
+    """An unknown kwarg surfaces as Python's native TypeError from open()."""
+
+    def _open(p: Path) -> Any:
+        return object()
+
+    register_plugin(
+        ReaderPlugin(name="positional-only", match=lambda _p: 100, open=_open)
+    )
+
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        get_reader("/tmp/anything.xyz", reader_kwargs={"nope": "no"})

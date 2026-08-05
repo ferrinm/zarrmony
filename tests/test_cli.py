@@ -27,8 +27,12 @@ def patched_reader(monkeypatch: pytest.MonkeyPatch):
             distribution=plugin,
             source="builtin",
         )
+        # Accept the reader_kwargs kwarg (issue #79) so tests that don't pass
+        # it still work, and CLI parsing tests can capture it.
         monkeypatch.setattr(
-            api_module, "get_reader", lambda _path: (reader, plugin_obj, 100)
+            api_module,
+            "get_reader",
+            lambda _path, *, reader_kwargs=None: (reader, plugin_obj, 100),
         )
 
     return installer
@@ -482,3 +486,145 @@ def test_inspect_text_output_prints_plate_header_for_plate_reader(
     assert "3/4 wells imaged" in result.output
     assert "1 field per well" in result.output
     assert "1 acquisition" in result.output
+
+
+# ---------- --reader-kwarg (issue #79) ----------
+
+
+def test_convert_reader_kwarg_forwards_to_api(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeatable --reader-kwarg parses into a dict[str, str] and reaches convert()."""
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--reader-kwarg",
+            "metadata_path=/writable/metadata.json",
+            "--reader-kwarg",
+            "other=42",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["reader_kwargs"] == {
+        "metadata_path": "/writable/metadata.json",
+        "other": "42",
+    }
+
+
+def test_convert_reader_kwarg_absent_forwards_none(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting --reader-kwarg forwards ``reader_kwargs=None`` (no kwarg)."""
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["convert", "/tmp/x.lif", str(out)])
+    assert result.exit_code == 0, result.output
+    assert captured["reader_kwargs"] is None
+
+
+def test_convert_reader_kwarg_missing_equals_rejected(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """A malformed --reader-kwarg (no ``=``) fails with click.BadParameter."""
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--reader-kwarg",
+            "malformed-no-equals",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "KEY=VALUE" in result.output
+
+
+def test_convert_reader_kwarg_duplicate_key_rejected(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """Duplicate --reader-kwarg keys are rejected (fail loud vs last-wins)."""
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--reader-kwarg",
+            "k=v1",
+            "--reader-kwarg",
+            "k=v2",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "more than once" in result.output
+
+
+def test_inspect_reader_kwarg_forwards_to_api(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--reader-kwarg on `inspect` reaches api.inspect()."""
+    captured: dict = {}
+
+    def _fake_inspect(input_path, *, reader_kwargs=None):
+        captured["reader_kwargs"] = reader_kwargs
+        return {
+            "input_path": str(input_path),
+            "size_bytes": 0,
+            "size_human": "0 B",
+            "reader_plugin": {
+                "name": "bioio-fake",
+                "source": "builtin",
+                "distribution": "bioio-fake",
+                "match_score": 100,
+            },
+            "n_scenes": 0,
+            "scenes": [],
+        }
+
+    monkeypatch.setattr(api_module, "inspect", _fake_inspect)
+
+    result = runner.invoke(
+        app,
+        [
+            "inspect",
+            "/tmp/x.lif",
+            "--reader-kwarg",
+            "metadata_path=/writable/metadata.json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["reader_kwargs"] == {"metadata_path": "/writable/metadata.json"}

@@ -55,6 +55,38 @@ def _parse_chunk_shape(
         ) from e
 
 
+def _parse_reader_kwargs(
+    ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> dict[str, str] | None:
+    """Parse repeatable ``--reader-kwarg KEY=VALUE`` into a ``dict[str, str]``.
+
+    Returns ``None`` when the flag was not passed so the API sees the same
+    "no kwargs" signal as an in-process caller. Values stay strings — readers
+    coerce internally (e.g. ``SmartSpimReader`` casts ``metadata_path`` to a
+    ``Path``). Duplicate keys raise :class:`click.BadParameter` so users don't
+    silently lose a kwarg to last-wins merging; unknown kwargs are left to
+    the reader constructor's native ``TypeError``.
+    """
+    if not value:
+        return None
+    parsed: dict[str, str] = {}
+    for item in value:
+        if "=" not in item:
+            raise click.BadParameter(
+                f"expected KEY=VALUE (got {item!r}); pass e.g. "
+                f"'--reader-kwarg metadata_path=/path/to/sidecar.json'"
+            )
+        key, _, val = item.partition("=")
+        if not key:
+            raise click.BadParameter(
+                f"reader-kwarg key must be non-empty (got {item!r})"
+            )
+        if key in parsed:
+            raise click.BadParameter(f"reader-kwarg {key!r} was passed more than once")
+        parsed[key] = val
+    return parsed
+
+
 @app.command(name="convert")
 @click.argument("input_path", metavar="INPUT", type=str)
 @click.argument("output", metavar="OUTPUT", type=str)
@@ -162,6 +194,22 @@ def _parse_chunk_shape(
         "flag. See ADR-0005."
     ),
 )
+@click.option(
+    "--reader-kwarg",
+    "reader_kwargs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    callback=_parse_reader_kwargs,
+    help=(
+        "Reader-specific option forwarded to the winning plugin's open() "
+        "as **kwargs. Repeatable. Values stay strings; the reader coerces "
+        "internally. Motivating case: sidecar-elsewhere overrides like "
+        "'--reader-kwarg metadata_path=/writable/metadata.json' for "
+        "SmartSPIM exports on a read-only share. Unknown kwargs surface as "
+        "the reader constructor's native TypeError — zarrmony does not "
+        "validate the shape."
+    ),
+)
 def convert_cmd(
     input_path: str,
     output: str,
@@ -174,6 +222,7 @@ def convert_cmd(
     checksum: bool,
     validate: bool,
     lif_mosaic: str,
+    reader_kwargs: dict[str, str] | None,
 ) -> None:
     """Convert INPUT (a bioimage file) to OME-Zarr v0.5 at OUTPUT.
 
@@ -202,6 +251,7 @@ def convert_cmd(
             checksum=checksum,
             validate=validate,
             lif_mosaic=lif_mosaic,
+            reader_kwargs=reader_kwargs,
         )
     except OutputExistsError as e:
         raise click.ClickException(str(e)) from e
@@ -237,9 +287,29 @@ def convert_cmd(
     is_flag=True,
     help="Output as JSON instead of human-readable text.",
 )
-def inspect_cmd(input_path: str, as_json: bool) -> None:
+@click.option(
+    "--reader-kwarg",
+    "reader_kwargs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    callback=_parse_reader_kwargs,
+    help=(
+        "Reader-specific option forwarded to the winning plugin's open() "
+        "as **kwargs. Repeatable. Values stay strings; the reader coerces "
+        "internally. Motivating case: sidecar-elsewhere overrides like "
+        "'--reader-kwarg metadata_path=/writable/metadata.json' for "
+        "SmartSPIM exports on a read-only share. Unknown kwargs surface as "
+        "the reader constructor's native TypeError — zarrmony does not "
+        "validate the shape."
+    ),
+)
+def inspect_cmd(
+    input_path: str,
+    as_json: bool,
+    reader_kwargs: dict[str, str] | None,
+) -> None:
     """Print scenes, dims, channels, and pixel sizes for INPUT (no conversion)."""
-    info = zm_api.inspect(input_path)
+    info = zm_api.inspect(input_path, reader_kwargs=reader_kwargs)
     if as_json:
         click.echo(json.dumps(info, indent=2, default=str))
         return

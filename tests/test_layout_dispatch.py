@@ -48,7 +48,9 @@ def patched_reader(monkeypatch: pytest.MonkeyPatch):
     def installer(reader: FakeReader, plugin: str = "bioio-fake") -> None:
         plugin_obj = _fake_plugin(plugin)
         monkeypatch.setattr(
-            api_module, "get_reader", lambda _path: (reader, plugin_obj, 100)
+            api_module,
+            "get_reader",
+            lambda _path, *, reader_kwargs=None: (reader, plugin_obj, 100),
         )
 
     return installer

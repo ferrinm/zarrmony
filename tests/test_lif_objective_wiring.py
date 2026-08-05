@@ -43,7 +43,7 @@ def patched_reader(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
             api_module,
             "get_reader",
-            lambda _path: (reader, _fake_plugin(), 100),
+            lambda _path, *, reader_kwargs=None: (reader, _fake_plugin(), 100),
         )
 
     return installer

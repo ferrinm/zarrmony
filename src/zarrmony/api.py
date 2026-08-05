@@ -672,6 +672,7 @@ def convert(
     checksum: bool = False,
     validate: bool = True,
     lif_mosaic: LifMosaic = "auto-stitch",
+    reader_kwargs: dict[str, Any] | None = None,
 ) -> dict:
     """Convert ``input_path`` to OME-Zarr v0.5.
 
@@ -766,7 +767,7 @@ def convert(
             f"got {contrast_percentile!r}"
         )
 
-    reader, plugin, match_score = get_reader(input_path)
+    reader, plugin, match_score = get_reader(input_path, reader_kwargs=reader_kwargs)
     if not reader.scenes:
         raise ZarrmonyError(f"reader returned no scenes for {input_path!s}")
     distribution = _resolve_distribution(reader, plugin)
@@ -1783,13 +1784,22 @@ def _convert_plate(
     return audit
 
 
-def inspect(input_path: str | Path) -> dict:
+def inspect(
+    input_path: str | Path,
+    *,
+    reader_kwargs: dict[str, Any] | None = None,
+) -> dict:
     """Return a summary of ``input_path``'s scenes without converting.
 
     Used for pre-flight inspection before kicking off a slow conversion. The
     ``reader_plugin`` field mirrors the audit record's nested shape.
+
+    ``reader_kwargs`` (optional) is forwarded to the winning reader plugin's
+    ``open()`` — same passthrough as :func:`convert`. Motivating case: the
+    SmartSPIM reader's ``metadata_path=`` sidecar override, which lives
+    elsewhere on disk than the read-only export directory.
     """
-    reader, plugin, match_score = get_reader(input_path)
+    reader, plugin, match_score = get_reader(input_path, reader_kwargs=reader_kwargs)
     distribution = _resolve_distribution(reader, plugin)
     scenes_info = []
     for i, name in enumerate(reader.scenes):

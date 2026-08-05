@@ -170,7 +170,11 @@ def _install(monkeypatch, reader: FakeReader) -> None:
         distribution="bioio-lif",
         source="builtin",
     )
-    monkeypatch.setattr(api_module, "get_reader", lambda _path: (reader, plugin, 100))
+    monkeypatch.setattr(
+        api_module,
+        "get_reader",
+        lambda _path, *, reader_kwargs=None: (reader, plugin, 100),
+    )
 
 
 def test_api_lif_path_writes_real_channels(tmp_path: Path, monkeypatch) -> None:

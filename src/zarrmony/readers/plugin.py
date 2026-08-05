@@ -63,11 +63,18 @@ class ReaderPlugin:
     ``match`` must be cheap and side-effect-free; it returns a priority score
     (higher wins) or ``None`` for no match. ``open`` may be expensive and is
     only called on the winning plugin.
+
+    ``open`` is called as ``plugin.open(path, **reader_kwargs)`` — plugins
+    that accept only a path see ``**{}`` and behave identically to the
+    single-arg form. Plugins may declare additional keyword parameters to
+    accept reader-specific options (e.g. sidecar path overrides); unknown
+    kwargs raise the reader constructor's native ``TypeError``, which
+    zarrmony does not intercept.
     """
 
     name: str
     match: Callable[[Path], int | None]
-    open: Callable[[Path], ReaderProtocol]
+    open: Callable[..., ReaderProtocol]
     distribution: str | None = None
     source: PluginSource = "runtime"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -135,11 +142,21 @@ def _ensure_entry_points_loaded() -> None:
             warnings.warn(str(exc), stacklevel=2)
 
 
-def get_reader(path: str | Path) -> tuple[ReaderProtocol, ReaderPlugin, int]:
+def get_reader(
+    path: str | Path,
+    *,
+    reader_kwargs: dict[str, Any] | None = None,
+) -> tuple[ReaderProtocol, ReaderPlugin, int]:
     """Open ``path`` with the highest-scoring registered plugin.
 
     Returns ``(reader, plugin, match_score)``. Matchers that raise are logged
     and treated as no-match. The winning ``open()`` raising is fatal.
+
+    ``reader_kwargs`` is forwarded verbatim to the winning ``plugin.open()``
+    as ``**reader_kwargs`` — the mechanism to reach plugin-specific reader
+    options (e.g. sidecar path overrides) from ``convert()`` / ``inspect()``
+    / the CLI. Unknown kwargs surface as the reader constructor's native
+    ``TypeError``; zarrmony deliberately does not validate the shape.
     """
     _ensure_entry_points_loaded()
     p = Path(str(path))
@@ -163,7 +180,7 @@ def get_reader(path: str | Path) -> tuple[ReaderProtocol, ReaderPlugin, int]:
     # scores against entry-point plugins (built-ins register first).
     candidates.sort(key=lambda c: -c[0])
     score, plugin = candidates[0]
-    reader = plugin.open(p)
+    reader = plugin.open(p, **(reader_kwargs or {}))
     return reader, plugin, score
 
 

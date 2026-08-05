@@ -201,6 +201,43 @@ If `open()` raises, the conversion fails fast. This is intentional: silently
 falling through to a different plugin would mask bugs and produce mysteriously
 different outputs depending on which plugins are installed.
 
+### Accepting reader-specific keyword arguments
+
+`open()` is invoked as `plugin.open(path, **reader_kwargs)` — plugins that
+accept only a path see `**{}` and behave identically to the single-argument
+form (backwards compatible with every existing plugin). Declare additional
+keyword parameters when your reader has options a caller can't discover from
+the file alone. The motivating case is a sidecar-elsewhere override:
+
+```python
+def open_smartspim(path: Path, *, metadata_path: Path | str | None = None):
+    return SmartSpimReader(path, metadata_path=metadata_path)
+```
+
+Callers reach the kwarg through `convert()` / `inspect()`'s `reader_kwargs`
+dict, or the CLI's repeatable `--reader-kwarg KEY=VALUE`:
+
+```python
+from zarrmony import inspect
+inspect(
+    "/mnt/readonly/56502",
+    reader_kwargs={"metadata_path": "/writable/metadata_56502.json"},
+)
+```
+
+```bash
+zarrmony inspect /mnt/readonly/56502 \
+  --reader-kwarg metadata_path=/writable/metadata_56502.json
+```
+
+Values from the CLI stay as strings; the reader coerces internally
+(`SmartSpimReader` casts `metadata_path` to a `Path`). Unknown kwargs
+surface as the reader constructor's native `TypeError` — zarrmony does not
+intercept or validate the shape, so a typo like
+`--reader-kwarg meta_path=…` fails loudly at open time. There is
+deliberately no plugin-side kwarg schema in v1; that is deferred until a
+second plugin needs the same discovery mechanism.
+
 If your reader doesn't directly satisfy the Reader Protocol — for example,
 you're wrapping a vendor SDK whose attribute names don't line up — write a
 thin adapter:
