@@ -376,25 +376,79 @@ def _audit_objective_for_scene(
     return extract_objective_from_ome(ome)
 
 
+def _reader_acquisition_extras(reader: Any) -> dict | None:
+    """Read the soft-optional ``reader.acquisition_audit`` hook (issue #76).
+
+    A reader plugin whose modality is known but not carried by OME's
+    ``Channel.AcquisitionMode`` — e.g. a stitched TIFF from a light-sheet rig
+    whose source files have no OME AcquisitionMode — can inject fields into
+    the acquisition audit block by exposing ``acquisition_audit`` returning a
+    dict with any subset of ``{date, microscope, microscope_serial,
+    imaging_method}``. Same soft-optional shape as ``layout_hint`` /
+    ``channel_names`` / ``ome_metadata`` — accessed via ``getattr`` guarded
+    by ``try``/``except`` so a raising hook degrades to no extras.
+    """
+    try:
+        extras = getattr(reader, "acquisition_audit", None)
+    except Exception:  # noqa: BLE001 — never crash audit over a reader hook
+        return None
+    if callable(extras):
+        try:
+            extras = extras()
+        except Exception:  # noqa: BLE001 — never crash audit over a reader hook
+            return None
+    if not isinstance(extras, dict) or not extras:
+        return None
+    return extras
+
+
 def _audit_acquisition_for_scene(
     reader: Any,
     lif_acquisition: dict | None,
     scene_index: int,
 ) -> dict | None:
-    """LIF-extracted acquisition wins; else project from ``reader.ome_metadata``.
+    """Compose the per-scene acquisition dict from three layered sources.
 
-    Covers ADR-0008 / #62 (LIF) + #63–#65 (CZI, ND2, default). OME cannot
-    surface ``imaging_method`` on its own (no first-class OME modality field),
-    so a scene whose reader only exposes OME metadata typically gets
-    ``{date?, microscope?, microscope_serial?}`` without ``imaging_method``.
+    Precedence (uniform ``setdefault`` — first source that populates a key
+    wins; later sources fill only remaining gaps):
+
+    1. **LIF extractor** (LIF scenes only) — ``lif_acquisition`` from
+       :func:`~zarrmony.metadata.acquisition.extract_acquisition`. LIF gets
+       first crack because bioio-lif's OME projection is unreliable for
+       Leica-native fields (``SystemTypeName``, ``SystemSerialNumber``, the
+       ``HardwareSetting`` modality hints).
+    2. **OME projection** — :func:`extract_acquisition_from_ome` reads
+       ``reader.ome_metadata`` and now surfaces ``imaging_method`` from
+       per-channel ``<Channel AcquisitionMode>``. For LIF scenes this fills
+       gaps the LIF extractor missed (e.g. imaging_method when the
+       ``HardwareSetting`` header lacks ``DataSourceTypeName``); for CZI /
+       ND2 / OME-TIFF this is the primary extractor.
+    3. **Reader hook** — :func:`_reader_acquisition_extras` calls the
+       soft-optional ``reader.acquisition_audit`` (issue #76). Reserved for
+       cases where a reader knows its modality (SmartSPIM = light_sheet by
+       construction) but neither the LIF extractor nor OME's
+       ``AcquisitionMode`` surface produces it. ``setdefault`` semantics
+       mean the hook can never override a source-file-derived extraction —
+       if OME says ``["confocal"]`` and the hook claims ``["light_sheet"]``,
+       OME wins.
+
+    Fail-safe throughout: any exception at any tier yields no contribution
+    from that tier; the block is composed from what did succeed. Returns
+    ``None`` when all three sources came back empty so the audit omits the
+    ``acquisition`` key entirely.
     """
-    if lif_acquisition:
-        return lif_acquisition
+    base: dict = dict(lif_acquisition) if lif_acquisition else {}
     try:
         ome = reader.ome_metadata
     except Exception:  # noqa: BLE001 — heterogeneous bioio errors
-        return None
-    return extract_acquisition_from_ome(ome, image_index=0)
+        ome = None
+    ome_dict = extract_acquisition_from_ome(ome, image_index=0) or {}
+    for key, value in ome_dict.items():
+        base.setdefault(key, value)
+    extras = _reader_acquisition_extras(reader) or {}
+    for key, value in extras.items():
+        base.setdefault(key, value)
+    return base or None
 
 
 def _audit_channels_for_scene(
@@ -1724,24 +1778,33 @@ def inspect(input_path: str | Path) -> dict:
                 else None
             ),
         }
-        # ADR-0008 / #62 (+#63–#65): surface the acquisition block in
+        # ADR-0008 / #62 (+#63–#65 / #76): surface the acquisition block in
         # inspect() so pre-flight tooling can see it without paying for a
-        # full convert. LIF path uses the raw scene XML extractor; non-LIF
-        # falls back to `reader.ome_metadata`. Same fail-safe as the convert
-        # path — metadata never crashes inspect().
-        acquisition: dict | None = None
+        # full convert. Same 3-tier composition as the convert path
+        # (:func:`_audit_acquisition_for_scene`): LIF scene-XML extractor
+        # first, OME projection ``setdefault``-fills any gaps (including
+        # ``imaging_method`` from per-channel ``AcquisitionMode``), and the
+        # soft-optional ``reader.acquisition_audit`` hook fills whatever
+        # neither extractor produced. Same fail-safe throughout — metadata
+        # never crashes inspect().
         scene_xml = find_scene_xml(reader)
+        base: dict = {}
         if scene_xml is not None:
-            acquisition = extract_acquisition(scene_xml)
-        if not acquisition:
-            try:
-                ome = reader.ome_metadata
-            except Exception:  # noqa: BLE001 — heterogeneous bioio errors
-                ome = None
-            if ome is not None:
-                acquisition = extract_acquisition_from_ome(ome, image_index=0)
-        if acquisition:
-            scene_info["acquisition"] = acquisition
+            lif_extracted = extract_acquisition(scene_xml)
+            if lif_extracted:
+                base.update(lif_extracted)
+        try:
+            ome = reader.ome_metadata
+        except Exception:  # noqa: BLE001 — heterogeneous bioio errors
+            ome = None
+        ome_dict = extract_acquisition_from_ome(ome, image_index=0) or {}
+        for key, value in ome_dict.items():
+            base.setdefault(key, value)
+        extras = _reader_acquisition_extras(reader) or {}
+        for key, value in extras.items():
+            base.setdefault(key, value)
+        if base:
+            scene_info["acquisition"] = base
         scenes_info.append(scene_info)
     input_bytes = size_on_disk(input_path)
     info: dict[str, Any] = {

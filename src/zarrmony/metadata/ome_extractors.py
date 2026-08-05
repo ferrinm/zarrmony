@@ -13,6 +13,13 @@ The three blocks are extracted independently — a reader that exposes
 ``ome_metadata.images[i].acquisition_date`` but no ``instruments`` still gets
 its acquisition date recorded; missing bits omitted per the ADR-0008
 omit-not-null rule.
+
+``imaging_method`` for the non-LIF path is derived from per-channel
+``<Channel AcquisitionMode="...">`` on the OME ``Pixels`` element — a
+standardised OME surface distinct from ``Instrument.Microscope.Type`` (which is
+body-type: Upright / Inverted / etc., not modality). A scene whose channels
+were acquired with different modes (bright-field reference + confocal detail,
+e.g.) surfaces every mode encountered, deduped in first-seen order.
 """
 
 from __future__ import annotations
@@ -35,6 +42,41 @@ _OME_IMMERSION_TO_STR: dict[str, str] = {
     "Multi": "Multi",
     "Other": "Other",
     "WaterDipping": "WaterDipping",
+}
+
+# OME ``Channel.AcquisitionMode`` enum value → ADR-0008 ``imaging_method``
+# token. The token set is deliberately aligned with
+# :mod:`zarrmony.metadata.acquisition`'s ``_LIF_MODALITY_TOKEN`` so LIF- and
+# OME-projected scenes emit the same string for the same physical technique.
+# Values not in this map are dropped (never emitted verbatim) so downstream
+# consumers can trust the token vocabulary is bounded — the BQ column examples
+# call out ``widefield_fluorescence, confocal, spinning_disk_confocal,
+# light_sheet`` and this map covers those plus the LIF-shared extensions.
+# ``Other`` is dropped rather than mapped to ``"other"`` because it carries
+# no information — a mislabel would be worse than the omission.
+_OME_ACQUISITION_MODE_TOKEN: dict[str, str] = {
+    "WideField": "widefield_fluorescence",
+    "LaserScanningConfocalMicroscopy": "confocal",
+    "SlitScanConfocal": "confocal",
+    "SpinningDiskConfocal": "spinning_disk_confocal",
+    "SweptFieldConfocal": "spinning_disk_confocal",
+    "MultiPhotonMicroscopy": "multiphoton",
+    "StructuredIllumination": "structured_illumination",
+    "SingleMoleculeImaging": "single_molecule",
+    "TotalInternalReflection": "tirf",
+    "TIRF": "tirf",
+    "FluorescenceLifetime": "fluorescence_lifetime",
+    "SpectralImaging": "spectral_imaging",
+    "FluorescenceCorrelationSpectroscopy": "fluorescence_correlation_spectroscopy",
+    "NearFieldScanningOpticalMicroscopy": "near_field_scanning_optical",
+    "SecondHarmonicGenerationImaging": "second_harmonic_generation",
+    "PALM": "palm",
+    "STORM": "storm",
+    "STED": "sted",
+    "FSM": "fsm",
+    "LCM": "lcm",
+    "BrightField": "bright_field",
+    "SPIM": "light_sheet",
 }
 
 
@@ -139,6 +181,37 @@ def _brand_and_model(manufacturer: str | None, model: str | None) -> str | None:
     return " ".join(parts) if parts else None
 
 
+def _extract_imaging_method_from_channels(image: Any) -> list[str] | None:
+    """Project ``image.pixels.channels[*].acquisition_mode`` → ADR-0008 tokens.
+
+    Reads per-channel ``AcquisitionMode`` (a standardised OME enum), maps each
+    value through :data:`_OME_ACQUISITION_MODE_TOKEN`, and returns the deduped
+    list in first-seen channel order. Unmapped values (``"Other"``, or any
+    future enum member not in the map) are dropped rather than emitted
+    verbatim, so the token vocabulary stays bounded.
+
+    A scene whose channels record different modes (bright-field reference +
+    confocal detail, e.g.) yields every distinct token; a scene where all
+    channels record the same mode yields a single-element list — matches the
+    BQ ``imaging_method`` ``REPEATED STRING`` shape either way.
+
+    Returns ``None`` when no channel had a mappable ``acquisition_mode``.
+    """
+    pixels = getattr(image, "pixels", None)
+    if pixels is None:
+        return None
+    channels = list(getattr(pixels, "channels", None) or [])
+    seen: list[str] = []
+    for ch in channels:
+        mode = _to_string(getattr(ch, "acquisition_mode", None))
+        if mode is None:
+            continue
+        token = _OME_ACQUISITION_MODE_TOKEN.get(mode)
+        if token and token not in seen:
+            seen.append(token)
+    return seen or None
+
+
 def extract_acquisition_from_ome(ome: Any, image_index: int = 0) -> dict | None:
     """Project OME acquisition + instrument metadata into the ADR-0008 shape.
 
@@ -152,10 +225,11 @@ def extract_acquisition_from_ome(ome: Any, image_index: int = 0) -> dict | None:
     combines the ``Microscope`` manufacturer + model (``"Nikon Ti2"``).
     ``microscope_serial`` comes from ``Microscope.serial_number``.
 
-    ``imaging_method`` is deliberately NOT populated here — OME's Instrument
-    schema does not have a first-class modality field; format-specific
-    extractors (CZI ``.czi`` metadata, ND2's Nikon experiment surface)
-    contribute their own modality tokens.
+    ``imaging_method`` is derived from per-channel ``<Channel AcquisitionMode>``
+    on the OME ``Pixels`` element (not from ``Instrument.Microscope.Type``,
+    which is body-type, not modality). Values are mapped through
+    :data:`_OME_ACQUISITION_MODE_TOKEN` and deduped in first-seen order —
+    scenes with mixed modes per channel emit every token they saw.
     """
     if ome is None:
         return None
@@ -163,14 +237,17 @@ def extract_acquisition_from_ome(ome: Any, image_index: int = 0) -> dict | None:
         record: dict = {}
 
         images = list(getattr(ome, "images", None) or [])
-        if 0 <= image_index < len(images):
-            image = images[image_index]
+        image = images[image_index] if 0 <= image_index < len(images) else None
+        if image is not None:
             acq_date = getattr(image, "acquisition_date", None)
             if acq_date is not None:
                 # ome_types stores datetime; serialise to ISO 8601. Fall back
                 # to str() so a string-shaped alternative doesn't crash us.
                 iso = getattr(acq_date, "isoformat", None)
                 record["date"] = iso() if callable(iso) else str(acq_date)
+            imaging_method = _extract_imaging_method_from_channels(image)
+            if imaging_method:
+                record["imaging_method"] = imaging_method
 
         microscope = _first_microscope(ome)
         if microscope is not None:

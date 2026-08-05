@@ -63,12 +63,55 @@ These are accessed via `getattr` or `try/except`. Omit them and zarrmony falls
 back gracefully — the conversion still produces a valid OME-Zarr; it just
 loses fidelity for the missing piece.
 
-| Attribute                  | Fallback when missing or raising                                                                                                                                                                                                                                 |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `channel_names: list[str]` | Channels labelled `C:0`, `C:1`, …; the audit records `channel_names: null`.                                                                                                                                                                                      |
-| `ome_metadata`             | A minimal OME `Image` element synthesised from the scene shape; an audit warning records the failure. Return `OME` (from `ome-types`), an `xml.etree.ElementTree.Element`, or an XML string.                                                                     |
-| `metadata`                 | No `OME/source/raw.<format>.xml` is written. Anything that serialises with `str()` works; native `OME`, `Element`, or `str` skip the round-trip.                                                                                                                 |
-| `close()`                  | Skipped. Implement it if your reader holds non-GC resources (file handles, network sessions). zarrmony's intent is to call this in a `finally` block once it lands ([ADR-0001](./adr/0001-reader-plugin-architecture.md)); writing it now is forward-compatible. |
+| Attribute                         | Fallback when missing or raising                                                                                                                                                                                                                                 |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channel_names: list[str]`        | Channels labelled `C:0`, `C:1`, …; the audit records `channel_names: null`.                                                                                                                                                                                      |
+| `ome_metadata`                    | A minimal OME `Image` element synthesised from the scene shape; an audit warning records the failure. Return `OME` (from `ome-types`), an `xml.etree.ElementTree.Element`, or an XML string.                                                                     |
+| `metadata`                        | No `OME/source/raw.<format>.xml` is written. Anything that serialises with `str()` works; native `OME`, `Element`, or `str` skip the round-trip.                                                                                                                 |
+| `acquisition_audit: dict \| None` | No reader-side extras contribute to `per_scene[i].acquisition`; the block is composed from the LIF scene-XML extractor (LIF only) and the OME projection alone. See [§ acquisition_audit](#acquisition_audit) below for the shape and gap-fill semantics.        |
+| `close()`                         | Skipped. Implement it if your reader holds non-GC resources (file handles, network sessions). zarrmony's intent is to call this in a `finally` block once it lands ([ADR-0001](./adr/0001-reader-plugin-architecture.md)); writing it now is forward-compatible. |
+
+### `acquisition_audit`
+
+Use this hook when your reader knows an acquisition-block field by
+construction but no source-file surface (LIF scene XML, OME per-channel
+`AcquisitionMode`) carries it. Typical case: a stitched TIFF reader for a
+single-modality microscope (SmartSPIM = light-sheet, Blaze = light-sheet)
+where the exported file is a plain OME-TIFF with no modality tag but the
+reader knows the modality is fixed.
+
+Shape (any subset of the ADR-0008 keys — every key optional):
+
+```python
+class MyReader:
+    layout_hint = "flat"
+
+    @property
+    def acquisition_audit(self) -> dict | None:
+        return {"imaging_method": ["light_sheet"]}
+```
+
+A plain instance attribute (`self.acquisition_audit = {...}`) works too;
+either shape is accepted. Returning `None` or a non-dict yields no extras.
+
+**Precedence — `setdefault` layering.** Zarrmony composes
+`per_scene[i].acquisition` in three tiers, first source wins per key:
+
+1. LIF scene-XML extractor (LIF scenes only).
+2. OME projection from `reader.ome_metadata` — populates `date`,
+   `microscope`, `microscope_serial`, and `imaging_method` (from per-channel
+   `<Channel AcquisitionMode>`).
+3. `reader.acquisition_audit` — fills only keys neither of the above
+   populated.
+
+The hook can never override a source-file-derived extraction. If bioio's
+OME projection reports `Channel.AcquisitionMode = "SpinningDiskConfocal"`,
+your `acquisition_audit` returning `["light_sheet"]` won't take effect —
+OME is the more trustworthy source when it fires. Reserve the hook for
+cases where source-file extraction produces nothing.
+
+**Fail-safe.** A hook that raises yields no extras; conversion continues
+normally with whatever the earlier tiers produced.
 
 ### `layout_hint` and `plate_layout`
 

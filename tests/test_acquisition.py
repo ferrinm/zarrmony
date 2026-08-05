@@ -104,3 +104,131 @@ def test_placeholder_microscope_model_zero_is_rejected() -> None:
     result = extract_acquisition(xml)
     # No microscope key when only the placeholder was present.
     assert result is None or "microscope" not in result
+
+
+# --- widefield detection tiers (Leica Thunder / DMi8 patterns) -------------
+
+
+def test_widefield_channel_info_fluo_yields_widefield_fluorescence() -> None:
+    """Thunder scenes report DataSourceTypeName='Camera' (generic) but carry
+    WideFieldChannelInfo with ContrastingMethodName='FLUO' — that's what
+    identifies the scene as widefield fluorescence."""
+    xml = (
+        "<LMSDataContainerHeader><Element><Data><Image>"
+        '<Attachment Name="HardwareSetting" DataSourceTypeName="Camera" />'
+        '<WideFieldChannelInfo ContrastingMethodName="FLUO" />'
+        "</Image></Data></Element></LMSDataContainerHeader>"
+    )
+    result = extract_acquisition(xml)
+    assert result is not None
+    assert result["imaging_method"] == ["widefield_fluorescence"]
+
+
+def test_mixed_contrasting_methods_surface_every_distinct_token() -> None:
+    """Multi-channel widefield with FLUO + BF channels emits both tokens
+    in first-seen order (matches OME AcquisitionMode multi-mode behaviour)."""
+    xml = (
+        "<LMSDataContainerHeader><Element><Data><Image>"
+        '<WideFieldChannelInfo ContrastingMethodName="BF" />'
+        '<WideFieldChannelInfo ContrastingMethodName="FLUO" />'
+        '<WideFieldChannelInfo ContrastingMethodName="FLUO" />'
+        "</Image></Data></Element></LMSDataContainerHeader>"
+    )
+    result = extract_acquisition(xml)
+    assert result is not None
+    assert result["imaging_method"] == ["bright_field", "widefield_fluorescence"]
+
+
+def test_atl_camera_setting_fallback_when_no_contrasting_method() -> None:
+    """A camera-based Leica scene with no ContrastingMethodName and no ATL
+    confocal block falls back to widefield_fluorescence via
+    ATLCameraSettingDefinition presence."""
+    xml = (
+        "<LMSDataContainerHeader><Element><Data><Image>"
+        '<Attachment Name="HardwareSetting" DataSourceTypeName="Camera" />'
+        "<ATLCameraSettingDefinition />"
+        "</Image></Data></Element></LMSDataContainerHeader>"
+    )
+    result = extract_acquisition(xml)
+    assert result is not None
+    assert result["imaging_method"] == ["widefield_fluorescence"]
+
+
+def test_contrasting_method_variants_normalise_correctly() -> None:
+    """Case-insensitive; hyphens and underscores stripped (TL-BF == TL_BF == TLBF)."""
+    for raw in ("bf", "BF", "Tl-Bf", "TL_BF"):
+        xml = (
+            "<LMSDataContainerHeader><Element><Data><Image>"
+            f'<WideFieldChannelInfo ContrastingMethodName="{raw}" />'
+            "</Image></Data></Element></LMSDataContainerHeader>"
+        )
+        result = extract_acquisition(xml)
+        assert result is not None
+        assert result["imaging_method"] == ["bright_field"], f"failed for {raw!r}"
+
+
+def test_confocal_tier_wins_over_widefield_camera_fallback() -> None:
+    """A scene with both an ATLConfocal block AND ATLCameraSetting reports
+    confocal (tier 3 fires first, tier 4 is skipped)."""
+    xml = (
+        "<LMSDataContainerHeader><Element><Data><Image>"
+        "<ATLConfocalSettingDefinition />"
+        "<ATLCameraSettingDefinition />"
+        "</Image></Data></Element></LMSDataContainerHeader>"
+    )
+    result = extract_acquisition(xml)
+    assert result is not None
+    assert result["imaging_method"] == ["confocal"]
+
+
+# --- TimeStampList hex FILETIME parsing (Thunder / LAS X 3.x) --------------
+
+
+def test_hex_timestamp_list_projects_first_value_to_iso() -> None:
+    """LAS X 3.x LIFs carry per-frame timestamps in ``<TimeStampList>`` as
+    space-separated hex FILETIME values. The first value is the scene start."""
+    when = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+    ticks = int((when.timestamp() + 11644473600) * 10_000_000)
+    hex_ticks = f"{ticks:x}"
+    xml = (
+        "<LMSDataContainerHeader><Element><Data><Image>"
+        f'<TimeStampList NumberOfTimeStamps="3">{hex_ticks} deadbeef1234567 '
+        f"cafef00d0000000</TimeStampList>"
+        "</Image></Data></Element></LMSDataContainerHeader>"
+    )
+    result = extract_acquisition(xml)
+    assert result is not None
+    parsed = datetime.fromisoformat(result["date"])
+    assert parsed == when
+
+
+def test_timestamp_element_takes_precedence_over_timestamp_list() -> None:
+    """Older shape wins when both are present — same ordering as the extractor
+    walks (iter TimeStamp first, then TimeStampList)."""
+    when_new = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+    ticks_new = int((when_new.timestamp() + 11644473600) * 10_000_000)
+    when_old = datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC)
+    ticks_old = int((when_old.timestamp() + 11644473600) * 10_000_000)
+    high = ticks_old >> 32
+    low = ticks_old & 0xFFFFFFFF
+    xml = (
+        "<LMSDataContainerHeader><Element><Data><Image>"
+        f'<TimeStamp HighInteger="{high}" LowInteger="{low}" />'
+        f"<TimeStampList>{ticks_new:x}</TimeStampList>"
+        "</Image></Data></Element></LMSDataContainerHeader>"
+    )
+    result = extract_acquisition(xml)
+    assert result is not None
+    parsed = datetime.fromisoformat(result["date"])
+    assert parsed == when_old
+
+
+def test_timestamp_list_empty_or_garbage_yields_no_date() -> None:
+    xml = (
+        "<LMSDataContainerHeader><Element><Data><Image>"
+        "<TimeStampList></TimeStampList>"
+        "<TimeStampList>not-hex</TimeStampList>"
+        "</Image></Data></Element></LMSDataContainerHeader>"
+    )
+    result = extract_acquisition(xml)
+    assert result is None or "date" not in result

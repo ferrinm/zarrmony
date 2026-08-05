@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from ome_types import OME
 from ome_types.model import (
+    Channel,
     Image,
     Instrument,
     Microscope,
@@ -29,6 +30,7 @@ def _synth_ome(
     objective: Objective | None = None,
     microscope: Microscope | None = None,
     acquisition_date: datetime | None = None,
+    channels: list[Channel] | None = None,
 ) -> OME:
     """Build a minimal OME tree from the given pieces."""
     instruments = []
@@ -40,6 +42,8 @@ def _synth_ome(
                 microscope=microscope,
             )
         )
+    channels_list = channels or []
+    size_c = max(1, len(channels_list))
     image = Image(
         id="Image:0",
         acquisition_date=acquisition_date,
@@ -48,10 +52,11 @@ def _synth_ome(
             size_x=16,
             size_y=16,
             size_z=1,
-            size_c=1,
+            size_c=size_c,
             size_t=1,
             dimension_order="XYZCT",
             type=PixelType.UINT16,
+            channels=channels_list,
         ),
     )
     return OME(images=[image], instruments=instruments)
@@ -115,3 +120,80 @@ def test_extract_acquisition_manufacturer_only_still_populates_microscope() -> N
 def test_extract_never_raises_on_none_input() -> None:
     assert extract_objective_from_ome(None) is None
     assert extract_acquisition_from_ome(None) is None
+
+
+# --- imaging_method from Channel.AcquisitionMode ---------------------------
+
+
+def _channel(idx: int, mode: str | None) -> Channel:
+    kwargs: dict = {"id": f"Channel:0:{idx}"}
+    if mode is not None:
+        kwargs["acquisition_mode"] = mode
+    return Channel(**kwargs)
+
+
+def test_imaging_method_single_mode_across_channels_dedupes_to_one() -> None:
+    """All 3 channels confocal → one-element list (not three copies)."""
+    channels = [_channel(i, "LaserScanningConfocalMicroscopy") for i in range(3)]
+    result = extract_acquisition_from_ome(_synth_ome(channels=channels))
+    assert result == {"imaging_method": ["confocal"]}
+
+
+def test_imaging_method_mixed_modes_preserve_first_seen_order() -> None:
+    """Multi-modal scene (bright-field reference + confocal detail) — both tokens
+    surface, in the order the channels were declared."""
+    channels = [
+        _channel(0, "BrightField"),
+        _channel(1, "LaserScanningConfocalMicroscopy"),
+    ]
+    result = extract_acquisition_from_ome(_synth_ome(channels=channels))
+    assert result == {"imaging_method": ["bright_field", "confocal"]}
+
+
+def test_imaging_method_spim_maps_to_light_sheet() -> None:
+    """OME's SPIM enum value is the standardized name for light-sheet."""
+    channels = [_channel(0, "SPIM")]
+    result = extract_acquisition_from_ome(_synth_ome(channels=channels))
+    assert result == {"imaging_method": ["light_sheet"]}
+
+
+def test_imaging_method_swept_field_maps_to_spinning_disk() -> None:
+    channels = [_channel(0, "SweptFieldConfocal")]
+    result = extract_acquisition_from_ome(_synth_ome(channels=channels))
+    assert result == {"imaging_method": ["spinning_disk_confocal"]}
+
+
+def test_imaging_method_other_is_dropped() -> None:
+    """``Other`` carries no info — dropped rather than emitted as a token."""
+    channels = [_channel(0, "Other")]
+    result = extract_acquisition_from_ome(_synth_ome(channels=channels))
+    assert result is None
+
+
+def test_imaging_method_absent_when_no_channels() -> None:
+    """OME with an image but no channels → no imaging_method key."""
+    assert extract_acquisition_from_ome(_synth_ome()) is None
+
+
+def test_imaging_method_absent_when_channels_have_no_acquisition_mode() -> None:
+    """Channels present but no AcquisitionMode → imaging_method omitted."""
+    channels = [_channel(0, None), _channel(1, None)]
+    assert extract_acquisition_from_ome(_synth_ome(channels=channels)) is None
+
+
+def test_imaging_method_composes_with_date_and_microscope() -> None:
+    """All three surfaces populate one record; keys coexist."""
+    when = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+    scope = Microscope(manufacturer="Zeiss", model="LSM 980")
+    channels = [_channel(0, "LaserScanningConfocalMicroscopy")]
+    result = extract_acquisition_from_ome(
+        _synth_ome(
+            acquisition_date=when,
+            microscope=scope,
+            channels=channels,
+        )
+    )
+    assert result is not None
+    assert result["microscope"] == "Zeiss LSM 980"
+    assert result["imaging_method"] == ["confocal"]
+    assert datetime.fromisoformat(result["date"]) == when

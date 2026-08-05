@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Non-LIF `imaging_method` extraction: `extract_acquisition_from_ome` now
+  projects `<Channel AcquisitionMode>` into `per_scene[i].acquisition.imaging_method`
+  as a deduped `list[str]` in first-seen channel order. Scenes whose channels
+  record different modes (bright-field reference + confocal detail, e.g.)
+  surface every mode encountered. OME's enum vocabulary maps to the same
+  ADR-0008 token set the LIF extractor already emits — `WideField` →
+  `widefield_fluorescence`, `LaserScanningConfocalMicroscopy` → `confocal`,
+  `SpinningDiskConfocal` / `SweptFieldConfocal` → `spinning_disk_confocal`,
+  `SPIM` → `light_sheet`, plus `TIRF`, `STED`, `MultiPhotonMicroscopy` →
+  `multiphoton`, `BrightField`, `StructuredIllumination`, etc. Unmapped
+  values (`Other`, or any future enum member not in the map) are dropped
+  rather than emitted verbatim so the token vocabulary stays bounded. (#76)
+- Soft-optional `reader.acquisition_audit` hook: any reader can inject
+  fields into `per_scene[i].acquisition` by exposing an attribute (or
+  `@property`) returning a dict with any subset of `{date, microscope,
+  microscope_serial, imaging_method}`. Reserved for readers whose modality
+  is known by construction but neither the LIF scene-XML extractor nor OME's
+  `Channel.AcquisitionMode` surface produces it (SmartSPIM / Blaze light-sheet
+  TIFFs whose source files have no OME modality tag). Same fail-safe shape
+  as `layout_hint` / `channel_names` — accessed via `getattr` guarded by
+  `try/except` so a raising hook degrades to no extras. Callable and
+  plain-attribute forms both supported. (#76)
+- Plugin authoring guide §2 gains an `acquisition_audit` row + a full
+  subsection covering the shape and precedence semantics.
+- LIF acquisition extractor grows widefield detection: per-channel
+  `WideFieldChannelInfo.ContrastingMethodName` (`FLUO` →
+  `widefield_fluorescence`, `BF` / `TL-BF` → `bright_field`, `DIC` → `dic`,
+  `PH` → `phase_contrast`, `POL` → `polarised_light`, `DF` → `dark_field`)
+  and `ATLCameraSettingDefinition` presence as a widefield-family fallback.
+  Multi-channel scenes with mixed contrasting methods surface every distinct
+  token, matching the OME `Channel.AcquisitionMode` behaviour. Fixes missing
+  `imaging_method` on Leica Thunder / DMi8 / AF 6000LX LIFs where
+  `DataSourceTypeName` is the generic `"Camera"`.
+- LIF acquisition extractor grows `<TimeStampList>` date parsing: the LAS X
+  3.x per-scene shape carries space-separated hex FILETIME values in the
+  element text (e.g. `"1dc28bfd6199e60 1dc28bfd9148ee0 …"`); the first value
+  is projected to the scene's ISO 8601 UTC start time. Older
+  `<TimeStamp HighInteger= LowInteger= />` handling is preserved and still
+  wins when both encodings are present. Fixes missing `date` on Thunder /
+  SP8 / STELLARIS LIFs whose per-scene XML uses the newer surface.
+
+### Changed
+
+- `per_scene[i].acquisition` composition is now uniformly layered across
+  three sources with `setdefault` precedence (first source that populates a
+  key wins; later sources fill only remaining gaps): LIF scene-XML extractor
+  (LIF scenes only) → OME projection from `reader.ome_metadata` → reader
+  `acquisition_audit` hook. Previously the LIF extractor ran alone if it
+  fired (wholesale winner), so LIF scenes with an incomplete `HardwareSetting`
+  header dropped `imaging_method` entirely even when bioio-lif's
+  `Channel.AcquisitionMode` had it. Now the OME projection can fill LIF's
+  gaps. The hook can never override a source-file-derived extraction —
+  OME reporting `["confocal"]` beats a hook claiming `["light_sheet"]`,
+  matching the principle that source-file metadata is more trustworthy
+  than caller-supplied hints. (#76)
+- Same 3-tier composition applied to `inspect()`'s per-scene acquisition
+  path so pre-flight tooling sees identical output to the convert-time
+  audit.
+
+### HITL release gate
+
+**Do not publish this release until real-data validation passes on 1–2
+representative datasets per reader.** The OME `Channel.AcquisitionMode`
+projection is code-complete but its coverage depends on whether bioio-czi,
+bioio-nd2, and bioio-ome-tiff actually populate the field in practice. Run
+`zarrmony convert` on:
+
+- **CZI** (in-tree) — e.g. a Zeiss LSM 980 confocal file → expect
+  `["confocal"]`; a Zeiss spinning-disk file → expect `["spinning_disk_confocal"]`.
+- **ND2** (in-tree) — e.g. a Nikon Ti2 confocal file → expect `["confocal"]`.
+- **LIF** (in-tree) — regression check: LIF extractor still wins (LIF's own
+  `["confocal"]` unchanged); OME fills any gaps.
+- **`zarrmony-snouty`** (external) — expect `["light_sheet"]` (via the
+  `acquisition_audit` hook if OME doesn't populate it).
+- **`zarrmony-phenix`** (external) — expect `["widefield_fluorescence"]`
+  or `["confocal"]` depending on the Phenix mode.
+- **`zarrmony-blaze`** (external) — expect `["light_sheet"]`.
+
+Read `attrs.zarrmony.audit.per_scene[i].acquisition.imaging_method` from
+each output store and confirm the token matches the true modality. Readers
+where the OME projection comes back empty on real files need either a
+vendor-specific in-tree extractor (LIF pattern) or the `acquisition_audit`
+hook wired in the external plugin (SmartSPIM pattern) — file per-reader
+follow-up tickets and hold the release tag until each is either
+resolved or explicitly accepted as a known gap.
+
 ## [0.10.0] - 2026-08-04
 
 ### Added

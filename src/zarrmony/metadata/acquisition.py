@@ -61,6 +61,28 @@ _LIF_MODALITY_TOKEN: dict[str, str] = {
     "TWOPHOTON": "multiphoton",
 }
 
+# LIF ``WideFieldChannelInfo.ContrastingMethodName`` → imaging-method token.
+# Populated per-channel on widefield systems (Thunder, DMi8) where
+# ``HardwareSetting.DataSourceTypeName`` reports the vendor-neutral ``"Camera"``
+# rather than a modality string. Keys are normalised (uppercased, underscores
+# and hyphens stripped) so ``TL-BF`` and ``TL_BF`` both match ``TLBF``.
+_LIF_CONTRASTING_METHOD_TOKEN: dict[str, str] = {
+    "FLUO": "widefield_fluorescence",
+    "FLUORESCENCE": "widefield_fluorescence",
+    "BF": "bright_field",
+    "TLBF": "bright_field",
+    "BRIGHTFIELD": "bright_field",
+    "DIC": "dic",
+    "TLDIC": "dic",
+    "PH": "phase_contrast",
+    "TLPH": "phase_contrast",
+    "PHASECONTRAST": "phase_contrast",
+    "POL": "polarised_light",
+    "TLPOL": "polarised_light",
+    "DARKFIELD": "dark_field",
+    "DF": "dark_field",
+}
+
 
 class _EntityRejectingTarget:
     """ExpatBuilder target that refuses DTDs and entity definitions."""
@@ -124,6 +146,19 @@ def _first_nonempty(*values: str | None) -> str | None:
 _FILETIME_EPOCH_DIFF_SECONDS = 11644473600  # (1970 - 1601) in seconds
 
 
+def _ticks_to_iso(ticks: int) -> str | None:
+    """Convert a 64-bit FILETIME tick count → ISO 8601 UTC. ``None`` on failure."""
+    if ticks < 0:
+        return None
+    from datetime import UTC, datetime
+
+    try:
+        posix = ticks / 10_000_000 - _FILETIME_EPOCH_DIFF_SECONDS
+        return datetime.fromtimestamp(posix, tz=UTC).isoformat()
+    except (ValueError, OSError, OverflowError):
+        return None
+
+
 def _filetime_to_iso(high: str | None, low: str | None) -> str | None:
     """Convert a LIF ``(HighInteger, LowInteger)`` FILETIME tick pair → ISO 8601 UTC.
 
@@ -138,25 +173,42 @@ def _filetime_to_iso(high: str | None, low: str | None) -> str | None:
         return None
     if h < 0 or low_int < 0:
         return None
-    from datetime import UTC, datetime
+    return _ticks_to_iso((h << 32) | low_int)
 
-    try:
-        ticks = (h << 32) | low_int
-        posix = ticks / 10_000_000 - _FILETIME_EPOCH_DIFF_SECONDS
-        return datetime.fromtimestamp(posix, tz=UTC).isoformat()
-    except (ValueError, OSError, OverflowError):
+
+def _hex_filetime_to_iso(hex_ticks: str | None) -> str | None:
+    """Convert a hex-encoded 64-bit FILETIME tick count → ISO 8601 UTC.
+
+    The LIF ``<TimeStampList>`` element carries per-frame timestamps as
+    space-separated hex FILETIME values (e.g. ``"1dc28bfd6199e60"``). Returns
+    ``None`` on any parse failure.
+    """
+    if not hex_ticks:
         return None
+    try:
+        ticks = int(hex_ticks, 16)
+    except (TypeError, ValueError):
+        return None
+    return _ticks_to_iso(ticks)
 
 
 def _extract_date(root: ET.Element) -> str | None:
-    """First recognisable ``<TimeStamp>`` in the tree, as an ISO 8601 UTC string.
+    """First recognisable ``<TimeStamp>``/``<TimeStampList>`` in the tree.
 
-    Handles two encodings seen in the wild: ``(HighInteger, LowInteger)``
-    FILETIME ticks (the common LIF encoding) and a plain-text ISO date attribute
-    (fallback). Returns ``None`` when no timestamp is present or parseable.
+    Handles three encodings seen in the wild:
+
+    1. ``<TimeStamp HighInteger="..." LowInteger="..."/>`` — the older LIF
+       per-scene shape.
+    2. ``<TimeStampList>`` with space-separated hex FILETIME values in the
+       element text — the newer LIF shape (Thunder / LAS X 3.x). The first
+       hex value in the list is the acquisition start time.
+    3. Plain-text ISO date attribute or text content — fallback for exports
+       that inline the timestamp.
+
+    Returns ``None`` when no timestamp is present or parseable.
     """
     for ts in root.iter("TimeStamp"):
-        # LIF FILETIME ticks — the common shape.
+        # LIF FILETIME ticks — the older shape.
         iso = _filetime_to_iso(
             ts.attrib.get("HighInteger"), ts.attrib.get("LowInteger")
         )
@@ -171,6 +223,15 @@ def _extract_date(root: ET.Element) -> str | None:
         text = (ts.text or "").strip()
         if text:
             return text
+    # Newer LIF shape: TimeStampList with space-separated hex FILETIME values.
+    for tsl in root.iter("TimeStampList"):
+        text = (tsl.text or "").strip()
+        if not text:
+            continue
+        first = text.split()[0]
+        iso = _hex_filetime_to_iso(first)
+        if iso is not None:
+            return iso
     return None
 
 
@@ -256,28 +317,59 @@ def _normalise_modality(raw: str | None) -> str | None:
     return _LIF_MODALITY_TOKEN.get(key)
 
 
+def _normalise_contrasting_method(raw: str | None) -> str | None:
+    """LIF ``ContrastingMethodName`` → the OME-conventional token, or ``None``."""
+    if not raw:
+        return None
+    key = raw.strip().upper().replace("_", "").replace("-", "")
+    return _LIF_CONTRASTING_METHOD_TOKEN.get(key)
+
+
 def _extract_imaging_method(root: ET.Element) -> list[str] | None:
     """Extract the imaging modalities as a list of OME-conventional tokens.
 
-    Walks the ``HardwareSetting`` ``DataSourceTypeName`` attributes across every
-    ``<Image>`` in the tree; falls back to the ``ATLConfocalSettingDefinition``
-    presence check when no ``DataSourceTypeName`` is populated (a scene with an
-    ATL block is confocal by construction, even when the header string is
-    missing). Deduplicates while preserving first-seen order.
+    Tiered detection — later tiers only fire when earlier tiers found nothing
+    for that channel/scene:
 
-    Always returns a ``list[str]`` when at least one modality was extracted;
-    ``None`` when none was. Never emits a scalar — matches the BQ REPEATED shape.
+    1. ``HardwareSetting.DataSourceTypeName`` — the classic LIF surface for
+       confocal systems (SP8, STELLARIS) that report ``"Confocal"`` here.
+       Widefield-family systems (Thunder, DMi8) report the generic ``"Camera"``,
+       which we deliberately do NOT map (Camera is a hardware category, not a
+       modality — CSU spinning disk cameras and TIRF cameras report Camera too).
+    2. ``WideFieldChannelInfo.ContrastingMethodName`` — per-channel contrasting
+       method on Leica widefield systems (``FLUO``, ``BF``, ``DIC``, etc.).
+       Multi-channel scenes with mixed contrasting methods surface every one.
+    3. ``ATLConfocalSettingDefinition`` presence — a scene with an ATL confocal
+       block is confocal by construction, even when the header string is
+       missing.
+    4. ``ATLCameraSettingDefinition`` presence — final fallback for camera-based
+       Leica scenes where neither ``ContrastingMethodName`` nor any of the above
+       fired. Camera-only LIFs from Leica default to widefield fluorescence.
+
+    Deduplicates while preserving first-seen order. Returns a ``list[str]``
+    when at least one modality was extracted, ``None`` when none was.
     """
     seen: list[str] = []
+    # Tier 1: HardwareSetting.DataSourceTypeName (confocal-family surface).
     for hw in _iter_hardware_settings(root):
         token = _normalise_modality(hw.attrib.get("DataSourceTypeName"))
         if token and token not in seen:
             seen.append(token)
-    # Fallback: any ATLConfocalSettingDefinition in this scene → confocal.
+    # Tier 2: WideFieldChannelInfo.ContrastingMethodName (widefield-family
+    # per-channel surface — mixed-method scenes emit every distinct token).
+    for wf in root.iter("WideFieldChannelInfo"):
+        token = _normalise_contrasting_method(wf.attrib.get("ContrastingMethodName"))
+        if token and token not in seen:
+            seen.append(token)
+    # Tier 3: ATLConfocalSettingDefinition presence → confocal.
     if not seen:
         for _ in root.iter("ATLConfocalSettingDefinition"):
-            if "confocal" not in seen:
-                seen.append("confocal")
+            seen.append("confocal")
+            break
+    # Tier 4: ATLCameraSettingDefinition presence (widefield-family fallback).
+    if not seen:
+        for _ in root.iter("ATLCameraSettingDefinition"):
+            seen.append("widefield_fluorescence")
             break
     return seen or None
 
