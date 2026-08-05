@@ -29,6 +29,7 @@ Zarrmony dispatches to a reader plugin per input format. They come in three tier
   - [`zarrmony-phenix`](https://github.com/ferrinm/zarrmony-phenix) — Opera Phenix (wraps `pyphenix.OperaPhenixReader`) — `pip install zarrmony-phenix`
   - [`zarrmony-blaze`](https://github.com/ferrinm/zarrmony-blaze) — Miltenyi UltraMicroscope Blaze (MACS iQ-processed) — `pip install zarrmony-blaze`
   - [`zarrmony-snouty`](https://github.com/ferrinm/zarrmony-snouty) — Snouty single-objective light-sheet — `pip install zarrmony-snouty`
+  - [`zarrmony-smartspim`](https://github.com/ferrinm/zarrmony-smartspim) — LifeCanvas SmartSPIM stitched exports — `pip install zarrmony-smartspim`
 
 ### Extras
 
