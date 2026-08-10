@@ -62,6 +62,46 @@ def _fmt_tile_attr(key: str, value: object) -> str:
     return f' {key}="{value}"'
 
 
+def build_lif_plate_metadata(
+    plates: Sequence[dict],
+) -> str:
+    """LIF-shaped LMSDataContainer XML carrying one or more plate templates.
+
+    Each plate dict is ``{"name": str, "rows": [str], "columns": [str]}`` —
+    every (row, col) pair becomes one column-Element (one field). Row names
+    are written verbatim so tests can exercise casing normalization; column
+    names are written verbatim so tests can exercise zero-padding
+    normalization at the extractor boundary.
+
+    Analogous to :func:`_build_lif_tilescan_metadata` (for mosaic fixtures) —
+    the LIF plate metadata module walks ``LMSDataContainerHeader`` looking for
+    Elements whose ``Children/Element`` names look like plate rows/columns, so
+    the fixture only needs that structural skeleton.
+    """
+    plate_blocks = []
+    for plate in plates:
+        row_blocks = []
+        for row in plate["rows"]:
+            col_blocks = "".join(
+                f'<Element Name="{col}"><Data /></Element>' for col in plate["columns"]
+            )
+            row_blocks.append(
+                f'<Element Name="{row}"><Children>{col_blocks}</Children></Element>'
+            )
+        rows_xml = "".join(row_blocks)
+        plate_blocks.append(
+            f'<Element Name="{plate["name"]}">'
+            f"<Children>{rows_xml}</Children>"
+            f"</Element>"
+        )
+    plates_xml = "".join(plate_blocks)
+    return (
+        "<LMSDataContainerHeader><Element><Children>"
+        f"{plates_xml}"
+        "</Children></Element></LMSDataContainerHeader>"
+    )
+
+
 def _build_lif_tilescan_metadata(scene: "TileScene") -> str:
     """LIF-shaped XML blob with one ``<Image>`` carrying tile + overlap entries.
 

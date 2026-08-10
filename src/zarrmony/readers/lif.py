@@ -52,6 +52,7 @@ import time.
 """
 
 import warnings
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -59,12 +60,51 @@ from bioio_lif import Reader
 
 from zarrmony.errors import MosaicStitchingWarning
 from zarrmony.metadata._lif_scene import find_scene_xml
+from zarrmony.metadata.lif_plate import extract_plate_layouts
 from zarrmony.metadata.lif_tiles import extract_tile_layout
+from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
 from zarrmony.readers.plugin import ReaderPlugin
 
 _STITCHER_NAME = "bioio-lif"
 _OVERLAP_ASSUMPTION_PX = 1
 _MERGED_SUFFIX = "_Merged"
+
+# The ADR-0004 plate writer treats every FOV as belonging to a single
+# acquisition when the reader doesn't distinguish acquisitions itself. LIF's
+# plate template records the well/field grid but not per-acquisition passes
+# (a rescan of the same plate becomes a second LIF file, not a second
+# acquisition inside one file), so the LIF reader wires every field to id=1.
+_DEFAULT_ACQUISITION_ID = 1
+_DEFAULT_ACQUISITION_NAME = "acquisition"
+
+
+def _plate_layout_from_dict(plate: dict) -> PlateLayout:
+    """Materialize a :class:`PlateLayout` from :func:`extract_plate_layouts` output.
+
+    The extractor speaks in raw dicts (dependency-free) so it can lift into
+    ``bioio-lif`` later; this glue turns those dicts into the writer's typed
+    surface. Every plate is wired to a single default acquisition per ADR-0004
+    v1 (multi-acquisition is a deferred v2 concern).
+    """
+    fields = [
+        PlateField(
+            scene_index=f["scene_index"],
+            row=f["row"],
+            column=f["column"],
+            field_name=f["field_name"],
+            acquisition_id=_DEFAULT_ACQUISITION_ID,
+        )
+        for f in plate["fields"]
+    ]
+    return PlateLayout(
+        name=plate["name"],
+        rows=list(plate["rows"]),
+        columns=list(plate["columns"]),
+        acquisitions=[
+            Acquisition(id=_DEFAULT_ACQUISITION_ID, name=_DEFAULT_ACQUISITION_NAME)
+        ],
+        fields=fields,
+    )
 
 
 class _MosaicAwareLifReader:
@@ -75,9 +115,74 @@ class _MosaicAwareLifReader:
 
     def __init__(self, inner: Reader) -> None:
         self._inner = inner
+        self._plate_cache: tuple[list[str], PlateLayout | None] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+    def _plate_state(self) -> tuple[list[str], PlateLayout | None]:
+        """(available_plates, plate_layout) — cached per reader instance.
+
+        Walks the LIF ``LMSDataContainer`` XML once via
+        :func:`extract_plate_layouts`. The plate structure is a function of the
+        file, not of the current scene, so a single walk suffices for the
+        reader's lifetime. Fail-closed end-to-end: a missing ``metadata``
+        surface, an unserializable XML element, or an extractor error all
+        yield ``([], None)`` so the reader stays flat.
+
+        Multi-plate LIF handling is deferred to #82: for this tracer bullet
+        ``plate_layout`` is populated only when exactly one plate template is
+        present. Multi-plate files still surface their plate names via
+        ``available_plates`` so the follow-up ``--plate NAME`` selector has
+        something to key off, but ``layout_hint`` stays ``"flat"`` and the
+        existing per-scene write path is unchanged.
+        """
+        if self._plate_cache is not None:
+            return self._plate_cache
+        state: tuple[list[str], PlateLayout | None] = ([], None)
+        try:
+            metadata = getattr(self._inner, "metadata", None)
+            if metadata is not None and hasattr(metadata, "tag"):
+                source_xml = ET.tostring(metadata, encoding="unicode")
+                plates = extract_plate_layouts(source_xml)
+                names = [p["name"] for p in plates]
+                layout: PlateLayout | None = None
+                if len(plates) == 1:
+                    layout = _plate_layout_from_dict(plates[0])
+                state = (names, layout)
+        except Exception:  # noqa: BLE001 — metadata never breaks a conversion
+            state = ([], None)
+        self._plate_cache = state
+        return state
+
+    @property
+    def available_plates(self) -> list[str]:
+        """Names of every plate template in the LIF XML, document order.
+
+        Empty for non-plate LIFs. Consumed by #82's ``--plate NAME`` selector
+        to disambiguate multi-plate files and by the error message that names
+        available plates when no selector was passed.
+        """
+        return list(self._plate_state()[0])
+
+    @property
+    def plate_layout(self) -> PlateLayout | None:
+        """The single detected plate's :class:`PlateLayout`, or ``None``.
+
+        Populated only when the LIF holds exactly one plate template. Multi-
+        plate files leave this ``None`` (and ``layout_hint`` at ``"flat"``)
+        until #82 wires the ``--plate NAME`` disambiguator.
+        """
+        return self._plate_state()[1]
+
+    @property
+    def layout_hint(self) -> str:
+        """``"plate"`` when a single plate template resolved, else ``"flat"``.
+
+        Non-plate LIFs and multi-plate LIFs both report ``"flat"`` for now —
+        multi-plate resolution ships in #82.
+        """
+        return "plate" if self._plate_state()[1] is not None else "flat"
 
     def _merged_sibling(self) -> str | None:
         scene_name = self._inner.scenes[self._inner.current_scene_index]

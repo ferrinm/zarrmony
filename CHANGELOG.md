@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- LIF plate detection (tracer bullet, ADR-0009). The built-in `bioio-lif`
+  reader walks the `LMSDataContainer` XML at open time and, when the file
+  contains exactly one plate template, sets `layout_hint="plate"` and
+  populates `plate_layout` with the well/field grid. Under the default
+  `zarrmony convert --layout auto`, a single-plate LIF now writes a
+  spec-conformant OME-NGFF HCS `plate.zarr` (previously per-scene stores).
+  `zarrmony inspect` surfaces a `plate_layout` block for these files.
+  Row letters are normalized to uppercase and column strings to width-2
+  zero-padded (`zarrmony-phenix` convention); the plate template's full
+  row/column list is preserved even when only some wells were imaged.
+  Non-plate (flat) LIF conversion is unchanged. Multi-plate LIFs continue
+  to convert as flat until #82 wires the `--plate NAME` selector — their
+  plate names surface via `reader.available_plates` so #82 has something
+  to key off. (#81)
+
 ## [0.13.0] - 2026-08-05
 
 ### Added
