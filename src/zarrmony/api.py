@@ -24,6 +24,7 @@ from zarrmony.errors import (
     MosaicMergedSiblingWarning,
     MosaicPlacementWarning,
     OutputExistsError,
+    PlateSelectionError,
     ValidationWarning,
     ZarrmonyError,
 )
@@ -109,6 +110,35 @@ _GRID_OVERLAP_ASSUMPTION_PX = 0
 # Recorded in the audit alongside tile_pixel_offsets + observed_overlap_pct so
 # downstream consumers can compare the placement to the LIF-declared intent.
 _STITCHER_STAGE_NAME = "zarrmony-stage"
+
+
+def _require_plate_selector_if_ambiguous(
+    reader: Any, reader_kwargs: dict[str, Any] | None
+) -> None:
+    """Raise :class:`PlateSelectionError` when the LIF has ≥2 plates and no selector.
+
+    Per ADR-0009 / #82: a multi-plate LIF is a common shape (the user's
+    ``PFF-HEK293-seeding-07172026.lif`` packs two 60-well plates in one file).
+    We refuse to silently pick one — the caller must select via
+    ``--plate NAME`` (CLI) or ``reader_kwargs={"plate": NAME}`` (API). Names
+    surface via ``reader.available_plates`` so the error message can list
+    them, and the same list is what ``inspect()`` prints under the ``plates``
+    block for pre-flight discovery. Non-plate readers and single-plate LIFs
+    fall through with no effect.
+    """
+    available = list(getattr(reader, "available_plates", []) or [])
+    if len(available) < 2:
+        return
+    selector_passed = bool(reader_kwargs and reader_kwargs.get("plate"))
+    if selector_passed:
+        return
+    formatted = ", ".join(repr(n) for n in available)
+    raise PlateSelectionError(
+        f"multi-plate LIF has {len(available)} plate templates ({formatted}); "
+        f"pass --plate NAME (CLI) or reader_kwargs={{'plate': NAME}} (API) "
+        f"to select one. One convert() call still produces one plate.zarr — "
+        f"run convert once per plate."
+    )
 
 
 def _resolve_layout(
@@ -768,6 +798,13 @@ def convert(
         )
 
     reader, plugin, match_score = get_reader(input_path, reader_kwargs=reader_kwargs)
+    # Multi-plate LIF ambiguity: the reader exposes every plate template via
+    # `available_plates` but only auto-resolves `plate_layout` when there's
+    # exactly one. Ask the user to pick with `--plate NAME` (API: `plate=`
+    # in `reader_kwargs`) rather than silently routing to per-scene or
+    # picking one. ADR-0009: one convert() call, one plate — the selector
+    # keeps the "one convert = one output path" invariant intact.
+    _require_plate_selector_if_ambiguous(reader, reader_kwargs)
     if not reader.scenes:
         raise ZarrmonyError(f"reader returned no scenes for {input_path!s}")
     distribution = _resolve_distribution(reader, plugin)
@@ -1874,4 +1911,11 @@ def inspect(
     plate_layout = getattr(reader, "plate_layout", None)
     if getattr(reader, "layout_hint", "flat") == "plate" and plate_layout is not None:
         info["plate_layout"] = summarize_plate_layout(plate_layout)
+    # Multi-plate LIF discoverability (#82): surface every plate template so
+    # the user can pick a `--plate NAME` selector without opening the file
+    # in LAS X. Additive — non-plate readers and single-plate LIFs (where
+    # `plate_layout` already carries the name) omit this key.
+    available_plates = list(getattr(reader, "available_plates", []) or [])
+    if len(available_plates) >= 2:
+        info["plates"] = available_plates
     return info

@@ -23,6 +23,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to convert as flat until #82 wires the `--plate NAME` selector — their
   plate names surface via `reader.available_plates` so #82 has something
   to key off. (#81)
+- Multi-plate LIF selection via `--plate NAME` (ADR-0009). The
+  `bioio-lif` reader now accepts a `plate=` kwarg (surfaced on the CLI
+  as `zarrmony convert --plate NAME`) that narrows `reader.scenes` to a
+  single plate template's fields and remaps `PlateField.scene_index` to
+  positions in that filtered list, so a multi-plate LIF converts as one
+  spec-conformant `plate.zarr` per invocation. `zarrmony convert` on a
+  multi-plate LIF **without** `--plate` now raises `PlateSelectionError`
+  naming every available plate (previously it silently produced per-scene
+  stores for all plates concatenated). `zarrmony inspect` surfaces a new
+  additive `plates` block listing every plate template found on
+  multi-plate LIFs. Passing `--plate NAME` on a single-plate LIF is
+  accepted as a belt-and-suspenders check — a mismatch raises with both
+  the requested and the actual plate name. Motivating case: the user's
+  real 30 GB `PFF-HEK293-seeding-07172026.lif` packing `BFP-SNCA-WT`
+  and `BFP-SNCA-A53T` in one file — now converts as two separate plate
+  stores with one `convert` call each. (#82)
+
+### Changed
+
+- **BREAKING:** `zarrmony convert` on a multi-plate LIF without
+  `--plate NAME` now raises `PlateSelectionError` instead of silently
+  routing to per-scene output. Callers who were relying on the flat
+  fallback for a multi-plate LIF should pick a specific plate per
+  invocation (running `convert` once per plate) or pass
+  `--layout per-scene` explicitly to opt out of plate detection.
 
 ## [0.13.0] - 2026-08-05
 

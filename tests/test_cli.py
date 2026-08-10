@@ -591,6 +591,89 @@ def test_convert_reader_kwarg_duplicate_key_rejected(
     assert "more than once" in result.output
 
 
+# ---------- --plate (issue #82) ----------
+
+
+def test_convert_plate_option_threads_into_reader_kwargs(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--plate NAME` reaches convert() as `reader_kwargs={'plate': NAME}`."""
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/multi.lif",
+            str(out),
+            "--plate",
+            "PlateB",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["reader_kwargs"] == {"plate": "PlateB"}
+
+
+def test_convert_plate_option_merges_with_other_reader_kwargs(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--plate` merges alongside unrelated `--reader-kwarg` values."""
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/multi.lif",
+            str(out),
+            "--plate",
+            "PlateB",
+            "--reader-kwarg",
+            "other=v",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["reader_kwargs"] == {"other": "v", "plate": "PlateB"}
+
+
+def test_convert_plate_option_conflicts_with_explicit_reader_kwarg(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """`--plate NAME` + `--reader-kwarg plate=OTHER` is a user error, not last-wins."""
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/multi.lif",
+            str(out),
+            "--plate",
+            "A",
+            "--reader-kwarg",
+            "plate=B",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
 def test_inspect_reader_kwarg_forwards_to_api(
     tmp_path: Path,
     runner: CliRunner,

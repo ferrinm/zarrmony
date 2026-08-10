@@ -30,6 +30,19 @@ class LayoutMismatchError(ZarrmonyError):
     """
 
 
+class PlateSelectionError(ZarrmonyError):
+    """A multi-plate LIF requires an explicit ``--plate NAME`` (or ``plate=``) selector.
+
+    Raised by ``convert()`` when the input LIF carries more than one plate
+    template and the user did not pass a ``--plate`` selector, OR by the
+    LIF reader plugin when ``--plate NAME`` (either on multi-plate or
+    single-plate LIF) names a plate that isn't present in the file. The
+    message enumerates the available plate names so the user can re-invoke
+    with the right selector. Per ADR-0009, one ``convert()`` call still
+    produces one plate.zarr — the user runs ``convert`` once per plate.
+    """
+
+
 class LayoutDowngradeWarning(UserWarning):
     """Plate-shaped metadata is being dropped from the output.
 

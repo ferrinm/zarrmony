@@ -16,7 +16,7 @@ import click
 from zarrmony import __version__
 from zarrmony import api as zm_api
 from zarrmony._storage import format_bytes, size_on_disk
-from zarrmony.errors import OutputExistsError
+from zarrmony.errors import OutputExistsError, PlateSelectionError
 
 
 @click.group(name="zarrmony")
@@ -210,6 +210,21 @@ def _parse_reader_kwargs(
         "validate the shape."
     ),
 )
+@click.option(
+    "--plate",
+    "plate",
+    type=str,
+    default=None,
+    help=(
+        "LIF-specific. Name of the plate template to convert on a multi-plate "
+        "LIF (see `zarrmony inspect` for the available names). Required when "
+        "the LIF holds ≥2 plate templates — one convert call produces one "
+        "plate.zarr per ADR-0009, so run convert once per plate. Optional on "
+        "single-plate LIFs; if passed, the NAME must match the plate's name. "
+        "Threads through to the LIF reader as `plate=` — equivalent to "
+        "'--reader-kwarg plate=NAME'; passing both is an error."
+    ),
+)
 def convert_cmd(
     input_path: str,
     output: str,
@@ -223,6 +238,7 @@ def convert_cmd(
     validate: bool,
     lif_mosaic: str,
     reader_kwargs: dict[str, str] | None,
+    plate: str | None,
 ) -> None:
     """Convert INPUT (a bioimage file) to OME-Zarr v0.5 at OUTPUT.
 
@@ -239,6 +255,18 @@ def convert_cmd(
     else:
         resolved_contrast = contrast_percentile
 
+    # --plate NAME is a convenience alias for --reader-kwarg plate=NAME. Merge
+    # into reader_kwargs; refuse an overlap so the user isn't surprised by
+    # last-wins semantics on a plate mismatch. Everything downstream reads
+    # `reader_kwargs["plate"]`, keeping one code path for the passthrough.
+    if plate is not None:
+        if reader_kwargs and "plate" in reader_kwargs:
+            raise click.BadParameter(
+                "--plate and --reader-kwarg plate=... are mutually exclusive; "
+                "pass one or the other"
+            )
+        reader_kwargs = {**(reader_kwargs or {}), "plate": plate}
+
     try:
         result = zm_api.convert(
             input_path=input_path,
@@ -253,7 +281,7 @@ def convert_cmd(
             lif_mosaic=lif_mosaic,
             reader_kwargs=reader_kwargs,
         )
-    except OutputExistsError as e:
+    except (OutputExistsError, PlateSelectionError) as e:
         raise click.ClickException(str(e)) from e
 
     # Dispatch on the *resolved* layout the API actually used (so --layout auto
@@ -319,6 +347,12 @@ def inspect_cmd(
     click.echo(f"Input:  {info['input_path']}")
     click.echo(f"Size:   {info['size_human']}")
     click.echo(f"Plugin: {plugin_str}")
+    if "plates" in info:
+        names_str = ", ".join(repr(n) for n in info["plates"])
+        click.echo(
+            f"Plates: {len(info['plates'])} templates: {names_str} "
+            f"— pass --plate NAME to convert one"
+        )
     if "plate_layout" in info:
         click.echo(_format_plate_summary(info["plate_layout"]))
     click.echo(f"Scenes: {info['n_scenes']}")

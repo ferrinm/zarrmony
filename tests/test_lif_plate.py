@@ -27,6 +27,7 @@ from tests.conftest import FakeReader, build_lif_plate_metadata
 from zarrmony import api as api_module
 from zarrmony import convert
 from zarrmony import inspect as zm_inspect
+from zarrmony.errors import PlateSelectionError
 from zarrmony.metadata.lif_plate import extract_plate_layouts
 from zarrmony.readers.lif import _MosaicAwareLifReader
 from zarrmony.readers.plugin import ReaderPlugin
@@ -136,7 +137,11 @@ def test_extract_plate_layouts_enumerates_multi_plate_with_running_scene_index()
 
 
 def _lif_reader_with_plates(
-    plates: list[dict], scenes: list[str], **fake_kwargs
+    plates: list[dict],
+    scenes: list[str],
+    *,
+    active_plate: str | None = None,
+    **fake_kwargs,
 ) -> _MosaicAwareLifReader:
     xml = build_lif_plate_metadata(plates)
     inner = FakeReader(
@@ -147,7 +152,7 @@ def _lif_reader_with_plates(
         channel_names=fake_kwargs.pop("channel_names", ["DAPI"]),
         **fake_kwargs,
     )
-    return _MosaicAwareLifReader(inner)
+    return _MosaicAwareLifReader(inner, active_plate=active_plate)
 
 
 def test_mosaic_aware_reader_reports_plate_layout_for_single_plate_lif() -> None:
@@ -194,7 +199,12 @@ def test_mosaic_aware_reader_stays_flat_for_non_plate_lif() -> None:
 def test_mosaic_aware_reader_stays_flat_for_multi_plate_lif_but_lists_available() -> (
     None
 ):
-    """Multi-plate stays flat until #82 wires ``--plate NAME`` — but surfaces names."""
+    """Multi-plate without ``active_plate`` stays flat at the reader level.
+
+    ``convert()`` refuses the ambiguity with :class:`PlateSelectionError`;
+    the reader itself surfaces the available names for that error message
+    and for :func:`inspect` to discover.
+    """
     reader = _lif_reader_with_plates(
         [
             {"name": "PlateA", "rows": ["A"], "columns": ["01"]},
@@ -300,3 +310,232 @@ def test_inspect_surfaces_plate_block_for_single_plate_lif(patched_reader) -> No
     assert plate["rows"] == [{"name": "A"}, {"name": "B"}]
     assert plate["columns"] == [{"name": "01"}, {"name": "02"}]
     assert len(plate["wells"]) == 4
+
+
+# ---------- multi-plate: --plate NAME selector (issue #82) ----------
+
+
+def _two_plate_scenes() -> list[str]:
+    """Scene names for the two-plate fixture used across selector tests.
+
+    PlateA has a single well (A/01); PlateB has two wells (A/01, A/02).
+    Global scene order is document order: PlateA first, then PlateB — the
+    same order ``extract_plate_layouts`` numbers ``scene_index`` in.
+    """
+    return ["PlateA/A/01", "PlateB/A/01", "PlateB/A/02"]
+
+
+def test_active_plate_selects_matching_plate_on_multi_plate_lif() -> None:
+    """``active_plate=NAME`` on a multi-plate LIF exposes only that plate's fields."""
+    reader = _lif_reader_with_plates(
+        [
+            {"name": "PlateA", "rows": ["A"], "columns": ["01"]},
+            {"name": "PlateB", "rows": ["A"], "columns": ["01", "02"]},
+        ],
+        scenes=_two_plate_scenes(),
+        active_plate="PlateB",
+    )
+    assert reader.layout_hint == "plate"
+    layout = reader.plate_layout
+    assert layout is not None
+    assert layout.name == "PlateB"
+    assert layout.columns == ["01", "02"]
+    # scene_index is remapped: original global positions [1, 2] → filtered [0, 1].
+    assert [f.scene_index for f in layout.fields] == [0, 1]
+    # ``scenes`` is filtered to just PlateB's entries.
+    assert list(reader.scenes) == ["PlateB/A/01", "PlateB/A/02"]
+
+
+def test_active_plate_switches_inner_reader_to_correct_global_scene() -> None:
+    """``set_scene(filtered_idx)`` translates to the correct inner (global) index."""
+    reader = _lif_reader_with_plates(
+        [
+            {"name": "PlateA", "rows": ["A"], "columns": ["01"]},
+            {"name": "PlateB", "rows": ["A"], "columns": ["01", "02"]},
+        ],
+        scenes=_two_plate_scenes(),
+        active_plate="PlateB",
+    )
+    reader.set_scene(1)
+    # PlateB's filtered scene 1 = global scene 2 = "PlateB/A/02".
+    assert reader.current_scene_index == 2
+
+
+def test_active_plate_unknown_name_on_multi_plate_raises_with_names() -> None:
+    """``active_plate=NAME`` with unknown NAME raises listing available names."""
+    reader = _lif_reader_with_plates(
+        [
+            {"name": "PlateA", "rows": ["A"], "columns": ["01"]},
+            {"name": "PlateB", "rows": ["A"], "columns": ["01", "02"]},
+        ],
+        scenes=_two_plate_scenes(),
+        active_plate="NoSuchPlate",
+    )
+    with pytest.raises(PlateSelectionError) as excinfo:
+        _ = reader.plate_layout
+    msg = str(excinfo.value)
+    assert "NoSuchPlate" in msg
+    assert "PlateA" in msg
+    assert "PlateB" in msg
+
+
+def test_active_plate_matching_name_on_single_plate_lif_is_accepted() -> None:
+    """Belt-and-suspenders: passing the correct name on a single-plate LIF works."""
+    reader = _lif_reader_with_plates(
+        [{"name": "Solo", "rows": ["A"], "columns": ["01"]}],
+        scenes=["Solo/A/01"],
+        active_plate="Solo",
+    )
+    assert reader.layout_hint == "plate"
+    assert reader.plate_layout is not None
+    assert reader.plate_layout.name == "Solo"
+
+
+def test_active_plate_mismatch_on_single_plate_lif_raises() -> None:
+    """Passing a name that doesn't match the sole plate raises with both names."""
+    reader = _lif_reader_with_plates(
+        [{"name": "Solo", "rows": ["A"], "columns": ["01"]}],
+        scenes=["Solo/A/01"],
+        active_plate="Other",
+    )
+    with pytest.raises(PlateSelectionError) as excinfo:
+        _ = reader.plate_layout
+    msg = str(excinfo.value)
+    assert "Other" in msg
+    assert "Solo" in msg
+
+
+def test_convert_multi_plate_without_selector_raises_with_available_names(
+    tmp_path: Path, patched_reader
+) -> None:
+    """``convert()`` refuses ambiguity: multi-plate LIF, no ``plate=`` → raise."""
+    reader = _lif_reader_with_plates(
+        [
+            {"name": "PlateA", "rows": ["A"], "columns": ["01"]},
+            {"name": "PlateB", "rows": ["A"], "columns": ["01", "02"]},
+        ],
+        scenes=_two_plate_scenes(),
+    )
+    patched_reader(reader)
+
+    with pytest.raises(PlateSelectionError) as excinfo:
+        convert("/tmp/multi.lif", tmp_path / "out", pyramid_min_size=8)
+    msg = str(excinfo.value)
+    assert "PlateA" in msg
+    assert "PlateB" in msg
+    assert "--plate" in msg
+
+
+def test_convert_with_plate_kwarg_produces_single_plate_zarr(
+    tmp_path: Path, patched_reader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`plate=NAME` in reader_kwargs writes only that plate's fields.
+
+    Uses `get_reader`-level `reader_kwargs` capture to confirm the kwarg
+    reaches the plugin's `open()` and the produced plate.zarr carries only
+    the selected plate's wells.
+    """
+    # patched_reader ignores reader_kwargs, so we roll our own installer that
+    # asserts the kwarg reached get_reader and returns a reader pre-scoped
+    # to PlateB. This matches how the real bioio-lif plugin would honour
+    # `plate=` at open() time.
+    reader = _lif_reader_with_plates(
+        [
+            {"name": "PlateA", "rows": ["A"], "columns": ["01"]},
+            {"name": "PlateB", "rows": ["A"], "columns": ["01", "02"]},
+        ],
+        scenes=_two_plate_scenes(),
+        active_plate="PlateB",
+    )
+    captured: dict = {}
+
+    def _get_reader(_path, *, reader_kwargs=None):
+        captured["reader_kwargs"] = reader_kwargs
+        plugin_obj = ReaderPlugin(
+            name="bioio-lif",
+            match=lambda _p: 100,
+            open=lambda _p: object(),
+            distribution="bioio-lif",
+            source="builtin",
+        )
+        return reader, plugin_obj, 100
+
+    monkeypatch.setattr(api_module, "get_reader", _get_reader)
+    out = tmp_path / "plate.ome.zarr"
+
+    audit = convert(
+        "/tmp/multi.lif",
+        out,
+        pyramid_min_size=8,
+        reader_kwargs={"plate": "PlateB"},
+    )
+    assert captured["reader_kwargs"] == {"plate": "PlateB"}
+    assert audit["layout"] == "plate"
+    assert audit["plate"]["name"] == "PlateB"
+    assert [f["well_id"] for f in audit["fields"]] == ["A01", "A02"]
+    with open(out / "zarr.json") as f:
+        root_zj = json.load(f)
+    plate = root_zj["attributes"]["ome"]["plate"]
+    assert plate["name"] == "PlateB"
+    # PlateA wells must NOT be present on disk.
+    assert (out / "A" / "01" / "0" / "zarr.json").exists()
+    assert (out / "A" / "02" / "0" / "zarr.json").exists()
+
+
+def test_convert_with_unknown_plate_name_raises_with_available_names(
+    tmp_path: Path, patched_reader
+) -> None:
+    """`plate=NAME` where NAME isn't among the templates raises listing them."""
+    reader = _lif_reader_with_plates(
+        [
+            {"name": "PlateA", "rows": ["A"], "columns": ["01"]},
+            {"name": "PlateB", "rows": ["A"], "columns": ["01", "02"]},
+        ],
+        scenes=_two_plate_scenes(),
+        active_plate="Nonexistent",
+    )
+    patched_reader(reader)
+
+    with pytest.raises(PlateSelectionError) as excinfo:
+        convert(
+            "/tmp/multi.lif",
+            tmp_path / "out",
+            pyramid_min_size=8,
+            reader_kwargs={"plate": "Nonexistent"},
+        )
+    msg = str(excinfo.value)
+    assert "Nonexistent" in msg
+
+
+def test_inspect_lists_all_plate_names_on_multi_plate_lif(patched_reader) -> None:
+    """`inspect()` surfaces every plate template name on a multi-plate LIF."""
+    reader = _lif_reader_with_plates(
+        [
+            {"name": "PlateA", "rows": ["A"], "columns": ["01"]},
+            {"name": "PlateB", "rows": ["A"], "columns": ["01", "02"]},
+        ],
+        scenes=_two_plate_scenes(),
+    )
+    patched_reader(reader)
+
+    info = zm_inspect("/tmp/multi.lif")
+
+    assert info["plates"] == ["PlateA", "PlateB"]
+    # Single-plate `plate_layout` shape is absent — there's no unambiguous plate.
+    assert "plate_layout" not in info
+    # Every underlying scene still enumerates as today (additive block).
+    assert info["n_scenes"] == 3
+
+
+def test_inspect_single_plate_lif_does_not_add_plates_block(patched_reader) -> None:
+    """Single-plate `inspect()` output is unchanged — no additive `plates` key."""
+    reader = _lif_reader_with_plates(
+        [{"name": "Solo", "rows": ["A"], "columns": ["01"]}],
+        scenes=["Solo/A/01"],
+    )
+    patched_reader(reader)
+
+    info = zm_inspect("/tmp/single.lif")
+
+    assert "plate_layout" in info
+    assert "plates" not in info
