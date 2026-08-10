@@ -26,3 +26,7 @@ Zarrmony grows a third writer layout, `layout="plate"`, that emits an OME-NGFF 0
 ## Follow-up (issue #33)
 
 The `per_well_metadata` override layer described above was **removed** in v0.4.0 when user-supplied metadata moved out of zarrmony to `aperture-backend`. The file-derived plate structure (`PlateLayout`, the OME-NGFF 0.5 plate writer, the audit schema-3 `fields` + `plate` blocks, `LayoutMismatchError` / `LayoutDowngradeWarning` / `PlateLayoutError`) is unchanged. The well group no longer carries `attrs.zarrmony.user_metadata`, and `convert()` no longer accepts `per_well_metadata=` / `metadata=` / `permissive=`. The well-keyed dict idea is preserved in `parse_well_key()` for downstream tools that want to validate user input against a `PlateLayout`.
+
+## Follow-up (issues #80, #81, #82)
+
+[ADR-0009](./0009-lif-plate-reader.md) applies this ADR's reader contract to the built-in `bioio-lif` reader — LMSDataContainer XML as the source of truth for plate shape, one plate per `convert()` with a `--plate NAME` selector for multi-plate LIFs, and the same sparse-plate / row-column normalization stance the Phenix adapter follows. #81 lands the single-plate tracer bullet; #82 lands multi-plate enumeration + the CLI selector.
