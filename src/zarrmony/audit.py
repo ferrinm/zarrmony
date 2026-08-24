@@ -31,6 +31,15 @@ from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
+# 10: adds per-scene / per-field ``chunk_shapes`` — one chunk shape per pyramid
+#    level, positionally aligned with the record's existing ``level_shapes``.
+#    Written by every path that goes through ``write_scene`` (per-scene, bf2raw,
+#    plate, per-tile). Chunks are now planned per level by the ADR-0010
+#    world-cubic planner rather than delegated to bioio-ome-zarr's memory-target
+#    heuristic, so the shape actually on disk is no longer inferable from
+#    ``config.geometry`` alone — hence recording it. Purely additive: consumers
+#    pinned to 9 can widen their pin. The coarse level index joins these in a
+#    later ADR-0010 slice. (#84)
 # 9: replaces ``config.pyramid_min_size`` / ``config.chunk_shape`` with a single
 #    ``config.geometry`` block carrying the *resolved* ADR-0010 output-geometry
 #    policy (chunk_target_bytes / isotropy_tolerance / axis_floor /
@@ -64,7 +73,7 @@ from zarrmony.readers.plugin import ReaderPlugin
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
-AUDIT_SCHEMA_VERSION = 9
+AUDIT_SCHEMA_VERSION = 10
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:

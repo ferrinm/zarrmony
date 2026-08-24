@@ -9,6 +9,7 @@ Two subcommands:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import click
@@ -17,7 +18,12 @@ from zarrmony import __version__
 from zarrmony import api as zm_api
 from zarrmony._storage import format_bytes, size_on_disk
 from zarrmony.errors import OutputExistsError, PlateSelectionError
-from zarrmony.geometry import DEFAULT_PYRAMID_MIN_SIZE
+from zarrmony.geometry import (
+    DEFAULT_CHUNK_TARGET_BYTES,
+    DEFAULT_GEOMETRY,
+    DEFAULT_PYRAMID_MIN_SIZE,
+    Geometry,
+)
 
 
 @click.group(name="zarrmony")
@@ -54,6 +60,50 @@ def _parse_chunk_shape(
         raise click.BadParameter(
             f"chunk-shape must be comma-separated ints (e.g. '1,1,1,512,512'); got {value!r}"
         ) from e
+
+
+def _build_geometry(
+    *,
+    chunk_target_bytes: int | None,
+    pyramid_min_size: int | None,
+    chunk_shape: tuple[int, ...] | None,
+) -> Geometry | None:
+    """Fold the geometry flags into one :class:`Geometry`, or ``None``.
+
+    ``None`` means "the user set no geometry flag" and lets ``convert()`` use
+    :data:`~zarrmony.geometry.DEFAULT_GEOMETRY`. The CLI builds the object
+    itself rather than passing the ``pyramid_min_size=`` / ``chunk_shape=``
+    sugar through, because ADR-0010's ``resolve_geometry`` refuses the two
+    spellings together and ``--chunk-target-bytes`` has no sugar form — every
+    geometry flag has to arrive by the same door.
+
+    ``--chunk-shape`` bypasses the planner outright, so combining it with
+    ``--chunk-target-bytes`` would silently ignore the target; that is an error
+    here rather than a surprise discovered on disk.
+    """
+    if chunk_shape is not None and chunk_target_bytes is not None:
+        raise click.BadParameter(
+            "--chunk-shape and --chunk-target-bytes are mutually exclusive; "
+            "--chunk-shape sets the chunk directly, so the byte target the "
+            "planner would aim for is never consulted"
+        )
+    overrides: dict[str, Any] = {
+        name: value
+        for name, value in (
+            ("chunk_target_bytes", chunk_target_bytes),
+            ("pyramid_min_size", pyramid_min_size),
+            ("chunk_shape", chunk_shape),
+        )
+        if value is not None
+    }
+    if not overrides:
+        return None
+    try:
+        return replace(DEFAULT_GEOMETRY, **overrides)
+    except ValueError as e:
+        # Geometry validates at construction; surface it as a usage error
+        # instead of a traceback.
+        raise click.BadParameter(str(e)) from e
 
 
 def _parse_reader_kwargs(
@@ -113,11 +163,30 @@ def _parse_reader_kwargs(
     help="Stop pyramid generation when the smallest spatial dim falls below this.",
 )
 @click.option(
+    "--chunk-target-bytes",
+    type=int,
+    default=None,
+    show_default=(
+        f"{DEFAULT_CHUNK_TARGET_BYTES} "
+        f"({DEFAULT_CHUNK_TARGET_BYTES // 1024} KiB, from the ADR-0010 geometry policy)"
+    ),
+    help=(
+        "Raw (uncompressed) byte target for one chunk. The planner picks the "
+        "largest power-of-two chunk that fits and is closest to cubic in "
+        "micrometres, per level. Raise it for archival stores read in big "
+        "sequential sweeps; lower it for latency-sensitive interactive viewing."
+    ),
+)
+@click.option(
     "--chunk-shape",
     callback=_parse_chunk_shape,
     default=None,
     metavar="T,C,Z,Y,X",
-    help="Override auto chunk shape, comma-separated (e.g. '1,1,1,512,512').",
+    help=(
+        "Bypass the chunk planner with an explicit shape, comma-separated "
+        "(e.g. '1,1,1,512,512'). Applied verbatim to every pyramid level; "
+        "mutually exclusive with --chunk-target-bytes."
+    ),
 )
 @click.option(
     "--force",
@@ -231,6 +300,7 @@ def convert_cmd(
     output: str,
     layout: str,
     pyramid_min_size: int | None,
+    chunk_target_bytes: int | None,
     chunk_shape: tuple[int, ...] | None,
     contrast_percentile: float,
     no_contrast: bool,
@@ -256,6 +326,12 @@ def convert_cmd(
     else:
         resolved_contrast = contrast_percentile
 
+    geometry = _build_geometry(
+        chunk_target_bytes=chunk_target_bytes,
+        pyramid_min_size=pyramid_min_size,
+        chunk_shape=chunk_shape,
+    )
+
     # --plate NAME is a convenience alias for --reader-kwarg plate=NAME. Merge
     # into reader_kwargs; refuse an overlap so the user isn't surprised by
     # last-wins semantics on a plate mismatch. Everything downstream reads
@@ -273,8 +349,7 @@ def convert_cmd(
             input_path=input_path,
             output=output,
             layout=layout,
-            pyramid_min_size=pyramid_min_size,
-            chunk_shape=chunk_shape,
+            geometry=geometry,
             contrast_percentile=resolved_contrast,
             force=force,
             checksum=checksum,

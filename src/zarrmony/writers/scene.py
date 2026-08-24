@@ -15,7 +15,7 @@ import xarray as xr
 from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 
 from zarrmony._storage import open_root_group
-from zarrmony.geometry import DEFAULT_GEOMETRY, Geometry
+from zarrmony.geometry import DEFAULT_GEOMETRY, Geometry, plan_level_chunk_shapes
 from zarrmony.transforms import NGFF_AXIS_TYPE, NGFF_AXIS_UNIT, normalize_axes
 from zarrmony.writers.pyramid import build_pyramid, compute_level_shapes
 
@@ -221,7 +221,7 @@ def write_scene(
 ) -> dict:
     """Convert one scene to an OME-Zarr image at ``store_path``.
 
-    Returns an audit dict (scene_index/name, dims, level_shapes,
+    Returns an audit dict (scene_index/name, dims, level_shapes, chunk_shapes,
     axis_normalization record, channel_count, physical_pixel_size).
 
     ``geometry`` (ADR-0010) carries every output-shape choice — pyramid depth,
@@ -229,7 +229,10 @@ def write_scene(
     frozen :class:`~zarrmony.geometry.Geometry` value rather than as loose
     keywords. ``convert()`` resolves it once and threads the same instance
     through per-scene, bf2raw and plate output; the default is the ADR-0010
-    policy.
+    policy. Chunk shapes are planned per level from the level's own physical
+    voxel spacing (:func:`~zarrmony.geometry.plan_level_chunk_shapes`) and
+    recorded under ``chunk_shapes``, one entry per level, alongside the
+    ``level_shapes`` they were planned against.
 
     ``xarr_override`` substitutes a pre-built xarray for ``reader.xarray_dask_data``
     (used by ``api.convert(..., lif_mosaic="per-tile")`` to feed in one tile at
@@ -282,6 +285,17 @@ def write_scene(
     axes_units = [NGFF_AXIS_UNIT[d] for d in dims]
     physical_pixel_size = _physical_scales_for_dims(dims, reader)
 
+    # ADR-0010 (#84): plan every level's chunk shape ourselves and hand the
+    # writer an explicit per-level list. Passing ``chunk_shape=None`` would
+    # delegate to bioio-ome-zarr's memory-target heuristic, which fills the
+    # rightmost axis first under a 16 MiB budget — right for a 2D plane, and on
+    # anything with a Z extent it converges on full-width single-plane slabs
+    # that no frustum cull can trim. An explicit ``geometry.chunk_shape`` still
+    # wins; the planner is what runs when the caller didn't name one.
+    chunk_shapes = plan_level_chunk_shapes(
+        level_shapes, dims, physical_pixel_size, canonical.dtype, geometry
+    )
+
     writer = ZarrmonyWriter(
         store=store_path,
         level_shapes=level_shapes,
@@ -293,7 +307,7 @@ def write_scene(
         axes_types=axes_types,
         axes_units=axes_units,
         physical_pixel_size=physical_pixel_size,
-        chunk_shape=geometry.chunk_shape,
+        chunk_shape=[list(c) for c in chunk_shapes],
         creator_info=creator_info,
     )
 
@@ -319,6 +333,7 @@ def write_scene(
         "image_name": name,
         "dims": dims,
         "level_shapes": [list(s) for s in level_shapes],
+        "chunk_shapes": [list(c) for c in chunk_shapes],
         "axis_normalization": axis_record,
         "channel_count": channel_count,
         "physical_pixel_size": dict(zip(dims, physical_pixel_size, strict=True)),
