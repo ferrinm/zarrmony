@@ -21,6 +21,7 @@ from zarrmony.errors import OutputExistsError, PlateSelectionError
 from zarrmony.geometry import (
     DEFAULT_CHUNK_TARGET_BYTES,
     DEFAULT_GEOMETRY,
+    DEFAULT_ISOTROPY_TOLERANCE,
     DEFAULT_PYRAMID_MIN_SIZE,
     Geometry,
 )
@@ -65,6 +66,7 @@ def _parse_chunk_shape(
 def _build_geometry(
     *,
     chunk_target_bytes: int | None,
+    isotropy_tolerance: float | None,
     pyramid_min_size: int | None,
     chunk_shape: tuple[int, ...] | None,
 ) -> Geometry | None:
@@ -74,8 +76,9 @@ def _build_geometry(
     :data:`~zarrmony.geometry.DEFAULT_GEOMETRY`. The CLI builds the object
     itself rather than passing the ``pyramid_min_size=`` / ``chunk_shape=``
     sugar through, because ADR-0010's ``resolve_geometry`` refuses the two
-    spellings together and ``--chunk-target-bytes`` has no sugar form — every
-    geometry flag has to arrive by the same door.
+    spellings together and the newer flags (``--chunk-target-bytes``,
+    ``--isotropy-tolerance``) have no sugar form — every geometry flag has to
+    arrive by the same door.
 
     ``--chunk-shape`` bypasses the planner outright, so combining it with
     ``--chunk-target-bytes`` would silently ignore the target; that is an error
@@ -91,6 +94,7 @@ def _build_geometry(
         name: value
         for name, value in (
             ("chunk_target_bytes", chunk_target_bytes),
+            ("isotropy_tolerance", isotropy_tolerance),
             ("pyramid_min_size", pyramid_min_size),
             ("chunk_shape", chunk_shape),
         )
@@ -160,7 +164,24 @@ def _parse_reader_kwargs(
     type=int,
     default=None,
     show_default=f"{DEFAULT_PYRAMID_MIN_SIZE} (from the ADR-0010 geometry policy)",
-    help="Stop pyramid generation when the smallest spatial dim falls below this.",
+    help=(
+        "Stop pyramid generation when the smaller of Y/X falls below this. "
+        "Z never decides depth — a 3-plane stack would otherwise get no "
+        "pyramid at all."
+    ),
+)
+@click.option(
+    "--isotropy-tolerance",
+    type=float,
+    default=None,
+    show_default=f"{DEFAULT_ISOTROPY_TOLERANCE} (from the ADR-0010 geometry policy)",
+    help=(
+        "How close to the finest axis's voxel spacing an axis must be to be "
+        "halved at a pyramid level. Levels therefore move toward isotropy and "
+        "the scarce axis (usually Z) is spent last. 1.0 halves only "
+        "exactly-isotropic axes; a large value (e.g. 1e9) halves every spatial "
+        "axis at every level."
+    ),
 )
 @click.option(
     "--chunk-target-bytes",
@@ -300,6 +321,7 @@ def convert_cmd(
     output: str,
     layout: str,
     pyramid_min_size: int | None,
+    isotropy_tolerance: float | None,
     chunk_target_bytes: int | None,
     chunk_shape: tuple[int, ...] | None,
     contrast_percentile: float,
@@ -328,6 +350,7 @@ def convert_cmd(
 
     geometry = _build_geometry(
         chunk_target_bytes=chunk_target_bytes,
+        isotropy_tolerance=isotropy_tolerance,
         pyramid_min_size=pyramid_min_size,
         chunk_shape=chunk_shape,
     )

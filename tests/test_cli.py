@@ -315,6 +315,98 @@ def test_convert_chunk_target_bytes_is_documented_in_help(runner: CliRunner) -> 
     assert "--chunk-target-bytes" in result.output
 
 
+def _anisotropic_stack_shapes(store: Path) -> list[list[int]]:
+    """Every level's on-disk shape, in level order."""
+    group = json.loads((store / "zarr.json").read_text())
+    paths = [
+        d["path"] for d in group["attributes"]["ome"]["multiscales"][0]["datasets"]
+    ]
+    return [json.loads((store / p / "zarr.json").read_text())["shape"] for p in paths]
+
+
+def _anisotropic_reader() -> FakeReader:
+    """64 planes at Z 4.0 µm over a 128² field at 0.5 µm — 8:1 anisotropic."""
+    return FakeReader(
+        scenes=["s"],
+        dims="TCZYX",
+        shape=(1, 1, 64, 128, 128),
+        pixel_sizes=FakePhysicalPixelSizes(Z=4.0, Y=0.5, X=0.5),
+    )
+
+
+def test_convert_holds_the_scarce_axis_by_default(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """Z at 8x the lateral spacing is outside the default 1.5 tolerance."""
+    patched_reader(_anisotropic_reader())
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        # fmt: off
+        [
+            "convert", "/tmp/x.lif", str(out),
+            "--pyramid-min-size", "32", "--no-contrast", "--no-validate",
+        ],
+        # fmt: on
+    )
+    assert result.exit_code == 0, result.output
+
+    assert _anisotropic_stack_shapes(out / "s.ome.zarr") == [
+        [1, 1, 64, 128, 128],
+        [1, 1, 64, 64, 64],
+        [1, 1, 64, 32, 32],
+    ]
+
+
+def test_convert_isotropy_tolerance_changes_the_written_levels(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """A tolerance wide enough to admit any axis halves Z alongside Y and X."""
+    patched_reader(_anisotropic_reader())
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        # fmt: off
+        [
+            "convert", "/tmp/x.lif", str(out),
+            "--isotropy-tolerance", "1e9",
+            "--pyramid-min-size", "32", "--no-contrast", "--no-validate",
+        ],
+        # fmt: on
+    )
+    assert result.exit_code == 0, result.output
+
+    # Z stops at 32 — the axis floor, which the tolerance does not override.
+    assert _anisotropic_stack_shapes(out / "s.ome.zarr") == [
+        [1, 1, 64, 128, 128],
+        [1, 1, 32, 64, 64],
+        [1, 1, 32, 32, 32],
+    ]
+
+
+def test_convert_isotropy_tolerance_must_be_at_least_one(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    # Below 1.0 no axis could ever be within tolerance of the finest one —
+    # including the finest axis itself, which is within 1.0x of itself.
+    patched_reader(FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32)))
+
+    result = runner.invoke(
+        app,
+        ["convert", "/tmp/x.lif", str(tmp_path / "out"), "--isotropy-tolerance", "0.5"],
+    )
+    assert result.exit_code != 0
+    assert "isotropy_tolerance" in result.output
+
+
+def test_convert_isotropy_tolerance_is_documented_in_help(runner: CliRunner) -> None:
+    result = runner.invoke(app, ["convert", "--help"])
+    assert result.exit_code == 0
+    assert "--isotropy-tolerance" in result.output
+
+
 # ---------- convert (--layout bf2raw opt-in) ----------
 
 
