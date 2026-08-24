@@ -18,16 +18,16 @@ per-level spacing helper (:func:`spacings_for_level`) it is built on. Chunking
 is a geometry choice — "how each level is divided into chunks" — so it lives
 beside the policy that governs it rather than in a writer.
 
-``isotropy_tolerance`` and ``axis_floor`` are consumed by the anisotropy-aware
-pyramid rule (:func:`~zarrmony.writers.pyramid.compute_level_shapes`), which
-lives beside the downsampler that executes it.
+``isotropy_tolerance``, ``axis_floor``, ``pyramid_min_size`` and the two
+``coarse_max_*`` bounds are consumed by the anisotropy-aware pyramid rule
+(:func:`~zarrmony.writers.pyramid.compute_level_shapes`), which lives beside the
+downsampler that executes it.
 
-**Inert fields.** ``coarse_max_bytes`` and ``coarse_max_long_axis`` are carried
-and audited but have no behaviour yet — the coarse-level stopping rule that
-consumes them arrives in a later slice of ADR-0010, as does
-``downsample_method``. Until then, setting them changes only the audit record.
-Values are still validated at construction so a typo fails at the call site
-rather than silently at some later release.
+**Inert field.** ``downsample_method`` is carried and audited but has no
+behaviour yet — mean-pool is the only downsampler in the code, and ``"max"``
+arrives in a later slice of ADR-0010. Until then, setting it changes only the
+audit record. The value is still validated at construction so a typo fails at
+the call site rather than silently at some later release.
 """
 
 from __future__ import annotations
@@ -118,19 +118,21 @@ class Geometry:
         floor is never halved. On Y/X it is capped by ``pyramid_min_size`` so
         an explicitly lowered depth floor is not overridden by this default.
     :param coarse_max_bytes: Upper bound on a coarse level's decoded bytes per
-        ``(t, c)``.
+        ``(t, c)``. With ``coarse_max_long_axis``, this extends pyramid depth
+        until a level fits both — see
+        :func:`~zarrmony.writers.pyramid.is_coarse_level`.
     :param coarse_max_long_axis: Upper bound on a coarse level's longest
         lateral axis, in voxels.
     :param downsample_method: ``"mean"`` (default) or ``"max"``. Max-pool
         biases every level above 0 high; it exists for sparse labels.
     :param pyramid_min_size: Stop halving when the smallest of Y/X would fall
-        below this.
+        below this — unless the two ``coarse_max_*`` bounds ask for more depth,
+        which they win, so no conversion loses a level.
     :param chunk_shape: Explicit per-axis chunk shape that bypasses the
         planner entirely. ``None`` (default) means "plan it".
 
-    Every field except ``coarse_max_bytes``, ``coarse_max_long_axis`` and
-    ``downsample_method`` affects written output today; see the module
-    docstring on the inert ones.
+    Every field except ``downsample_method`` affects written output today; see
+    the module docstring on that one.
     """
 
     chunk_target_bytes: int = DEFAULT_CHUNK_TARGET_BYTES
@@ -190,9 +192,9 @@ class Geometry:
 
         Recorded under ``attrs.zarrmony.config.geometry``, replacing the
         pre-ADR-0010 ``chunk_shape`` / ``pyramid_min_size`` input echo. This is
-        the *policy*, not its result: the per-level shapes it produced live on
-        each scene / field record's ``level_shapes`` and ``chunk_shapes``, and
-        the coarse level index joins them in a later slice.
+        the *policy*, not its result: what it produced for a given array lives
+        on each scene / field record as ``level_shapes``, ``chunk_shapes`` and
+        ``coarse_level_index``.
         """
         record = asdict(self)
         record["chunk_shape"] = (

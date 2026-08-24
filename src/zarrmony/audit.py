@@ -31,6 +31,16 @@ from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
+# 11: adds per-scene / per-field ``coarse_level_index`` — the index into that
+#    record's ``level_shapes`` of the coarsest-tier level a viewer can hold
+#    whole (ADR-0010: decoded Z*Y*X*itemsize per (t, c) within
+#    ``config.geometry.coarse_max_bytes`` and a lateral extent within
+#    ``coarse_max_long_axis``), or ``null`` when no level reaches those bounds.
+#    Pyramid depth is now the greater of the ``pyramid_min_size`` Y/X rule and
+#    the depth at which a level qualifies, so this is the property depth is
+#    chosen for — recording it is what makes the guarantee checkable at
+#    conversion time rather than discoverable in a viewport. Purely additive:
+#    consumers pinned to 10 can widen their pin. (#86)
 # 10: adds per-scene / per-field ``chunk_shapes`` — one chunk shape per pyramid
 #    level, positionally aligned with the record's existing ``level_shapes``.
 #    Written by every path that goes through ``write_scene`` (per-scene, bf2raw,
@@ -73,7 +83,7 @@ from zarrmony.readers.plugin import ReaderPlugin
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
-AUDIT_SCHEMA_VERSION = 10
+AUDIT_SCHEMA_VERSION = 11
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:

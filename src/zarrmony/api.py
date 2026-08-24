@@ -719,8 +719,8 @@ def convert(
 
     ``geometry`` (ADR-0010) is the single frozen
     :class:`~zarrmony.geometry.Geometry` policy carrying every output-shape
-    choice — pyramid depth, chunk shape, and the planner knobs later slices
-    consume. It is resolved once here and threaded unchanged through per-scene,
+    choice — pyramid depth, the coarse-level bounds that can extend it, and
+    chunk shape. It is resolved once here and threaded unchanged through per-scene,
     bf2raw and plate output, so all three layouts are planned by one rule.
     ``None`` (the default) uses the ADR-0010 policy.
 

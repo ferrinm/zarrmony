@@ -20,6 +20,8 @@ from zarrmony._storage import format_bytes, size_on_disk
 from zarrmony.errors import OutputExistsError, PlateSelectionError
 from zarrmony.geometry import (
     DEFAULT_CHUNK_TARGET_BYTES,
+    DEFAULT_COARSE_MAX_BYTES,
+    DEFAULT_COARSE_MAX_LONG_AXIS,
     DEFAULT_GEOMETRY,
     DEFAULT_ISOTROPY_TOLERANCE,
     DEFAULT_PYRAMID_MIN_SIZE,
@@ -68,6 +70,8 @@ def _build_geometry(
     chunk_target_bytes: int | None,
     isotropy_tolerance: float | None,
     pyramid_min_size: int | None,
+    coarse_max_bytes: int | None,
+    coarse_max_long_axis: int | None,
     chunk_shape: tuple[int, ...] | None,
 ) -> Geometry | None:
     """Fold the geometry flags into one :class:`Geometry`, or ``None``.
@@ -96,6 +100,8 @@ def _build_geometry(
             ("chunk_target_bytes", chunk_target_bytes),
             ("isotropy_tolerance", isotropy_tolerance),
             ("pyramid_min_size", pyramid_min_size),
+            ("coarse_max_bytes", coarse_max_bytes),
+            ("coarse_max_long_axis", coarse_max_long_axis),
             ("chunk_shape", chunk_shape),
         )
         if value is not None
@@ -167,7 +173,9 @@ def _parse_reader_kwargs(
     help=(
         "Stop pyramid generation when the smaller of Y/X falls below this. "
         "Z never decides depth — a 3-plane stack would otherwise get no "
-        "pyramid at all."
+        "pyramid at all. A floor, not a cap: a volume still too large for a "
+        "viewer to hold whole keeps halving past it until it reaches the "
+        "--coarse-max-bytes / --coarse-max-long-axis bounds."
     ),
 )
 @click.option(
@@ -181,6 +189,37 @@ def _parse_reader_kwargs(
         "the scarce axis (usually Z) is spent last. 1.0 halves only "
         "exactly-isotropic axes; a large value (e.g. 1e9) halves every spatial "
         "axis at every level."
+    ),
+)
+@click.option(
+    "--coarse-max-bytes",
+    type=int,
+    default=None,
+    show_default=(
+        f"{DEFAULT_COARSE_MAX_BYTES} "
+        f"({DEFAULT_COARSE_MAX_BYTES // (1024 * 1024)} MiB, from the ADR-0010 "
+        f"geometry policy)"
+    ),
+    help=(
+        "Decoded-byte budget, per timepoint and channel, for the coarse level "
+        "— the level small enough that a viewer can hold the whole volume as "
+        "spatial context. The pyramid keeps halving until a level fits this "
+        "and --coarse-max-long-axis, even past --pyramid-min-size; depth is "
+        "the greater of the two rules, so no conversion loses a level. Raise "
+        "it for a consumer with more memory per frame."
+    ),
+)
+@click.option(
+    "--coarse-max-long-axis",
+    type=int,
+    default=None,
+    show_default=(
+        f"{DEFAULT_COARSE_MAX_LONG_AXIS} (from the ADR-0010 geometry policy)"
+    ),
+    help=(
+        "Longest lateral (Y/X) extent, in voxels, a coarse level may have. "
+        "The second of the two coarse-level bounds; both must hold before the "
+        "pyramid stops extending."
     ),
 )
 @click.option(
@@ -322,6 +361,8 @@ def convert_cmd(
     layout: str,
     pyramid_min_size: int | None,
     isotropy_tolerance: float | None,
+    coarse_max_bytes: int | None,
+    coarse_max_long_axis: int | None,
     chunk_target_bytes: int | None,
     chunk_shape: tuple[int, ...] | None,
     contrast_percentile: float,
@@ -352,6 +393,8 @@ def convert_cmd(
         chunk_target_bytes=chunk_target_bytes,
         isotropy_tolerance=isotropy_tolerance,
         pyramid_min_size=pyramid_min_size,
+        coarse_max_bytes=coarse_max_bytes,
+        coarse_max_long_axis=coarse_max_long_axis,
         chunk_shape=chunk_shape,
     )
 

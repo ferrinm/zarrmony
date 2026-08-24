@@ -17,7 +17,11 @@ from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 from zarrmony._storage import open_root_group
 from zarrmony.geometry import DEFAULT_GEOMETRY, Geometry, plan_level_chunk_shapes
 from zarrmony.transforms import NGFF_AXIS_TYPE, NGFF_AXIS_UNIT, normalize_axes
-from zarrmony.writers.pyramid import build_pyramid, compute_level_shapes
+from zarrmony.writers.pyramid import (
+    build_pyramid,
+    coarse_level_index,
+    compute_level_shapes,
+)
 
 # Approximation label recorded in the audit whenever data-driven contrast runs.
 # The min + percentile are computed off the COARSEST pyramid level rather than
@@ -222,21 +226,25 @@ def write_scene(
     """Convert one scene to an OME-Zarr image at ``store_path``.
 
     Returns an audit dict (scene_index/name, dims, level_shapes, chunk_shapes,
-    axis_normalization record, channel_count, physical_pixel_size).
+    coarse_level_index, axis_normalization record, channel_count,
+    physical_pixel_size).
 
     ``geometry`` (ADR-0010) carries every output-shape choice — pyramid depth,
-    chunk shape, and the planner knobs that later slices will consume — as one
-    frozen :class:`~zarrmony.geometry.Geometry` value rather than as loose
-    keywords. ``convert()`` resolves it once and threads the same instance
-    through per-scene, bf2raw and plate output; the default is the ADR-0010
-    policy. Level shapes halve every spatial axis whose spacing is within
+    the coarse-level bounds and chunk shape — as one frozen
+    :class:`~zarrmony.geometry.Geometry` value rather than as loose keywords.
+    ``convert()`` resolves it once and threads the same instance through
+    per-scene, bf2raw and plate output; the default is the ADR-0010 policy.
+    Level shapes halve every spatial axis whose spacing is within
     ``isotropy_tolerance`` of the finest axis's
     (:func:`~zarrmony.writers.pyramid.compute_level_shapes`), so the pyramid
-    moves toward isotropy rather than preserving it; chunk shapes are then
+    moves toward isotropy rather than preserving it, and depth runs until a
+    level is small enough for a viewer to hold whole; chunk shapes are then
     planned per level from that level's own physical voxel spacing
     (:func:`~zarrmony.geometry.plan_level_chunk_shapes`) and recorded under
     ``chunk_shapes``, one entry per level, alongside the ``level_shapes`` they
-    were planned against.
+    were planned against. ``coarse_level_index`` names which of those levels is
+    the coarse one (``None`` if none reaches the bounds), so the guarantee is
+    checkable in the audit rather than in a viewport.
 
     ``xarr_override`` substitutes a pre-built xarray for ``reader.xarray_dask_data``
     (used by ``api.convert(..., lif_mosaic="per-tile")`` to feed in one tile at
@@ -274,8 +282,16 @@ def write_scene(
     # `physical_pixel_size` below and the chunk planner.
     physical_pixel_size = _physical_scales_for_dims(dims, reader)
 
-    level_shapes = compute_level_shapes(base_shape, dims, physical_pixel_size, geometry)
+    level_shapes = compute_level_shapes(
+        base_shape, dims, physical_pixel_size, canonical.dtype, geometry
+    )
     pyramid = build_pyramid(canonical.data, level_shapes)
+
+    # ADR-0010 (#86): which level a viewer can hold whole is the property the
+    # depth rule now targets, so record it rather than leaving it to be
+    # rediscovered in a viewport — ``None`` when the pyramid bottomed out before
+    # reaching the bounds.
+    coarse_index = coarse_level_index(level_shapes, dims, canonical.dtype, geometry)
 
     if channels is None:
         channel_coord = canonical.coords.get("C")
@@ -341,6 +357,7 @@ def write_scene(
         "dims": dims,
         "level_shapes": [list(s) for s in level_shapes],
         "chunk_shapes": [list(c) for c in chunk_shapes],
+        "coarse_level_index": coarse_index,
         "axis_normalization": axis_record,
         "channel_count": channel_count,
         "physical_pixel_size": dict(zip(dims, physical_pixel_size, strict=True)),

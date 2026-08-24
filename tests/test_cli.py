@@ -407,6 +407,139 @@ def test_convert_isotropy_tolerance_is_documented_in_help(runner: CliRunner) -> 
     assert "--isotropy-tolerance" in result.output
 
 
+# ---------- convert (coarse-level bounds, ADR-0010) ----------
+
+
+def _coarse_reader() -> FakeReader:
+    """8 planes of 256² at 0.5 µm isotropic.
+
+    Z sits below the axis floor, so only Y/X ever halve and the written level
+    shapes read as the depth rule alone.
+    """
+    return FakeReader(
+        scenes=["s"],
+        dims="TCZYX",
+        shape=(1, 1, 8, 256, 256),
+        pixel_sizes=FakePhysicalPixelSizes(Z=0.5, Y=0.5, X=0.5),
+    )
+
+
+def test_convert_coarse_bounds_build_one_policy(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    result = runner.invoke(
+        app,
+        # fmt: off
+        [
+            "convert", "/tmp/x.lif", str(tmp_path / "out"),
+            "--coarse-max-bytes", "32768",
+            "--coarse-max-long-axis", "512",
+        ],
+        # fmt: on
+    )
+    assert result.exit_code == 0, result.output
+    geometry = captured["geometry"]
+    assert geometry.coarse_max_bytes == 32768
+    assert geometry.coarse_max_long_axis == 512
+    # The floor the bounds can win over is untouched by setting them.
+    assert geometry.pyramid_min_size == DEFAULT_GEOMETRY.pyramid_min_size
+
+
+def test_convert_coarse_max_bytes_extends_the_written_levels(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """A byte bound the Y/X rule's last level misses buys another level."""
+    patched_reader(_coarse_reader())
+
+    def _run(out: Path, *extra: str) -> list[list[int]]:
+        result = runner.invoke(
+            app,
+            # fmt: off
+            [
+                "convert", "/tmp/x.lif", str(out),
+                "--pyramid-min-size", "64", "--no-contrast", "--no-validate",
+                *extra,
+            ],
+            # fmt: on
+        )
+        assert result.exit_code == 0, result.output
+        return _anisotropic_stack_shapes(out / "s.ome.zarr")
+
+    # The Y/X rule alone stops at 64: its last level is 64 KiB per (t, c),
+    # comfortably inside the default 64 MiB bound.
+    assert _run(tmp_path / "default") == [
+        [1, 1, 8, 256, 256],
+        [1, 1, 8, 128, 128],
+        [1, 1, 8, 64, 64],
+    ]
+    # Halve the bound past that level's 64 KiB and the pyramid keeps going.
+    assert _run(tmp_path / "tight", "--coarse-max-bytes", "32768") == [
+        [1, 1, 8, 256, 256],
+        [1, 1, 8, 128, 128],
+        [1, 1, 8, 64, 64],
+        [1, 1, 8, 32, 32],
+    ]
+
+
+def test_convert_coarse_max_long_axis_extends_the_written_levels(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """The second bound extends depth on its own, bytes notwithstanding."""
+    patched_reader(_coarse_reader())
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        # fmt: off
+        [
+            "convert", "/tmp/x.lif", str(out),
+            "--coarse-max-long-axis", "32",
+            "--pyramid-min-size", "64", "--no-contrast", "--no-validate",
+        ],
+        # fmt: on
+    )
+    assert result.exit_code == 0, result.output
+
+    # 64 KiB is inside the byte bound at every level here; it is the 64-voxel
+    # lateral extent that keeps the pyramid halving to 32.
+    assert _anisotropic_stack_shapes(out / "s.ome.zarr") == [
+        [1, 1, 8, 256, 256],
+        [1, 1, 8, 128, 128],
+        [1, 1, 8, 64, 64],
+        [1, 1, 8, 32, 32],
+    ]
+
+
+def test_convert_coarse_max_bytes_must_be_positive(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    patched_reader(FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32)))
+
+    result = runner.invoke(
+        app,
+        ["convert", "/tmp/x.lif", str(tmp_path / "out"), "--coarse-max-bytes", "0"],
+    )
+    assert result.exit_code != 0
+    assert "positive int" in result.output
+
+
+def test_convert_coarse_bounds_are_documented_in_help(runner: CliRunner) -> None:
+    result = runner.invoke(app, ["convert", "--help"])
+    assert result.exit_code == 0
+    assert "--coarse-max-bytes" in result.output
+    assert "--coarse-max-long-axis" in result.output
+
+
 # ---------- convert (--layout bf2raw opt-in) ----------
 
 
