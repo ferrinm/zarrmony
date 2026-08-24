@@ -57,6 +57,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   axis at every level. (#85)
 - Per-scene / per-field audit records gain `chunk_shapes`: one chunk shape
   per level, positionally aligned with the existing `level_shapes`. (#84)
+- Coarse-level stopping rule (ADR-0010). Pyramid depth is now the **greater**
+  of the `pyramid_min_size` Y/X rule and the depth at which a level becomes a
+  *coarse level* — one a viewer can decode whole and use as spatial context:
+  `Z·Y·X·itemsize ≤ coarse_max_bytes` (64 MiB) per timepoint and channel, and
+  `max(Y, X) ≤ coarse_max_long_axis` (2048). Both `Geometry` fields were
+  present but inert since #83 and are now read. Because depth is a `max()`,
+  the change is monotone — no conversion loses a level — and the per-axis
+  32-voxel floor still holds, so a pyramid that bottoms out while still too
+  large simply has no coarse level. On the reference SmartSPIM volume this
+  adds level 5 at `(113, 276, 232)`: 13.8 MiB per (t,c) with a 276-voxel long
+  axis, where the Y/X rule stopped at level 4's 110 MiB. Both bounds are
+  Lucida's `SourceCoarseConfig` defaults, adopted knowingly. (#86)
+- `zarrmony convert --coarse-max-bytes N` and `--coarse-max-long-axis N`
+  expose both bounds on the CLI, so a store can be planned for a consumer
+  with a different budget. (#86)
+- Per-scene / per-field audit records gain `coarse_level_index`: the index
+  into that record's `level_shapes` of the shallowest coarse level, or `null`
+  when no level reaches the bounds. "Does this store have a level a viewer can
+  hold whole?" is now answerable from the store's own metadata instead of from
+  a viewport. (#86)
 
 ### Changed
 
@@ -97,8 +117,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slabs. Per-axis factors flow into `coordinateTransformations` automatically
   — `OMEZarrWriter` derives each dataset's scale from its shape relative to
   level 0's — so a store's NGFF metadata stays correct with no extra
-  handling. 2D and plate output are unchanged: a single-plane Z cannot halve,
-  and depth is still decided by the Y/X `pyramid_min_size` rule alone. (#85)
+  handling. 2D and plate output are unchanged by this rule: a single-plane Z
+  cannot halve, and depth was still decided by the Y/X `pyramid_min_size` rule
+  alone until #86 below. (#85)
 - Pyramid depth additionally stops once Y and X are both at their floor,
   rather than continuing to halve Z alone — those levels are not new
   resolutions to a viewer zooming out. This can only remove levels that did
@@ -108,6 +129,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its `dims` argument — coarsen factors now come from consecutive level
   shapes, so no hardcoded `{axis: 2}` remains. Both are internal writer entry
   points, not part of the public `zarrmony` surface. (#85)
+- **Volumes too large for a viewer to hold gain one or more levels.** Depth no
+  longer stops at the `pyramid_min_size` Y/X floor when the resulting level is
+  still, say, 110 MiB per timepoint and channel; it keeps halving toward the
+  coarse-level bounds, down to the 32-voxel axis floor if that is what it
+  takes. Existing conversions can only gain levels, never lose them. Most 2D
+  and plate output is unaffected — the Y/X rule already reaches a level well
+  inside both bounds. (#86)
+- `compute_level_shapes()` takes a required `dtype` argument (4th positional,
+  matching `plan_chunk_shape`): the coarse-level byte bound is about decoded
+  bytes, so the same shape in uint8 reaches it a level earlier than in uint16.
+  Internal writer entry point, and unreleased since #85. (#86)
+- **Audit schema 10 → 11 (additive):** per-scene / per-field records gain
+  `coarse_level_index`. Consumers pinned to 10 can widen their pin without
+  changes. (#86)
 
 ## [0.14.0] - 2026-08-10
 

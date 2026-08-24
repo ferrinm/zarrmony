@@ -5,21 +5,30 @@ aliasing artifacts on intensity (fluorescence) imagery. Mean-pool is the right
 default for fluorescence; for label maps a different downsampler would be needed
 (``Geometry.downsample_method="max"`` lands in a later ADR-0010 slice).
 
-Which axes shrink from one level to the next is an ADR-0010 geometry decision
-(:func:`compute_level_shapes`); how the pixels get there is this module's job
-(:func:`build_pyramid`). The two meet at the level-shape list: ``build_pyramid``
-derives its coarsen factors from consecutive entries of it, so uniform and
-per-axis-varying downsampling are one code path.
+Which axes shrink from one level to the next, and how many levels there are, is
+an ADR-0010 geometry decision (:func:`compute_level_shapes`); how the pixels get
+there is this module's job (:func:`build_pyramid`). The two meet at the
+level-shape list: ``build_pyramid`` derives its coarsen factors from consecutive
+entries of it, so uniform and per-axis-varying downsampling are one code path.
 
-Three places below are finer-grained than ADR-0010's summary paragraph — the
+Depth answers a question about the *output*, not about the input: "does a level
+exist that a viewer can hold whole?" :func:`is_coarse_level` is that question
+asked of one level, and :func:`coarse_level_index` is the answer recorded in the
+audit — checkable at conversion time rather than discoverable in a viewport,
+which is how the defect ADR-0010 fixes was found in the first place.
+
+Four places below are finer-grained than ADR-0010's summary paragraph — the
 isotropy yardstick is the finest *still-halvable* axis, depth also stops once
-Y and X are both floor-frozen, and the axis floor is capped by
-``pyramid_min_size`` on Y/X. Each is argued where it lives and recorded in that
-ADR's "Follow-up (issue #85)" section; none is a local invention to be tidied
-away without reading it.
+Y and X are both floor-frozen, the axis floor is capped by ``pyramid_min_size``
+on Y/X, and the coarse-level test is applied to the deepest level built so far.
+Each is argued where it lives and recorded in that ADR's "Follow-up" sections
+(issues #85 and #86); none is a local invention to be tidied away without
+reading it.
 """
 
+import math
 from collections.abc import Sequence
+from typing import Any
 
 import dask.array as da
 import numpy as np
@@ -31,13 +40,14 @@ from zarrmony.geometry import (
     spacings_for_level,
 )
 
-#: The axes the *depth* rule is judged on. Pyramid depth is still the
-#: pre-ADR-0010 ``pyramid_min_size`` rule — stop when the smaller of Y/X would
-#: fall below it — because depth is what a viewer's zoom-out budget cares about
-#: and Y/X is what it sees. Z participates in *downsampling* (:data:`SPATIAL_AXES`)
-#: without participating in the depth decision; making it a fourth vote would
-#: collapse a 3-plane stack's pyramid to a single level (ADR-0010, rejected
-#: options).
+#: The axes the *depth* rule is judged on. The ``pyramid_min_size`` half of that
+#: rule — stop when the smaller of Y/X would fall below it — is judged here
+#: because depth is what a viewer's zoom-out budget cares about and Y/X is what
+#: it sees; so is the coarse level's long-axis bound. Z participates in
+#: *downsampling* (:data:`SPATIAL_AXES`) and in the coarse level's byte bound,
+#: but never gets a vote on the lateral floor; making it a fourth vote there
+#: would collapse a 3-plane stack's pyramid to a single level (ADR-0010,
+#: rejected options).
 LATERAL_DIMS: frozenset[str] = frozenset({"Y", "X"})
 
 
@@ -57,6 +67,87 @@ def _halving_floor(dim: str, geometry: Geometry) -> int:
     if dim in LATERAL_DIMS:
         return min(geometry.axis_floor, geometry.pyramid_min_size)
     return geometry.axis_floor
+
+
+def is_coarse_level(
+    level_shape: Sequence[int],
+    dims: Sequence[str],
+    dtype: Any,
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> bool:
+    """Whether one level is small enough for a viewer to hold the whole volume.
+
+    A **coarse level** (see ``CONTEXT.md``) is one a viewer can decode entirely
+    and use as spatial context, rather than holding only the part under the
+    camera. ADR-0010 makes that two bounds, both of which must hold:
+
+    1. ``Z · Y · X · itemsize ≤ geometry.coarse_max_bytes`` — decoded bytes for
+       one ``(t, c)``. T and C are excluded because a viewer holds one timepoint
+       of one channel at a time; a 40-timepoint store does not need a level 40×
+       smaller to be navigable.
+    2. ``max(Y, X) ≤ geometry.coarse_max_long_axis`` — the lateral extent, in
+       voxels, of the texture the level becomes.
+
+    Both defaults are Lucida's ``SourceCoarseConfig`` values, adopted knowingly
+    (ADR-0010 rejects picking an independent target "for margin": the bound is a
+    ``>`` comparison, so a level at exactly 64 MiB passes, and diverging would
+    risk planning a store that satisfies a self-imposed number while missing the
+    real one). They are :class:`~zarrmony.geometry.Geometry` fields so a store
+    can be planned for a different consumer.
+
+    The property is monotone down the pyramid — every level is no larger than
+    its parent on every axis — so the deepest level built so far is the only one
+    the depth rule has to test.
+
+    :param level_shape: This level's extent, one entry per axis.
+    :param dims: Axis names in the same order (e.g. ``"TCZYX"``).
+    :param dtype: Anything :func:`numpy.dtype` accepts; only its ``itemsize`` is
+        used. Decoded bytes, not compressed — what the viewer has to hold.
+    :param geometry: The policy supplying the two bounds.
+    """
+    shape = tuple(int(s) for s in level_shape)
+    if len(shape) != len(dims):
+        raise ValueError(
+            f"is_coarse_level needs one entry per axis; got {len(shape)} dims "
+            f"and {len(dims)} axis names"
+        )
+    itemsize = max(1, np.dtype(dtype).itemsize)
+    voxels = math.prod(
+        [extent for extent, d in zip(shape, dims, strict=True) if d in SPATIAL_AXES]
+    )
+    if voxels * itemsize > geometry.coarse_max_bytes:
+        return False
+    # ``default=0`` covers an array with no Y/X at all: there is no lateral
+    # extent to exceed the bound, so the bound is vacuously satisfied.
+    long_axis = max(
+        (extent for extent, d in zip(shape, dims, strict=True) if d in LATERAL_DIMS),
+        default=0,
+    )
+    return long_axis <= geometry.coarse_max_long_axis
+
+
+def coarse_level_index(
+    level_shapes: Sequence[Sequence[int]],
+    dims: Sequence[str],
+    dtype: Any,
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> int | None:
+    """Index of the shallowest coarse level, or ``None`` if there is none.
+
+    The *shallowest* (largest) qualifying level, because coarseness is monotone
+    down the pyramid: every deeper level also fits the bounds, and the one a
+    viewer wants for spatial context is the most detailed of them.
+
+    ``None`` is a fact about the pyramid, not a failure — ``CONTEXT.md`` says a
+    pyramid may contain no coarse level, and one that bottoms out on the axis
+    floor while still too large simply has none. Recording it either way is the
+    point of :func:`is_coarse_level` existing: the guarantee becomes checkable
+    in the store's own metadata instead of in a viewport.
+    """
+    for index, shape in enumerate(level_shapes):
+        if is_coarse_level(shape, dims, dtype, geometry):
+            return index
+    return None
 
 
 def _next_level_shape(
@@ -112,6 +203,7 @@ def compute_level_shapes(
     base_shape: Sequence[int],
     dims: Sequence[str],
     spacings_um: Sequence[float],
+    dtype: Any,
     geometry: Geometry = DEFAULT_GEOMETRY,
 ) -> list[tuple[int, ...]]:
     """Per-level shapes for one array, halving toward isotropy (ADR-0010).
@@ -124,12 +216,34 @@ def compute_level_shapes(
     near-isotropic data every spatial axis halves at every level, so a level is
     ⅛ of its parent rather than ¼.
 
-    Depth is still the pre-ADR-0010 rule: stop when the next level's smaller
-    lateral (Y/X) extent would fall below ``geometry.pyramid_min_size``. Z takes
-    no part in the depth decision — making it a fourth vote is the regression
+    Depth is the **greater** of two rules:
+
+    1. the pre-ADR-0010 one — stop when the next level's smaller lateral (Y/X)
+       extent would fall below ``geometry.pyramid_min_size``; and
+    2. keep going until a level is a **coarse level** (:func:`is_coarse_level`),
+       i.e. one a viewer can hold whole.
+
+    Taking the greater rather than replacing (1) with (2) is what makes the
+    change monotone: no conversion loses a level it had before. Rule 2 is why
+    ``dtype`` is a parameter — "can a viewer hold this level?" is a question
+    about decoded bytes, and a uint8 volume reaches the bound a level earlier
+    than the same shape in uint16. On the ADR-0010 reference volume rule 1 stops
+    at ``(226, 552, 465)``, still 110 MiB per ``(t, c)``; rule 2 buys the one
+    further level, ``(113, 276, 232)`` at 13.8 MiB, that a 3D camera can
+    actually use as context.
+
+    Z takes no part in rule 1 — making it a fourth vote there is the regression
     ADR-0010 rejects by name, since a 3-plane stack would then get no pyramid at
-    all. Depth also stops once Y and X are both at their floor, which is what
-    keeps a tall thin volume from growing a tail of levels that only thin Z.
+    all — though it does count toward the coarse level's byte bound, where a
+    deep stack is exactly what makes a level too big to hold.
+
+    Two things bound rule 2's reach, both pre-existing stops rather than special
+    cases: depth still ends once Y and X are both at their floor (what keeps a
+    tall thin volume from growing a tail of levels that only thin Z), and once
+    no spatial axis is eligible at all. A pyramid that bottoms out on either
+    while still too large simply has no coarse level, and
+    :func:`coarse_level_index` reports ``None`` — a fact for the audit, not a
+    failure.
 
     Non-spatial dims (T, C) are preserved unchanged across all levels, and the
     base shape is always returned as level 0.
@@ -143,8 +257,10 @@ def compute_level_shapes(
         :func:`~zarrmony.geometry.spacings_for_level`. Missing or nonsense
         values degrade to ``1.0``, which reads as "isotropic with every other
         unknown axis".
-    :param geometry: The policy supplying ``isotropy_tolerance``, ``axis_floor``
-        and ``pyramid_min_size``.
+    :param dtype: Anything :func:`numpy.dtype` accepts; only its ``itemsize`` is
+        used, by the coarse-level byte bound.
+    :param geometry: The policy supplying ``isotropy_tolerance``, ``axis_floor``,
+        ``pyramid_min_size`` and the two ``coarse_max_*`` bounds.
     """
     base = tuple(int(s) for s in base_shape)
     if not (len(base) == len(dims) == len(spacings_um)):
@@ -178,7 +294,16 @@ def compute_level_shapes(
         if nxt == prev:
             # Every spatial axis is out of tolerance or at its floor.
             break
-        if min(nxt[i] for i in lateral_indices) < geometry.pyramid_min_size:
+        if min(
+            nxt[i] for i in lateral_indices
+        ) < geometry.pyramid_min_size and is_coarse_level(prev, dims, dtype, geometry):
+            # The Y/X rule is done, *and* the pyramid has reached a level a
+            # viewer can hold whole. Depth is the greater of the two, so the
+            # first half of that condition alone is not enough to stop: a volume
+            # still too large for a viewer keeps halving past pyramid_min_size,
+            # down to the axis floor if that is what it takes. Testing ``prev``
+            # rather than every level is sound because coarseness is monotone
+            # down the pyramid.
             break
         levels.append(nxt)
 

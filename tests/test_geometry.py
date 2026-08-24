@@ -342,9 +342,12 @@ def test_default_geometry_output_for_a_fixed_input(
     The whole-store canary for the ADR-0010 series: any slice that moves a
     level boundary or a chunk boundary has to change these numbers on purpose.
 
-    **Level shapes** are still the pre-ADR-0010 rule (halve Y and X until the
-    smaller falls below ``pyramid_min_size``; Z untouched) — these three were
-    captured against v0.14.0 and #85 owns changing them.
+    **Level shapes** are unchanged since v0.14.0, and both pyramid slices left
+    them that way on purpose: #85's isotropy rule leaves Z alone here (2.0 µm is
+    6.2x the lateral spacing, well outside the 1.5 tolerance), and #86's
+    stopping rule buys no extra level because level 0 is *already* a coarse
+    level — 48 MiB per ``(t, c)`` with a 2048-voxel long axis, inside both
+    bounds. Hence ``coarse_level_index == 0``.
 
     **Chunk shapes** changed in #84. Before the planner these were
     bioio-ome-zarr's memory-target heuristic filling the rightmost axis first
@@ -366,11 +369,13 @@ def test_default_geometry_output_for_a_fixed_input(
 
     result = convert("/tmp/x.czi", out, contrast_percentile=None, validate=False)
 
-    assert result["stores"][0]["per_scene"][0]["level_shapes"] == [
+    scene = result["stores"][0]["per_scene"][0]
+    assert scene["level_shapes"] == [
         [1, 2, 8, 2048, 1536],
         [1, 2, 8, 1024, 768],
         [1, 2, 8, 512, 384],
     ]
+    assert scene["coarse_level_index"] == 0
     assert _array_geometry(out / "big.ome.zarr") == {
         "0": {"shape": [1, 2, 8, 2048, 1536], "chunks": [1, 1, 8, 128, 256]},
         "1": {"shape": [1, 2, 8, 1024, 768], "chunks": [1, 1, 8, 128, 256]},
