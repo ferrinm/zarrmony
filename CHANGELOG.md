@@ -40,6 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zarrmony convert --chunk-target-bytes N` exposes the byte target on the
   CLI. Mutually exclusive with `--chunk-shape`, which bypasses the planner
   outright. (#84)
+- Anisotropy-aware pyramid levels (ADR-0010). A level halves every spatial
+  axis whose physical spacing is within `isotropy_tolerance` (1.5) of the
+  finest still-halvable axis's, so levels move *toward* isotropy and the
+  scarce axis — Z, for most volumetric light microscopy — is spent last. On
+  the reference SmartSPIM volume (Z 2.0 / Y 1.8 / X 1.8 µm) every axis is
+  within tolerance, so levels go `(3627,8835,7452) → (1813,4417,3726) →
+  (906,2208,1863) → (453,1104,931) → (226,552,465)` where Z previously stayed
+  at 3627 forever; on a 10:1 confocal stack Y and X halve alone until their
+  spacing has caught up with Z's, taking the coarsest level from 10:1
+  anisotropic to 1.25:1. A per-axis floor of 32 voxels (`axis_floor`) applies:
+  an axis never halves below it, so a 3-plane stack keeps its 3 planes at
+  every level. (#85)
+- `zarrmony convert --isotropy-tolerance F` exposes the tolerance on the CLI.
+  `1.0` halves only exactly-isotropic axes; a large value halves every spatial
+  axis at every level. (#85)
 - Per-scene / per-field audit records gain `chunk_shapes`: one chunk shape
   per level, positionally aligned with the existing `level_shapes`. (#84)
 
@@ -75,6 +90,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audit schema 9 → 10 (additive):** per-scene / per-field records gain
   `chunk_shapes`. Consumers pinned to 9 can widen their pin without
   changes. (#84)
+- **Pyramid level shapes on disk change for volumetric conversions.** Z now
+  downsamples alongside Y and X whenever its spacing is within
+  `isotropy_tolerance`, so a level is ⅛ of its parent rather than ¼ and a
+  volume gains a genuinely coarse level instead of a stack of full-depth
+  slabs. Per-axis factors flow into `coordinateTransformations` automatically
+  — `OMEZarrWriter` derives each dataset's scale from its shape relative to
+  level 0's — so a store's NGFF metadata stays correct with no extra
+  handling. 2D and plate output are unchanged: a single-plane Z cannot halve,
+  and depth is still decided by the Y/X `pyramid_min_size` rule alone. (#85)
+- Pyramid depth additionally stops once Y and X are both at their floor,
+  rather than continuing to halve Z alone — those levels are not new
+  resolutions to a viewer zooming out. This can only remove levels that did
+  not exist before #85. (#85)
+- `compute_level_shapes()` takes the scene's per-axis µm spacing and a
+  `Geometry` in place of its `min_size` keyword, and `build_pyramid()` drops
+  its `dims` argument — coarsen factors now come from consecutive level
+  shapes, so no hardcoded `{axis: 2}` remains. Both are internal writer entry
+  points, not part of the public `zarrmony` surface. (#85)
 
 ## [0.14.0] - 2026-08-10
 

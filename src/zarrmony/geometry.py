@@ -18,13 +18,16 @@ per-level spacing helper (:func:`spacings_for_level`) it is built on. Chunking
 is a geometry choice — "how each level is divided into chunks" — so it lives
 beside the policy that governs it rather than in a writer.
 
-**Inert fields.** ``isotropy_tolerance``, ``axis_floor``, ``coarse_max_bytes``
-and ``coarse_max_long_axis`` are carried and audited but have no behaviour yet
-— the anisotropy-aware pyramid and coarse-level stopping rule that consume them
-arrive in later slices of ADR-0010, as does ``downsample_method``. Until then,
-setting them changes only the audit record. Values are still validated at
-construction so a typo fails at the call site rather than silently at some
-later release.
+``isotropy_tolerance`` and ``axis_floor`` are consumed by the anisotropy-aware
+pyramid rule (:func:`~zarrmony.writers.pyramid.compute_level_shapes`), which
+lives beside the downsampler that executes it.
+
+**Inert fields.** ``coarse_max_bytes`` and ``coarse_max_long_axis`` are carried
+and audited but have no behaviour yet — the coarse-level stopping rule that
+consumes them arrives in a later slice of ADR-0010, as does
+``downsample_method``. Until then, setting them changes only the audit record.
+Values are still validated at construction so a typo fails at the call site
+rather than silently at some later release.
 """
 
 from __future__ import annotations
@@ -109,8 +112,11 @@ class Geometry:
         that fits and is closest to cubic in micrometres.
     :param isotropy_tolerance: A spatial axis is downsampled at a level only
         when its physical spacing is within this factor of the finest axis's.
+        ``1.0`` halves only exactly-isotropic axes; a very large value halves
+        every spatial axis at every level.
     :param axis_floor: Minimum voxels on any axis; an axis at or below the
-        floor is never halved.
+        floor is never halved. On Y/X it is capped by ``pyramid_min_size`` so
+        an explicitly lowered depth floor is not overridden by this default.
     :param coarse_max_bytes: Upper bound on a coarse level's decoded bytes per
         ``(t, c)``.
     :param coarse_max_long_axis: Upper bound on a coarse level's longest
@@ -122,8 +128,9 @@ class Geometry:
     :param chunk_shape: Explicit per-axis chunk shape that bypasses the
         planner entirely. ``None`` (default) means "plan it".
 
-    ``chunk_target_bytes``, ``pyramid_min_size`` and ``chunk_shape`` affect
-    written output today; see the module docstring on the inert fields.
+    Every field except ``coarse_max_bytes``, ``coarse_max_long_axis`` and
+    ``downsample_method`` affects written output today; see the module
+    docstring on the inert ones.
     """
 
     chunk_target_bytes: int = DEFAULT_CHUNK_TARGET_BYTES

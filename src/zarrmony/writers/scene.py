@@ -229,10 +229,14 @@ def write_scene(
     frozen :class:`~zarrmony.geometry.Geometry` value rather than as loose
     keywords. ``convert()`` resolves it once and threads the same instance
     through per-scene, bf2raw and plate output; the default is the ADR-0010
-    policy. Chunk shapes are planned per level from the level's own physical
-    voxel spacing (:func:`~zarrmony.geometry.plan_level_chunk_shapes`) and
-    recorded under ``chunk_shapes``, one entry per level, alongside the
-    ``level_shapes`` they were planned against.
+    policy. Level shapes halve every spatial axis whose spacing is within
+    ``isotropy_tolerance`` of the finest axis's
+    (:func:`~zarrmony.writers.pyramid.compute_level_shapes`), so the pyramid
+    moves toward isotropy rather than preserving it; chunk shapes are then
+    planned per level from that level's own physical voxel spacing
+    (:func:`~zarrmony.geometry.plan_level_chunk_shapes`) and recorded under
+    ``chunk_shapes``, one entry per level, alongside the ``level_shapes`` they
+    were planned against.
 
     ``xarr_override`` substitutes a pre-built xarray for ``reader.xarray_dask_data``
     (used by ``api.convert(..., lif_mosaic="per-tile")`` to feed in one tile at
@@ -264,10 +268,14 @@ def write_scene(
     dims = list(canonical.dims)
     base_shape = tuple(int(s) for s in canonical.shape)
 
-    level_shapes = compute_level_shapes(
-        base_shape, dims, min_size=geometry.pyramid_min_size
-    )
-    pyramid = build_pyramid(canonical.data, dims, level_shapes)
+    # ADR-0010 (#85): level shapes are anisotropy-aware, so they need the
+    # scene's physical spacing — an axis halves only while its spacing is within
+    # `isotropy_tolerance` of the finest axis's. The same list feeds the NGFF
+    # `physical_pixel_size` below and the chunk planner.
+    physical_pixel_size = _physical_scales_for_dims(dims, reader)
+
+    level_shapes = compute_level_shapes(base_shape, dims, physical_pixel_size, geometry)
+    pyramid = build_pyramid(canonical.data, level_shapes)
 
     if channels is None:
         channel_coord = canonical.coords.get("C")
@@ -283,7 +291,6 @@ def write_scene(
     axes_names = [d.lower() for d in dims]
     axes_types = [NGFF_AXIS_TYPE[d] for d in dims]
     axes_units = [NGFF_AXIS_UNIT[d] for d in dims]
-    physical_pixel_size = _physical_scales_for_dims(dims, reader)
 
     # ADR-0010 (#84): plan every level's chunk shape ourselves and hand the
     # writer an explicit per-level list. Passing ``chunk_shape=None`` would
