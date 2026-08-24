@@ -19,10 +19,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end-to-end through layout dispatch into the per-scene, bf2raw and
   plate writers — no loose geometry keyword survives in the chain.
   Values are validated at construction, so a bad policy fails at the
-  call site rather than after a multi-minute read. **Behaviour-preserving:**
-  with defaults, a conversion produces byte-identical output to v0.14.0;
-  the first five fields are plumbed and audited but inert until the
-  ADR-0010 chunk planner and anisotropy-aware pyramid land. (#83)
+  call site rather than after a multi-minute read. This slice was
+  behaviour-preserving on its own — the on-disk geometry it produced was
+  byte-identical to v0.14.0 — with the five planner fields plumbed and
+  audited but inert until the ADR-0010 chunk planner and anisotropy-aware
+  pyramid land. (#83)
+- World-cubic chunk planner (ADR-0010). `zarrmony.geometry.plan_chunk_shape()`
+  and `plan_level_chunk_shapes()` pick, for each pyramid level, the largest
+  power-of-two chunk whose raw size fits `chunk_target_bytes` and whose
+  *physical* extents are closest to cubic — cubic in micrometres, not in
+  voxels. Each level is planned against its own µm spacing (derived by
+  the new `spacings_for_level` helper as
+  `spacing_0 × shape_0 / shape_level`), so a level that halved Y and X
+  does not inherit level 0's chunk. Chunks never exceed the level extent,
+  and T and C stay at 1 so a viewer fetching one channel at one timepoint
+  never pays for the others. Near-isotropic uint16 lands on the familiar
+  64³; a 10:1 confocal stack (Z 5 µm, XY 0.5 µm) lands on
+  `1,1,16,128,128` — 80 × 64 × 64 µm — instead of a 64³ that would span
+  320 × 32 × 32 µm. (#84)
+- `zarrmony convert --chunk-target-bytes N` exposes the byte target on the
+  CLI. Mutually exclusive with `--chunk-shape`, which bypasses the planner
+  outright. (#84)
+- Per-scene / per-field audit records gain `chunk_shapes`: one chunk shape
+  per level, positionally aligned with the existing `level_shapes`. (#84)
 
 ### Changed
 
@@ -43,6 +62,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Per-level shapes stay on each scene / field record's `level_shapes`;
   per-level chunk shapes and the coarse level index join them in a later
   ADR-0010 slice. (#83)
+- **Chunk shapes on disk change for every conversion.** zarrmony now
+  plans each level's chunk itself and hands the writer an explicit
+  per-level list, instead of delegating to bioio-ome-zarr's memory-target
+  heuristic. That heuristic filled the rightmost axis first under a 16 MiB
+  budget — right for a 2D plane, but on anything with a Z extent it
+  converged on full-width single-plane slabs (e.g. `1,1,2,2048,1536`,
+  12 MiB) that no frustum cull can trim; a 512³ region fetch touched
+  ~1.6 % useful bytes. Existing stores are unaffected and still readable;
+  re-convert to pick up the new geometry. Pass `chunk_shape=` (or
+  `--chunk-shape`) to keep an exact shape. (#84)
+- **Audit schema 9 → 10 (additive):** per-scene / per-field records gain
+  `chunk_shapes`. Consumers pinned to 9 can widen their pin without
+  changes. (#84)
 
 ## [0.14.0] - 2026-08-10
 

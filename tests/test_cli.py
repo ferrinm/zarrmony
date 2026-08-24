@@ -1,14 +1,16 @@
 """Tests for the click CLI commands."""
 
 import json
+import math
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from tests.conftest import FakeReader
+from tests.conftest import FakePhysicalPixelSizes, FakeReader
 from zarrmony import api as api_module
 from zarrmony.cli import app
+from zarrmony.geometry import DEFAULT_GEOMETRY
 from zarrmony.readers.plugin import ReaderPlugin
 
 
@@ -168,6 +170,149 @@ def test_convert_chunk_shape_invalid_format(
     )
     assert result.exit_code != 0
     assert "chunk-shape" in result.output
+
+
+# ---------- convert (geometry flags, ADR-0010) ----------
+
+
+def test_convert_geometry_flags_build_one_policy(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every geometry flag arrives as one ``Geometry``, not as loose kwargs.
+
+    ``resolve_geometry`` refuses ``geometry=`` alongside the retained sugar, so
+    the CLI cannot mix the two spellings even though it exposes both flags.
+    """
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "out"),
+            "--chunk-target-bytes",
+            str(2 * 1024 * 1024),
+            "--pyramid-min-size",
+            "64",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    geometry = captured["geometry"]
+    assert geometry.chunk_target_bytes == 2 * 1024 * 1024
+    assert geometry.pyramid_min_size == 64
+    # Untouched fields stay at the ADR-0010 defaults...
+    assert geometry.chunk_shape is None
+    assert geometry.isotropy_tolerance == DEFAULT_GEOMETRY.isotropy_tolerance
+    # ...and the sugar kwargs are not passed a second way.
+    assert "pyramid_min_size" not in captured
+    assert "chunk_shape" not in captured
+
+
+def test_convert_without_geometry_flags_passes_no_policy(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    result = runner.invoke(app, ["convert", "/tmp/x.lif", str(tmp_path / "out")])
+    assert result.exit_code == 0, result.output
+    # None, so convert() reaches for DEFAULT_GEOMETRY itself.
+    assert captured["geometry"] is None
+
+
+def test_convert_chunk_target_bytes_reaches_the_written_store(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCZYX",
+        shape=(1, 1, 8, 128, 128),
+        pixel_sizes=FakePhysicalPixelSizes(Z=4.0, Y=0.5, X=0.5),
+    )
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--chunk-target-bytes",
+            "4096",
+            "--pyramid-min-size",
+            "32",
+            "--no-contrast",
+            "--no-validate",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    array = json.loads((out / "s.ome.zarr" / "0" / "zarr.json").read_text())
+    chunks = array["chunk_grid"]["configuration"]["chunk_shape"]
+    assert chunks == [1, 1, 2, 32, 32]
+    # 2 * 32 * 32 uint16 voxels is exactly the 4096-byte target.
+    assert math.prod(chunks) * 2 == 4096
+
+
+def test_convert_chunk_target_bytes_must_be_positive(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
+    patched_reader(reader)
+
+    result = runner.invoke(
+        app,
+        ["convert", "/tmp/x.lif", str(tmp_path / "out"), "--chunk-target-bytes", "0"],
+    )
+    assert result.exit_code != 0
+    assert "positive int" in result.output
+
+
+def test_convert_chunk_shape_and_chunk_target_bytes_are_exclusive(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    # --chunk-shape skips the planner outright, so the byte target it would
+    # have aimed for is never read; say so rather than silently ignore it.
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
+    patched_reader(reader)
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "out"),
+            "--chunk-shape",
+            "1,1,16,16",
+            "--chunk-target-bytes",
+            "4096",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_convert_chunk_target_bytes_is_documented_in_help(runner: CliRunner) -> None:
+    result = runner.invoke(app, ["convert", "--help"])
+    assert result.exit_code == 0
+    assert "--chunk-target-bytes" in result.output
 
 
 # ---------- convert (--layout bf2raw opt-in) ----------

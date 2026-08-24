@@ -6,8 +6,10 @@ Three concerns, in order:
 2. The sugar fold (:func:`resolve_geometry`) that keeps ``convert()``'s
    ``chunk_shape`` / ``pyramid_min_size`` working.
 3. That one resolved policy reaches all three write paths (per-scene, bf2raw,
-   plate) and that, with defaults, the on-disk geometry is unchanged from
-   v0.14.0 — this slice is behaviour-preserving.
+   plate), and a pinned end-to-end geometry that every later ADR-0010 slice
+   has to change deliberately.
+
+The chunk planner the policy feeds lives in ``test_chunk_planner.py``.
 """
 
 from __future__ import annotations
@@ -329,22 +331,28 @@ def test_audit_geometry_round_trips_to_disk(tmp_path: Path, patched_reader) -> N
     assert on_disk == DEFAULT_GEOMETRY.to_audit()
 
 
-# ---------- behaviour preservation ----------
+# ---------- pinned on-disk geometry ----------
 
 
-def test_default_geometry_output_is_unchanged_from_v0_14_0(
+def test_default_geometry_output_for_a_fixed_input(
     tmp_path: Path, patched_reader
 ) -> None:
     """Pinned on-disk geometry for a fixed input under the default policy.
 
-    These values were captured by running this exact conversion against the
-    v0.14.0 tree (commit 9af93e5) and are asserted here unchanged: #83 threads
-    a policy object through the dispatch chain and must not move a single
-    chunk boundary. The five planner fields are inert until later ADR-0010
-    slices, so the level-0 chunk shape below is still bioio-ome-zarr's
-    memory-target heuristic filling the rightmost axis first — the full-width
-    slab (``[1, 1, 2, 2048, 1536]``, 12 MiB) that ADR-0010 exists to replace.
-    When the planner lands, this test is the one that should fail.
+    The whole-store canary for the ADR-0010 series: any slice that moves a
+    level boundary or a chunk boundary has to change these numbers on purpose.
+
+    **Level shapes** are still the pre-ADR-0010 rule (halve Y and X until the
+    smaller falls below ``pyramid_min_size``; Z untouched) — these three were
+    captured against v0.14.0 and #85 owns changing them.
+
+    **Chunk shapes** changed in #84. Before the planner these were
+    bioio-ome-zarr's memory-target heuristic filling the rightmost axis first
+    under a 16 MiB budget — level 0 came out ``[1, 1, 2, 2048, 1536]``, a
+    12 MiB full-width slab that no frustum cull could trim. Each level now gets
+    its own 512 KiB world-cubic plan instead: Z is pinned at its full 8 planes
+    (16 µm, the most Z on offer) and the remaining budget goes to Y and X, split
+    as evenly as powers of two allow.
     """
     reader = FakeReader(
         scenes=["big"],
@@ -364,7 +372,7 @@ def test_default_geometry_output_is_unchanged_from_v0_14_0(
         [1, 2, 8, 512, 384],
     ]
     assert _array_geometry(out / "big.ome.zarr") == {
-        "0": {"shape": [1, 2, 8, 2048, 1536], "chunks": [1, 1, 2, 2048, 1536]},
-        "1": {"shape": [1, 2, 8, 1024, 768], "chunks": [1, 1, 8, 1024, 768]},
-        "2": {"shape": [1, 2, 8, 512, 384], "chunks": [1, 2, 8, 512, 384]},
+        "0": {"shape": [1, 2, 8, 2048, 1536], "chunks": [1, 1, 8, 128, 256]},
+        "1": {"shape": [1, 2, 8, 1024, 768], "chunks": [1, 1, 8, 128, 256]},
+        "2": {"shape": [1, 2, 8, 512, 384], "chunks": [1, 1, 8, 128, 256]},
     }

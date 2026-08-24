@@ -728,7 +728,10 @@ def convert(
     fields that predate the policy object: each is ``None`` when unset and
     otherwise folds into the default ``Geometry``. Passing either alongside an
     explicit ``geometry`` raises :class:`ValueError` — set the field on the
-    ``Geometry`` instead of saying it twice.
+    ``Geometry`` instead of saying it twice. ``chunk_shape`` (however spelled)
+    bypasses the world-cubic chunk planner and is applied verbatim to every
+    pyramid level; leave it unset to let ``chunk_target_bytes`` drive a
+    per-level plan.
 
     ``lif_mosaic`` (LIF-specific, default ``"auto-stitch"``, ADR-0005 + #39)
     governs how mosaic LIF scenes without a vendor ``_Merged`` sibling are
