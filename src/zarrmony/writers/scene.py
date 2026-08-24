@@ -15,6 +15,7 @@ import xarray as xr
 from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 
 from zarrmony._storage import open_root_group
+from zarrmony.geometry import DEFAULT_GEOMETRY, Geometry
 from zarrmony.transforms import NGFF_AXIS_TYPE, NGFF_AXIS_UNIT, normalize_axes
 from zarrmony.writers.pyramid import build_pyramid, compute_level_shapes
 
@@ -210,8 +211,7 @@ def write_scene(
     scene_index: int,
     store_path: Any,
     *,
-    pyramid_min_size: int = 256,
-    chunk_shape: Sequence[int] | None = None,
+    geometry: Geometry = DEFAULT_GEOMETRY,
     channels: Sequence[Channel] | None = None,
     image_name: str | None = None,
     creator_info: dict | None = None,
@@ -223,6 +223,13 @@ def write_scene(
 
     Returns an audit dict (scene_index/name, dims, level_shapes,
     axis_normalization record, channel_count, physical_pixel_size).
+
+    ``geometry`` (ADR-0010) carries every output-shape choice — pyramid depth,
+    chunk shape, and the planner knobs that later slices will consume — as one
+    frozen :class:`~zarrmony.geometry.Geometry` value rather than as loose
+    keywords. ``convert()`` resolves it once and threads the same instance
+    through per-scene, bf2raw and plate output; the default is the ADR-0010
+    policy.
 
     ``xarr_override`` substitutes a pre-built xarray for ``reader.xarray_dask_data``
     (used by ``api.convert(..., lif_mosaic="per-tile")`` to feed in one tile at
@@ -254,7 +261,9 @@ def write_scene(
     dims = list(canonical.dims)
     base_shape = tuple(int(s) for s in canonical.shape)
 
-    level_shapes = compute_level_shapes(base_shape, dims, min_size=pyramid_min_size)
+    level_shapes = compute_level_shapes(
+        base_shape, dims, min_size=geometry.pyramid_min_size
+    )
     pyramid = build_pyramid(canonical.data, dims, level_shapes)
 
     if channels is None:
@@ -284,7 +293,7 @@ def write_scene(
         axes_types=axes_types,
         axes_units=axes_units,
         physical_pixel_size=physical_pixel_size,
-        chunk_shape=chunk_shape,
+        chunk_shape=geometry.chunk_shape,
         creator_info=creator_info,
     )
 

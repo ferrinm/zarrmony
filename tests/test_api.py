@@ -104,7 +104,7 @@ def test_per_scene_writes_audit(tmp_path: Path, patched_reader) -> None:
     assert audit["reader_plugin"]["distribution"] == "bioio-fake"
     assert audit["reader_plugin"]["source"] == "builtin"
     assert audit["reader_plugin"]["match_score"] == 100
-    assert audit["config"]["pyramid_min_size"] == 8
+    assert audit["config"]["geometry"]["pyramid_min_size"] == 8
     assert audit["config"]["layout"] == "per-scene"
 
 

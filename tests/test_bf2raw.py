@@ -10,6 +10,7 @@ from ome_types import from_xml
 from ome_types.model import Image, Pixels, PixelType
 
 from tests.conftest import FakeReader
+from zarrmony.geometry import Geometry
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import build_combined_ome_xml
 from zarrmony.writers.scene import write_scene
@@ -43,7 +44,10 @@ def test_bf2raw_layout_full_roundtrip(tmp_path: Path) -> None:
     for i, name in enumerate(reader.scenes):
         scene_dir = out / str(i)
         write_scene(
-            reader, scene_index=i, store_path=str(scene_dir), pyramid_min_size=8
+            reader,
+            scene_index=i,
+            store_path=str(scene_dir),
+            geometry=Geometry(pyramid_min_size=8),
         )
         series_paths.append(str(i))
         images.append(_ome_image_for_scene(i, name))
@@ -90,7 +94,12 @@ def test_bf2raw_layout_full_roundtrip(tmp_path: Path) -> None:
 def test_bf2raw_wrapper_without_source_xml(tmp_path: Path) -> None:
     out = tmp_path / "no_source.ome.zarr"
     reader = FakeReader(scenes=["only"], dims="YX", shape=(64, 64))
-    write_scene(reader, scene_index=0, store_path=str(out / "0"), pyramid_min_size=128)
+    write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out / "0"),
+        geometry=Geometry(pyramid_min_size=128),
+    )
 
     images = [_ome_image_for_scene(0, "only")]
     write_bf2raw_wrapper(
@@ -108,7 +117,12 @@ def test_bf2raw_wrapper_rejects_source_xml_without_filename(tmp_path: Path) -> N
 
     out = tmp_path / "bad.ome.zarr"
     reader = FakeReader(scenes=["s"], dims="YX", shape=(64, 64))
-    write_scene(reader, scene_index=0, store_path=str(out / "0"), pyramid_min_size=128)
+    write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out / "0"),
+        geometry=Geometry(pyramid_min_size=128),
+    )
 
     images = [_ome_image_for_scene(0, "s")]
     with pytest.raises(ValueError, match="source_xml_filename"):
