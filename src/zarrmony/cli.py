@@ -17,6 +17,7 @@ from zarrmony import __version__
 from zarrmony import api as zm_api
 from zarrmony._storage import format_bytes, size_on_disk
 from zarrmony.errors import OutputExistsError, PlateSelectionError
+from zarrmony.geometry import DEFAULT_PYRAMID_MIN_SIZE
 
 
 @click.group(name="zarrmony")
@@ -107,8 +108,8 @@ def _parse_reader_kwargs(
 @click.option(
     "--pyramid-min-size",
     type=int,
-    default=256,
-    show_default=True,
+    default=None,
+    show_default=f"{DEFAULT_PYRAMID_MIN_SIZE} (from the ADR-0010 geometry policy)",
     help="Stop pyramid generation when the smallest spatial dim falls below this.",
 )
 @click.option(
@@ -229,7 +230,7 @@ def convert_cmd(
     input_path: str,
     output: str,
     layout: str,
-    pyramid_min_size: int,
+    pyramid_min_size: int | None,
     chunk_shape: tuple[int, ...] | None,
     contrast_percentile: float,
     no_contrast: bool,

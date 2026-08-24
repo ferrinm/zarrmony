@@ -7,6 +7,7 @@ import xarray as xr
 import zarr
 
 from tests.conftest import FakePhysicalPixelSizes, FakeReader
+from zarrmony.geometry import Geometry
 from zarrmony.writers.scene import _dtype_window, write_scene
 
 
@@ -21,7 +22,10 @@ def test_write_scene_writes_pyramid_and_metadata(tmp_path) -> None:
     out = tmp_path / "scene.zarr"
 
     audit = write_scene(
-        reader, scene_index=1, store_path=str(out), pyramid_min_size=128
+        reader,
+        scene_index=1,
+        store_path=str(out),
+        geometry=Geometry(pyramid_min_size=128),
     )
 
     assert audit["scene_index"] == 1
@@ -60,7 +64,10 @@ def test_write_scene_single_level_for_small_input(tmp_path) -> None:
     out = tmp_path / "small.zarr"
 
     audit = write_scene(
-        reader, scene_index=0, store_path=str(out), pyramid_min_size=256
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        geometry=Geometry(pyramid_min_size=256),
     )
 
     assert audit["level_shapes"] == [[64, 64]]
@@ -73,7 +80,12 @@ def test_write_scene_returns_audit_record(tmp_path) -> None:
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
     out = tmp_path / "audit.zarr"
 
-    audit = write_scene(reader, scene_index=0, store_path=str(out), pyramid_min_size=8)
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        geometry=Geometry(pyramid_min_size=8),
+    )
 
     assert audit["axis_normalization"]["was_transposed"] is False
     assert audit["axis_normalization"]["input_dims"] == ["T", "C", "Y", "X"]
@@ -153,7 +165,12 @@ def test_write_scene_omero_window_matches_array_dtype(
     reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32), dtype=dtype)
     out = tmp_path / f"{np.dtype(dtype).name}.zarr"
 
-    write_scene(reader, scene_index=0, store_path=str(out), pyramid_min_size=8)
+    write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        geometry=Geometry(pyramid_min_size=8),
+    )
 
     g = zarr.open_group(str(out), mode="r")
     channels = g.attrs["ome"]["omero"]["channels"]
@@ -188,7 +205,7 @@ def test_write_scene_contrast_percentile_updates_omero_start_end(tmp_path) -> No
         reader,
         scene_index=0,
         store_path=str(out),
-        pyramid_min_size=8,
+        geometry=Geometry(pyramid_min_size=8),
         xarr_override=xarr,
         contrast_percentile=99.9,
     )
@@ -238,7 +255,7 @@ def test_write_scene_contrast_percentile_none_leaves_dtype_window(tmp_path) -> N
         reader,
         scene_index=0,
         store_path=str(out),
-        pyramid_min_size=8,
+        geometry=Geometry(pyramid_min_size=8),
         contrast_percentile=None,
     )
 
@@ -268,7 +285,7 @@ def test_write_scene_contrast_percentile_single_channel_no_c_dim(tmp_path) -> No
         reader,
         scene_index=0,
         store_path=str(out),
-        pyramid_min_size=8,
+        geometry=Geometry(pyramid_min_size=8),
         xarr_override=xarr,
         contrast_percentile=99.9,
     )
@@ -296,6 +313,11 @@ def test_write_scene_records_mosaic_summary(tmp_path) -> None:
     )
     out = tmp_path / "mosaic.zarr"
 
-    audit = write_scene(reader, scene_index=0, store_path=str(out), pyramid_min_size=8)
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        geometry=Geometry(pyramid_min_size=8),
+    )
 
     assert audit["mosaic"] == mosaic

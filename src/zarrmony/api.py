@@ -28,6 +28,7 @@ from zarrmony.errors import (
     ValidationWarning,
     ZarrmonyError,
 )
+from zarrmony.geometry import Geometry, resolve_geometry
 from zarrmony.metadata._lif_scene import find_scene_xml
 from zarrmony.metadata.acquisition import extract_acquisition
 from zarrmony.metadata.audit_channels import from_lif_extracted, from_ome_channels
@@ -694,7 +695,8 @@ def convert(
     output: str | Path,
     *,
     layout: Layout = "auto",
-    pyramid_min_size: int = 256,
+    geometry: Geometry | None = None,
+    pyramid_min_size: int | None = None,
     chunk_shape: Sequence[int] | None = None,
     channel_colors: ChannelColorSpec = None,
     contrast_percentile: float | None = 99.9,
@@ -714,6 +716,19 @@ def convert(
     ADR-0004 (forcing ``per-scene`` / ``bf2raw`` against a plate reader emits
     :class:`~zarrmony.errors.LayoutDowngradeWarning`; forcing ``plate``
     against a flat reader raises :class:`~zarrmony.errors.LayoutMismatchError`).
+
+    ``geometry`` (ADR-0010) is the single frozen
+    :class:`~zarrmony.geometry.Geometry` policy carrying every output-shape
+    choice — pyramid depth, chunk shape, and the planner knobs later slices
+    consume. It is resolved once here and threaded unchanged through per-scene,
+    bf2raw and plate output, so all three layouts are planned by one rule.
+    ``None`` (the default) uses the ADR-0010 policy.
+
+    ``pyramid_min_size`` and ``chunk_shape`` are retained sugar for the two
+    fields that predate the policy object: each is ``None`` when unset and
+    otherwise folds into the default ``Geometry``. Passing either alongside an
+    explicit ``geometry`` raises :class:`ValueError` — set the field on the
+    ``Geometry`` instead of saying it twice.
 
     ``lif_mosaic`` (LIF-specific, default ``"auto-stitch"``, ADR-0005 + #39)
     governs how mosaic LIF scenes without a vendor ``_Merged`` sibling are
@@ -796,6 +811,12 @@ def convert(
             f"contrast_percentile must be None or a float in (0, 100) exclusive; "
             f"got {contrast_percentile!r}"
         )
+    # Fold the retained sugar into one policy object before anything opens the
+    # input file — a bad geometry should fail at the call site, not after a
+    # multi-minute read.
+    resolved_geometry = resolve_geometry(
+        geometry, chunk_shape=chunk_shape, pyramid_min_size=pyramid_min_size
+    )
 
     reader, plugin, match_score = get_reader(input_path, reader_kwargs=reader_kwargs)
     # Multi-plate LIF ambiguity: the reader exposes every plate template via
@@ -847,10 +868,14 @@ def convert(
     else:
         audit_channel_colors = channel_colors
 
+    # ADR-0010: record the *resolved* geometry rather than the caller's raw
+    # inputs. The old `chunk_shape: None` / `pyramid_min_size: 256` pair was
+    # accurate and uninformative — the geometry defect ADR-0010 fixes was found
+    # by inspecting a viewport, not the store's own metadata. Per-level shapes
+    # live on each scene / field record's `level_shapes`.
     config = {
         "layout": effective_layout,
-        "pyramid_min_size": pyramid_min_size,
-        "chunk_shape": list(chunk_shape) if chunk_shape else None,
+        "geometry": resolved_geometry.to_audit(),
         "channel_colors": audit_channel_colors,
         "contrast_percentile": contrast_percentile,
         "force": force,
@@ -867,8 +892,7 @@ def convert(
             distribution=distribution,
             input_path=input_path,
             output=output,
-            pyramid_min_size=pyramid_min_size,
-            chunk_shape=chunk_shape,
+            geometry=resolved_geometry,
             channel_colors=channel_colors,
             contrast_percentile=contrast_percentile,
             force=force,
@@ -885,8 +909,7 @@ def convert(
             distribution=distribution,
             input_path=input_path,
             output=output,
-            pyramid_min_size=pyramid_min_size,
-            chunk_shape=chunk_shape,
+            geometry=resolved_geometry,
             channel_colors=channel_colors,
             contrast_percentile=contrast_percentile,
             force=force,
@@ -901,8 +924,7 @@ def convert(
         distribution=distribution,
         input_path=input_path,
         output=output,
-        pyramid_min_size=pyramid_min_size,
-        chunk_shape=chunk_shape,
+        geometry=resolved_geometry,
         channel_colors=channel_colors,
         contrast_percentile=contrast_percentile,
         force=force,
@@ -1077,8 +1099,7 @@ def _convert_per_scene(
     distribution: str | None,
     input_path: str | Path,
     output: str | Path,
-    pyramid_min_size: int,
-    chunk_shape: Sequence[int] | None,
+    geometry: Geometry,
     channel_colors: ChannelColorSpec,
     contrast_percentile: float | None,
     force: bool,
@@ -1124,8 +1145,7 @@ def _convert_per_scene(
                 scene_name=scene_name,
                 scene_dirname=dirnames[scene_index],
                 output_str=output_str,
-                pyramid_min_size=pyramid_min_size,
-                chunk_shape=chunk_shape,
+                geometry=geometry,
                 channel_colors=channel_colors,
                 contrast_percentile=contrast_percentile,
                 force=force,
@@ -1226,8 +1246,7 @@ def _convert_per_scene(
             reader,
             scene_index=scene_index,
             store_path=store_path,
-            pyramid_min_size=pyramid_min_size,
-            chunk_shape=chunk_shape,
+            geometry=geometry,
             channels=channels,
             image_name=scene_name,
             xarr_override=override_xarr,
@@ -1393,8 +1412,7 @@ def _convert_per_tile_scene(
     scene_name: str,
     scene_dirname: str,
     output_str: str,
-    pyramid_min_size: int,
-    chunk_shape: Sequence[int] | None,
+    geometry: Geometry,
     channel_colors: ChannelColorSpec,
     contrast_percentile: float | None,
     force: bool,
@@ -1473,8 +1491,7 @@ def _convert_per_tile_scene(
             reader,
             scene_index=scene_index,
             store_path=store_path,
-            pyramid_min_size=pyramid_min_size,
-            chunk_shape=chunk_shape,
+            geometry=geometry,
             channels=channels,
             image_name=tile_image_name,
             xarr_override=tile_xarr,
@@ -1614,8 +1631,7 @@ def _convert_bf2raw(
     distribution: str | None,
     input_path: str | Path,
     output: str | Path,
-    pyramid_min_size: int,
-    chunk_shape: Sequence[int] | None,
+    geometry: Geometry,
     channel_colors: ChannelColorSpec,
     contrast_percentile: float | None,
     force: bool,
@@ -1643,8 +1659,7 @@ def _convert_bf2raw(
             reader,
             scene_index=scene_index,
             store_path=scene_path,
-            pyramid_min_size=pyramid_min_size,
-            chunk_shape=chunk_shape,
+            geometry=geometry,
             channels=channels,
             image_name=scene_name,
             contrast_percentile=contrast_percentile,
@@ -1723,8 +1738,7 @@ def _convert_plate(
     distribution: str | None,
     input_path: str | Path,
     output: str | Path,
-    pyramid_min_size: int,
-    chunk_shape: Sequence[int] | None,
+    geometry: Geometry,
     channel_colors: ChannelColorSpec,
     contrast_percentile: float | None,
     force: bool,
@@ -1783,8 +1797,7 @@ def _convert_plate(
         reader,
         store_path=output,
         plate_layout=plate_layout,
-        pyramid_min_size=pyramid_min_size,
-        chunk_shape=chunk_shape,
+        geometry=geometry,
         channel_colors=channel_colors,
         contrast_percentile=contrast_percentile,
         ome_image_for_field=_ome_image_for_field,

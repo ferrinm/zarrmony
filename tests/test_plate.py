@@ -25,6 +25,7 @@ from zarrmony import api as api_module
 from zarrmony import convert
 from zarrmony.audit import AUDIT_SCHEMA_VERSION
 from zarrmony.errors import LayoutMismatchError, PlateLayoutError
+from zarrmony.geometry import Geometry
 from zarrmony.readers.plate import Acquisition, PlateField, PlateLayout
 from zarrmony.readers.plugin import ReaderPlugin
 from zarrmony.writers.plate import (
@@ -361,7 +362,7 @@ def test_writer_validates_before_any_pixel_write(tmp_path: Path) -> None:
             reader,
             store_path=str(out),
             plate_layout=bad_layout,
-            pyramid_min_size=8,
+            geometry=Geometry(pyramid_min_size=8),
         )
     assert not out.exists()
 

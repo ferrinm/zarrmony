@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Frozen `Geometry` policy object (ADR-0010), exported as
+  `zarrmony.Geometry`, carrying every output-geometry choice in one
+  immutable value: `chunk_target_bytes` (512 KiB), `isotropy_tolerance`
+  (1.5), `axis_floor` (32), `coarse_max_bytes` (64 MiB),
+  `coarse_max_long_axis` (2048), `downsample_method` (`"mean"`),
+  `pyramid_min_size` (256) and an explicit `chunk_shape` override
+  (`None`). `convert()` accepts it as `geometry=`, and it is threaded
+  end-to-end through layout dispatch into the per-scene, bf2raw and
+  plate writers — no loose geometry keyword survives in the chain.
+  Values are validated at construction, so a bad policy fails at the
+  call site rather than after a multi-minute read. **Behaviour-preserving:**
+  with defaults, a conversion produces byte-identical output to v0.14.0;
+  the first five fields are plumbed and audited but inert until the
+  ADR-0010 chunk planner and anisotropy-aware pyramid land. (#83)
+
+### Changed
+
+- `convert()`'s `chunk_shape` and `pyramid_min_size` are **retained** as
+  sugar that folds into the geometry policy, so no existing caller
+  breaks. Passing `geometry=` together with either raises `ValueError`
+  rather than silently picking a winner. `--pyramid-min-size` on the CLI
+  is unchanged apart from its help text now naming the ADR-0010 default.
+  (#83)
+- `write_scene()` and `write_plate()` replace their `pyramid_min_size` /
+  `chunk_shape` keywords with a single `geometry: Geometry` argument
+  (defaulting to `DEFAULT_GEOMETRY`). These are internal writer entry
+  points, not part of the public `zarrmony` surface. (#83)
+- **BREAKING (audit schema 8 → 9):** the audit `config` block replaces
+  the `pyramid_min_size` / `chunk_shape` pair with a single `geometry`
+  sub-dict recording the *resolved* policy. Consumers reading
+  `config.pyramid_min_size` must read `config.geometry.pyramid_min_size`.
+  Per-level shapes stay on each scene / field record's `level_shapes`;
+  per-level chunk shapes and the coarse level index join them in a later
+  ADR-0010 slice. (#83)
+
 ## [0.14.0] - 2026-08-10
 
 ### Added

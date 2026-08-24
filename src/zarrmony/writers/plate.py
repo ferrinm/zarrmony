@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import re
 import warnings
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,7 @@ from ome_types.model import Image
 from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import open_root_group
 from zarrmony.errors import LayoutDowngradeWarning, PlateLayoutError
+from zarrmony.geometry import DEFAULT_GEOMETRY, Geometry
 from zarrmony.metadata._lif_scene import find_scene_xml
 from zarrmony.metadata.channel_colors import colors_for_channels
 from zarrmony.metadata.lif_tiles import (
@@ -271,8 +271,7 @@ def write_plate(
     *,
     store_path: str | Path,
     plate_layout: PlateLayout,
-    pyramid_min_size: int = 256,
-    chunk_shape: Sequence[int] | None = None,
+    geometry: Geometry = DEFAULT_GEOMETRY,
     channel_colors: dict[str, str] | str | None = None,
     contrast_percentile: float | None = None,
     ome_image_for_field: Any = None,
@@ -287,6 +286,11 @@ def write_plate(
     """Validate ``plate_layout``, write every FOV, and emit plate-level metadata.
 
     Returns ``(field_records, audit_plate)`` for the audit caller.
+
+    ``geometry`` (ADR-0010) is the single frozen output-geometry policy, passed
+    through unchanged to :func:`~zarrmony.writers.scene.write_scene` for every
+    FOV so a plate store's chunk shapes and pyramid depth are planned by
+    exactly the same rule as per-scene and bf2raw output.
 
     ``ome_image_for_field`` is an optional callable
     ``(scene_index, scene_record) -> ome_types.model.Image`` invoked once per
@@ -401,8 +405,7 @@ def write_plate(
                 reader,
                 scene_index=f.scene_index,
                 store_path=fov_store,
-                pyramid_min_size=pyramid_min_size,
-                chunk_shape=chunk_shape,
+                geometry=geometry,
                 channels=channels,
                 image_name=image_name,
                 xarr_override=grid_xarr,

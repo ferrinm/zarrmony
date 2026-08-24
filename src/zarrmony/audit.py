@@ -5,7 +5,8 @@ recording: zarrmony version, the winning reader plugin (name, distribution,
 source, version, match score), the input file's path / size / mtime / optional
 SHA256, the ``output`` block declaring the writer's OME-NGFF version (ADR-0008,
 one stable audit path so BigQuery ingest never hardcodes ``"0.5"``), the
-conversion config the user passed, started/finished timestamps, per-scene
+conversion config the user passed (including the resolved ADR-0010 output
+geometry under ``config.geometry``), started/finished timestamps, per-scene
 records returned by ``write_scene`` (which for LIF conversions may carry an
 ``objective`` sub-dict with ``nominal_magnification`` / ``numerical_aperture``
 / ``immersion`` / ``model`` / ``working_distance_um``), and any
@@ -30,6 +31,19 @@ from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
+# 9: replaces ``config.pyramid_min_size`` / ``config.chunk_shape`` with a single
+#    ``config.geometry`` block carrying the *resolved* ADR-0010 output-geometry
+#    policy (chunk_target_bytes / isotropy_tolerance / axis_floor /
+#    coarse_max_bytes / coarse_max_long_axis / downsample_method /
+#    pyramid_min_size / chunk_shape). Not additive — a consumer reading
+#    ``config.pyramid_min_size`` must read ``config.geometry.pyramid_min_size``
+#    instead. This is also the one place ``config`` stops being a verbatim echo
+#    of ``convert()`` kwargs (cf. ADR-0008's rejected-options note): the old
+#    ``chunk_shape: None`` / ``pyramid_min_size: 256`` pair was accurate and
+#    uninformative, and ADR-0010 supersedes that framing for geometry
+#    specifically. Per-level shapes stay on each scene / field record's
+#    ``level_shapes``; per-level chunk shapes and the coarse level index join
+#    them in a later ADR-0010 slice. (#83)
 # 8: adds three additive audit surfaces per ADR-0008:
 #    - top-level ``output: {ome_ngff_version}`` block sourced from the writer's
 #      ``NGFF_VERSION`` constant so downstream consumers (Aperture BigQuery
@@ -50,7 +64,7 @@ from zarrmony.readers.plugin import ReaderPlugin
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
-AUDIT_SCHEMA_VERSION = 8
+AUDIT_SCHEMA_VERSION = 9
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:
