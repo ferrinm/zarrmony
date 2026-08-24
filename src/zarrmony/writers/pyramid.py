@@ -10,6 +10,13 @@ Which axes shrink from one level to the next is an ADR-0010 geometry decision
 (:func:`build_pyramid`). The two meet at the level-shape list: ``build_pyramid``
 derives its coarsen factors from consecutive entries of it, so uniform and
 per-axis-varying downsampling are one code path.
+
+Three places below are finer-grained than ADR-0010's summary paragraph — the
+isotropy yardstick is the finest *still-halvable* axis, depth also stops once
+Y and X are both floor-frozen, and the axis floor is capped by
+``pyramid_min_size`` on Y/X. Each is argued where it lives and recorded in that
+ADR's "Follow-up (issue #85)" section; none is a local invention to be tidied
+away without reading it.
 """
 
 from collections.abc import Sequence
