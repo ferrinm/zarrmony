@@ -163,6 +163,7 @@ class FakeReader:
         skip_reasons: dict[int, str] | None = None,
         per_tile_scenes: dict[int, "TileScene"] | None = None,
         dtype: np.typing.DTypeLike = np.uint16,
+        data: np.ndarray | None = None,
     ) -> None:
         self.scenes = tuple(scenes)
         self._dims = dims
@@ -178,6 +179,7 @@ class FakeReader:
         self._skip_reasons = skip_reasons or {}
         self._per_tile_scenes = per_tile_scenes or {}
         self._dtype = np.dtype(dtype)
+        self._data = data
 
     @property
     def skip_reason(self) -> str | None:
@@ -212,10 +214,18 @@ class FakeReader:
 
     @property
     def xarray_dask_data(self) -> xr.DataArray:
-        # Fill with scene-index+1 so tests can assert "the right scene was read"
-        arr = np.full(
-            self._shape, fill_value=self._current_scene + 1, dtype=self._dtype
-        )
+        if self._data is not None:
+            # Real pixel content, shared by every scene — for tests about what
+            # the writer does to *values* (e.g. which pooling kernel built a
+            # pyramid level), where a constant fill would look identical
+            # whatever happened.
+            arr = self._data.astype(self._dtype, copy=False)
+        else:
+            # Fill with scene-index+1 so tests can assert "the right scene was
+            # read".
+            arr = np.full(
+                self._shape, fill_value=self._current_scene + 1, dtype=self._dtype
+            )
         coords: dict[str, list[str]] = {}
         if "C" in self._dims and self._channel_names:
             coords["C"] = self._channel_names

@@ -22,6 +22,7 @@ from zarrmony.geometry import (
     DEFAULT_CHUNK_TARGET_BYTES,
     DEFAULT_COARSE_MAX_BYTES,
     DEFAULT_COARSE_MAX_LONG_AXIS,
+    DEFAULT_DOWNSAMPLE_METHOD,
     DEFAULT_GEOMETRY,
     DEFAULT_ISOTROPY_TOLERANCE,
     DEFAULT_PYRAMID_MIN_SIZE,
@@ -72,6 +73,7 @@ def _build_geometry(
     pyramid_min_size: int | None,
     coarse_max_bytes: int | None,
     coarse_max_long_axis: int | None,
+    downsample_method: str | None,
     chunk_shape: tuple[int, ...] | None,
 ) -> Geometry | None:
     """Fold the geometry flags into one :class:`Geometry`, or ``None``.
@@ -102,6 +104,7 @@ def _build_geometry(
             ("pyramid_min_size", pyramid_min_size),
             ("coarse_max_bytes", coarse_max_bytes),
             ("coarse_max_long_axis", coarse_max_long_axis),
+            ("downsample_method", downsample_method),
             ("chunk_shape", chunk_shape),
         )
         if value is not None
@@ -220,6 +223,23 @@ def _parse_reader_kwargs(
         "Longest lateral (Y/X) extent, in voxels, a coarse level may have. "
         "The second of the two coarse-level bounds; both must hold before the "
         "pyramid stops extending."
+    ),
+)
+@click.option(
+    "--downsample-method",
+    type=click.Choice(["mean", "max"]),
+    default=None,
+    show_default=f"{DEFAULT_DOWNSAMPLE_METHOD} (from the ADR-0010 geometry policy)",
+    help=(
+        "Pooling kernel for every pyramid level above 0. 'mean' (default) is "
+        "right for intensity imagery and is what the OME-Zarr ecosystem "
+        "assumes. 'max' preserves the peak intensity of sparse labels that "
+        "mean-pooling dissolves into the background — a 15 µm soma filling "
+        "1.6% of a level-5 voxel reads 1000 against ~141 rather than 114 "
+        "against 100 — at the cost of biasing every level above 0 high, which "
+        "makes the pyramid unusable for measurement. Applied uniformly: "
+        "mixing kernels by level would show as a brightness step in viewers "
+        "with no coarse/detail concept."
     ),
 )
 @click.option(
@@ -363,6 +383,7 @@ def convert_cmd(
     isotropy_tolerance: float | None,
     coarse_max_bytes: int | None,
     coarse_max_long_axis: int | None,
+    downsample_method: str | None,
     chunk_target_bytes: int | None,
     chunk_shape: tuple[int, ...] | None,
     contrast_percentile: float,
@@ -395,6 +416,7 @@ def convert_cmd(
         pyramid_min_size=pyramid_min_size,
         coarse_max_bytes=coarse_max_bytes,
         coarse_max_long_axis=coarse_max_long_axis,
+        downsample_method=downsample_method,
         chunk_shape=chunk_shape,
     )
 

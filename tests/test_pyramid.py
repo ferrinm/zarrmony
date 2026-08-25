@@ -1,6 +1,6 @@
-"""Tests for the ADR-0010 anisotropy-aware pyramid (issues #85, #86).
+"""Tests for the ADR-0010 anisotropy-aware pyramid (issues #85, #86, #87).
 
-Four concerns, in order:
+Five concerns, in order:
 
 1. :func:`compute_level_shapes` — the shape rule: halve every spatial axis
    whose µm spacing is within ``isotropy_tolerance`` of the finest still-
@@ -9,12 +9,15 @@ Four concerns, in order:
    depth at which a level becomes a coarse level (:func:`is_coarse_level`), so
    depth is chosen for the property a viewer actually needs and no conversion
    loses a level it had before (#86).
-3. :func:`build_pyramid` — mean-pooling with the coarsen factors read off
+3. :func:`build_pyramid` — pooling with the coarsen factors read off
    consecutive level shapes, so per-axis-varying and uniform downsampling are
    one code path.
-4. That per-axis factors reach the store's ``coordinateTransformations``, which
-   ``OMEZarrWriter`` derives from the level shapes we hand it, and that the
-   coarse level's index reaches the audit record.
+4. The pooling kernel — ``downsample_method``, mean by default and ``"max"``
+   for sparse labels, applied to every level rather than to a tier (#87).
+5. That per-axis factors reach the store's ``coordinateTransformations``, which
+   ``OMEZarrWriter`` derives from the level shapes we hand it, that the coarse
+   level's index reaches the audit record, and that the kernel reaches the
+   pixels on disk.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from pathlib import Path
 import dask.array as da
 import numpy as np
 import pytest
+import zarr
 
 from tests.conftest import FakePhysicalPixelSizes, FakeReader
 from zarrmony import api as api_module
@@ -665,6 +669,117 @@ def test_build_pyramid_needs_at_least_one_level_shape() -> None:
         build_pyramid(da.from_array(np.zeros((4, 4), dtype=np.uint16)), [])
 
 
+# ---------- the pooling kernel (#87) ----------
+
+#: Halving 2D levels from 64² down to 2², so the coarsest voxel pools 32 × 32 =
+#: 1024 source voxels. That factor is the point: it is where the two kernels
+#: stop being a rounding difference and start disagreeing about whether the
+#: object is there at all.
+_PUNCTUM_LEVELS = [(64, 64), (32, 32), (16, 16), (8, 8), (4, 4), (2, 2)]
+_BACKGROUND = 100
+_PEAK = 1000
+
+
+def _one_punctum() -> da.Array:
+    """A sparse-label field: uniform background with one bright voxel.
+
+    The acquisition ADR-0010 names — a soma occupying a fraction of a percent
+    of a coarse voxel. Placed at ``(32, 32)`` so it stays the corner of an
+    even-indexed block at every level and no level splits it across two pooling
+    windows, which keeps the expected values exact arithmetic rather than
+    approximately-right.
+    """
+    arr = np.full((64, 64), _BACKGROUND, dtype=np.uint16)
+    arr[32, 32] = _PEAK
+    return da.from_array(arr, chunks=(16, 16))
+
+
+def test_max_pool_preserves_the_peak_that_mean_pool_dissolves() -> None:
+    """The sparse-label divergence, at the factor where it matters (#87).
+
+    One punctum in 1024 pooled voxels: mean-pooling lands it at 100.75, which
+    truncates to a value indistinguishable from background, while max-pooling
+    holds it at full intensity. This is the whole case for the knob — and, read
+    the other way, the case against making ``"max"`` the default, since the same
+    arithmetic lifts *every* coarse voxel toward its own local maximum.
+    """
+    mean_levels = build_pyramid(_one_punctum(), _PUNCTUM_LEVELS)
+    max_levels = build_pyramid(
+        _one_punctum(), _PUNCTUM_LEVELS, Geometry(downsample_method="max")
+    )
+
+    assert int(max_levels[-1].compute().max()) == _PEAK
+    # Gone: the coarsest mean-pooled level is flat background.
+    assert int(mean_levels[-1].compute().max()) == _BACKGROUND
+    assert int(mean_levels[-1].compute().min()) == _BACKGROUND
+
+
+def test_the_chosen_kernel_applies_to_every_level() -> None:
+    """Uniform, not per-tier — no level is built by the other kernel.
+
+    Asserted level by level rather than on the coarsest one alone: a kernel
+    applied to only *some* levels (ADR-0010's rejected mean-detail /
+    max-coarse hybrid) would pass an endpoint check.
+    """
+    mean_peaks = [
+        int(level.compute().max())
+        for level in build_pyramid(_one_punctum(), _PUNCTUM_LEVELS)
+    ]
+    max_peaks = [
+        int(level.compute().max())
+        for level in build_pyramid(
+            _one_punctum(), _PUNCTUM_LEVELS, Geometry(downsample_method="max")
+        )
+    ]
+
+    # Max holds the peak at every level, including level 0 (which is the input
+    # array itself, pooled by nothing).
+    assert max_peaks == [_PEAK] * len(_PUNCTUM_LEVELS)
+    # Mean decays it monotonically, one quarter-with-three-neighbours at a time:
+    # 1000 → (1000+300)/4 → (325+300)/4 → ... → background.
+    assert mean_peaks == [1000, 325, 156, 114, 103, 100]
+
+
+@pytest.mark.parametrize("method", ["mean", "max"])
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.int16, np.float32])
+def test_both_kernels_preserve_the_output_dtype(method: str, dtype) -> None:
+    """Every level shares the input's dtype — the writer allocates one array
+    type for the whole multiscale, so a kernel that widened to float64 (as
+    ``np.mean`` does) would break the store, not just the test."""
+    base = da.from_array(np.full((8, 8), 7, dtype=dtype), chunks=(4, 4))
+
+    levels = build_pyramid(
+        base, [(8, 8), (4, 4), (2, 2)], Geometry(downsample_method=method)
+    )
+
+    assert [level.dtype for level in levels] == [np.dtype(dtype)] * 3
+    assert [level.compute().dtype for level in levels] == [np.dtype(dtype)] * 3
+
+
+def test_max_pool_composes_exactly_across_levels() -> None:
+    """Level-from-level max-pooling equals pooling level 0 in one step.
+
+    Why the pyramid can be built iteratively at all under ``"max"``: the max of
+    maxes is the max, so the coarsest level is the true per-window maximum of
+    the source rather than an approximation that drifts with depth.
+    """
+    rng = np.random.default_rng(0)
+    source = rng.integers(0, 4096, size=(16, 16), dtype=np.uint16)
+    max_pool = Geometry(downsample_method="max")
+
+    iterative = build_pyramid(
+        da.from_array(source, chunks=(8, 8)), [(16, 16), (8, 8), (4, 4)], max_pool
+    )[-1]
+    one_step = build_pyramid(
+        da.from_array(source, chunks=(8, 8)), [(16, 16), (4, 4)], max_pool
+    )[-1]
+
+    np.testing.assert_array_equal(iterative.compute(), one_step.compute())
+    np.testing.assert_array_equal(
+        iterative.compute(), source.reshape(4, 4, 4, 4).max(axis=(1, 3))
+    )
+
+
 # ---------- end to end ----------
 
 
@@ -825,3 +940,65 @@ def test_plate_fields_carry_the_coarse_level_index(
     field = audit["fields"][0]
     assert field["level_shapes"] == [[1, 1, 64, 64], [1, 1, 32, 32]]
     assert field["coarse_level_index"] == 0
+
+
+def _punctum_reader() -> FakeReader:
+    """A one-scene reader whose pixels are the sparse-puncta field."""
+    volume = np.full((1, 1, 64, 64), _BACKGROUND, dtype=np.uint16)
+    volume[0, 0, 32, 32] = _PEAK
+    return FakeReader(
+        scenes=["puncta"],
+        dims="TCYX",
+        shape=volume.shape,
+        channel_names=["GFP"],
+        data=volume,
+    )
+
+
+@pytest.mark.parametrize(
+    ("method", "coarsest_peak"),
+    [("mean", _BACKGROUND), ("max", _PEAK)],
+)
+def test_downsample_method_reaches_the_pixels_on_disk(
+    tmp_path: Path, patched_reader, method: str, coarsest_peak: int
+) -> None:
+    """The same source, converted both ways, is two different stores (#87).
+
+    End to end rather than at :func:`build_pyramid`, because the knob is only
+    worth anything if it survives the trip through ``convert()`` — and because
+    the audit has to say which of the two stores this one is.
+    """
+    patched_reader(_punctum_reader())
+    out = tmp_path / "out"
+
+    result = convert(
+        "/tmp/x.czi",
+        out,
+        # Down to 2² so the coarsest voxel pools 1024 source voxels — the
+        # regime the knob exists for.
+        geometry=Geometry(pyramid_min_size=2, downsample_method=method),
+        contrast_percentile=None,
+        validate=False,
+    )
+
+    scene = result["stores"][0]["per_scene"][0]
+    assert [s[2:] for s in scene["level_shapes"]] == [
+        [64, 64],
+        [32, 32],
+        [16, 16],
+        [8, 8],
+        [4, 4],
+        [2, 2],
+    ]
+    group = zarr.open_group(str(out / "puncta.ome.zarr"), mode="r")
+    # Level 0 is the source either way; the kernel only shows above it.
+    assert int(group["0"][:].max()) == _PEAK
+    assert int(group["5"][:].max()) == coarsest_peak
+    # And the store says which pyramid it is, since the source alone no longer
+    # determines that.
+    assert result["stores"][0]["config"]["geometry"]["downsample_method"] == method
+    root = json.loads((out / "puncta.ome.zarr" / "zarr.json").read_text())
+    assert (
+        root["attributes"]["zarrmony"]["config"]["geometry"]["downsample_method"]
+        == method
+    )

@@ -1,6 +1,6 @@
 """Single-scene OME-Zarr writer.
 
-Wraps bioio-ome-zarr's ``OMEZarrWriter`` so we can supply our own mean-pooled
+Wraps bioio-ome-zarr's ``OMEZarrWriter`` so we can supply our own pooled
 pyramid instead of the parent's nearest-neighbor downsampling. The wrapping
 is done as a subclass that exposes ``initialize()`` and ``write_pyramid()``
 publicly; the parent's lazy initialization is otherwise opaque to callers.
@@ -30,6 +30,9 @@ from zarrmony.writers.pyramid import (
 # the sort/quantile stays trivially cheap even for 80+ GB inputs. Mean-pooling
 # raises the observed min a hair and blurs the tail slightly; for a viewer
 # auto-contrast default the difference is well below what a human eye reads.
+# Under ``downsample_method="max"`` that level is max-pooled, so the window
+# opens higher — which is the right window for the pyramid actually written,
+# and the audit records the method alongside the resolved bounds either way.
 _CONTRAST_METHOD = "coarsest-pyramid-level"
 
 
@@ -229,9 +232,9 @@ def write_scene(
     coarse_level_index, axis_normalization record, channel_count,
     physical_pixel_size).
 
-    ``geometry`` (ADR-0010) carries every output-shape choice — pyramid depth,
-    the coarse-level bounds and chunk shape — as one frozen
-    :class:`~zarrmony.geometry.Geometry` value rather than as loose keywords.
+    ``geometry`` (ADR-0010) carries every output-geometry choice — pyramid
+    depth, the coarse-level bounds, chunk shape and the pooling kernel — as one
+    frozen :class:`~zarrmony.geometry.Geometry` value rather than as keywords.
     ``convert()`` resolves it once and threads the same instance through
     per-scene, bf2raw and plate output; the default is the ADR-0010 policy.
     Level shapes halve every spatial axis whose spacing is within
@@ -244,7 +247,9 @@ def write_scene(
     ``chunk_shapes``, one entry per level, alongside the ``level_shapes`` they
     were planned against. ``coarse_level_index`` names which of those levels is
     the coarse one (``None`` if none reaches the bounds), so the guarantee is
-    checkable in the audit rather than in a viewport.
+    checkable in the audit rather than in a viewport. ``downsample_method`` then
+    decides how the pixels of every level above 0 are pooled — mean by default,
+    ``"max"`` for sparse labels — uniformly across the pyramid.
 
     ``xarr_override`` substitutes a pre-built xarray for ``reader.xarray_dask_data``
     (used by ``api.convert(..., lif_mosaic="per-tile")`` to feed in one tile at
@@ -285,7 +290,9 @@ def write_scene(
     level_shapes = compute_level_shapes(
         base_shape, dims, physical_pixel_size, canonical.dtype, geometry
     )
-    pyramid = build_pyramid(canonical.data, level_shapes)
+    # ADR-0010 (#87): the same level shapes, pooled by whichever kernel the
+    # policy names — mean by default, max for sparse labels.
+    pyramid = build_pyramid(canonical.data, level_shapes, geometry)
 
     # ADR-0010 (#86): which level a viewer can hold whole is the property the
     # depth rule now targets, so record it rather than leaving it to be

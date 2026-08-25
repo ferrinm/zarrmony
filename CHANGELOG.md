@@ -77,6 +77,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when no level reaches the bounds. "Does this store have a level a viewer can
   hold whole?" is now answerable from the store's own metadata instead of from
   a viewport. (#86)
+- `Geometry(downsample_method=...)` now selects the pooling kernel every
+  pyramid level above 0 is built with: `"mean"` (unchanged default) or
+  `"max"`. Present but inert since #83; read by `build_pyramid` as of this
+  slice. Mean-pool stays the default and the whole-pyramid answer — it is what
+  the OME-Zarr ecosystem assumes, and max-pool biases every level above 0 high,
+  lifting background toward the noise maximum at high factors. `"max"` exists
+  for sparse-label acquisitions, where mean-pooling dissolves small objects
+  into the background: a 15 µm soma filling 1.6 % of a level-5 voxel
+  mean-pools to 114 against a background of 100, and max-pools to 1000
+  against ~141. Applied **uniformly** to every level — a mean-detail /
+  max-coarse hybrid was rejected because viewers with no coarse/detail concept
+  (napari, vizarr) would show a brightness step at the last level. Both
+  kernels preserve the input dtype. (#87)
+- `zarrmony convert --downsample-method [mean|max]` exposes the kernel on the
+  CLI. (#87)
 
 ### Changed
 
@@ -143,6 +158,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audit schema 10 → 11 (additive):** per-scene / per-field records gain
   `coarse_level_index`. Consumers pinned to 10 can widen their pin without
   changes. (#86)
+- `build_pyramid()` takes a third positional `geometry` argument (defaulting to
+  `DEFAULT_GEOMETRY`) to read `downsample_method` from. Internal writer entry
+  point, not part of the public `zarrmony` surface. **No audit schema bump** —
+  `config.geometry.downsample_method` has been recorded since #83, so a
+  consumer pinned to schema 11 can already tell a max-pooled store from a
+  mean-pooled one. (#87)
+- Under `downsample_method="max"`, the data-driven omero contrast window
+  (`--contrast-percentile`, #53) opens higher: it is the min and Nth percentile
+  of the coarsest pyramid level, and that level is now max-pooled. This is the
+  correct window for the pyramid actually written — the default `"mean"` path
+  is unchanged. (#87)
 
 ## [0.14.0] - 2026-08-10
 

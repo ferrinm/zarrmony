@@ -718,11 +718,13 @@ def convert(
     against a flat reader raises :class:`~zarrmony.errors.LayoutMismatchError`).
 
     ``geometry`` (ADR-0010) is the single frozen
-    :class:`~zarrmony.geometry.Geometry` policy carrying every output-shape
-    choice — pyramid depth, the coarse-level bounds that can extend it, and
-    chunk shape. It is resolved once here and threaded unchanged through per-scene,
-    bf2raw and plate output, so all three layouts are planned by one rule.
-    ``None`` (the default) uses the ADR-0010 policy.
+    :class:`~zarrmony.geometry.Geometry` policy carrying every output-geometry
+    choice — pyramid depth, the coarse-level bounds that can extend it, chunk
+    shape, and the ``downsample_method`` every level above 0 is pooled with
+    (``"mean"``, or ``"max"`` for sparse labels). It is resolved once here and
+    threaded unchanged through per-scene, bf2raw and plate output, so all three
+    layouts are planned by one rule. ``None`` (the default) uses the ADR-0010
+    policy.
 
     ``pyramid_min_size`` and ``chunk_shape`` are retained sugar for the two
     fields that predate the policy object: each is ``None`` when unset and
