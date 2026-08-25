@@ -7,7 +7,7 @@
 
 Convert any bioimage file to OME-Zarr v0.5, preserving metadata.
 
-Zarrmony reads proprietary microscopy formats (CZI, LIF, ND2, OME-TIFF, ...) via [bioio](https://bioio-devs.github.io/bioio/) and writes them as OME-Zarr v0.5, with mean-pool pyramid generation and a full audit trail of the conversion. User-supplied metadata (study/treatment/etc.) is **not** handled by zarrmony — it is owned by [aperture-backend](https://github.com/calicolabs/aperture-backend), which associates OME-Zarr stores to a separate metadata database.
+Zarrmony reads proprietary microscopy formats (CZI, LIF, ND2, OME-TIFF, ...) via [bioio](https://bioio-devs.github.io/bioio/) and writes them as OME-Zarr v0.5, with mean-pool pyramid generation (`--downsample-method max` for sparse labels) and a full audit trail of the conversion. User-supplied metadata (study/treatment/etc.) is **not** handled by zarrmony — it is owned by [aperture-backend](https://github.com/calicolabs/aperture-backend), which associates OME-Zarr stores to a separate metadata database.
 
 By default (`--layout auto`) the writer is chosen from the reader's `layout_hint`: a flat reader writes one self-describing `<scene>.ome.zarr` store per scene under the output directory; a plate-shaped reader writes a single OME-NGFF [HCS plate](https://ngff.openmicroscopy.org/0.5/#hcs-layout) store at the output. The legacy bundled [`bioformats2raw.layout`](https://ngff.openmicroscopy.org/0.5/#bf2raw) shape is opt-in via `--layout bf2raw` (CLI) or `layout="bf2raw"` (library).
 

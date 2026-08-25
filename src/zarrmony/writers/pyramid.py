@@ -1,9 +1,11 @@
-"""Pyramid level shapes (anisotropy-aware) and mean-pool downsampling.
+"""Pyramid level shapes (anisotropy-aware) and pooled downsampling.
 
 Replaces bioio-ome-zarr's built-in nearest-neighbor downsampling, which produces
-aliasing artifacts on intensity (fluorescence) imagery. Mean-pool is the right
-default for fluorescence; for label maps a different downsampler would be needed
-(``Geometry.downsample_method="max"`` lands in a later ADR-0010 slice).
+aliasing artifacts on intensity (fluorescence) imagery. Mean-pool is the default
+and stays the right answer for intensity imagery; ``downsample_method="max"``
+(issue #87) swaps in a max-pool kernel for sparse-label acquisitions, where
+mean-pooling dissolves small objects into the background. Whichever is chosen
+applies to *every* level — see :data:`_DOWNSAMPLE_KERNELS`.
 
 Which axes shrink from one level to the next, and how many levels there are, is
 an ADR-0010 geometry decision (:func:`compute_level_shapes`); how the pixels get
@@ -36,9 +38,21 @@ import numpy as np
 from zarrmony.geometry import (
     DEFAULT_GEOMETRY,
     SPATIAL_AXES,
+    DownsampleMethod,
     Geometry,
     spacings_for_level,
 )
+
+#: The reduction each :data:`~zarrmony.geometry.Geometry.downsample_method`
+#: names, as the callable ``dask.array.coarsen`` applies over one pooled block.
+#: Both are exact over a block of any shape, which is what lets the pyramid be
+#: built level-from-level rather than every level from level 0 — max-pool
+#: composes exactly (the max of maxes is the max), and mean-pool composes
+#: exactly whenever the blocks are equal-sized, which they are apart from a
+#: trimmed odd row. The dict is also the enumeration of what
+#: ``Geometry.__post_init__`` accepts; adding a kernel here means adding it to
+#: :data:`~zarrmony.geometry._VALID_DOWNSAMPLE_METHODS` too.
+_DOWNSAMPLE_KERNELS: dict[DownsampleMethod, Any] = {"mean": np.mean, "max": np.max}
 
 #: The axes the *depth* rule is judged on. The ``pyramid_min_size`` half of that
 #: rule — stop when the smaller of Y/X would fall below it — is judged here
@@ -313,8 +327,9 @@ def compute_level_shapes(
 def build_pyramid(
     arr: da.Array,
     level_shapes: Sequence[Sequence[int]],
+    geometry: Geometry = DEFAULT_GEOMETRY,
 ) -> list[da.Array]:
-    """Iteratively mean-pool ``arr`` into one dask array per level shape.
+    """Iteratively pool ``arr`` into one dask array per level shape.
 
     Coarsen factors are read off the level shapes themselves — axis ``i``'s
     factor at level ``n`` is ``level_shapes[n-1][i] // level_shapes[n][i]`` — so
@@ -322,6 +337,22 @@ def build_pyramid(
     same code path, and whatever :func:`compute_level_shapes` decided is what
     gets built. Axes with a factor of 1 (T, C, and any spatial axis held back by
     the isotropy or floor rule) are left untouched.
+
+    ``geometry.downsample_method`` picks the kernel (:data:`_DOWNSAMPLE_KERNELS`)
+    and picks it once, for the whole pyramid. ADR-0010 rejects mixing kernels by
+    level — mean for detail, max for the coarse level maps neatly onto Lucida's
+    two-tier model, but it leaves the pyramid internally inconsistent and a
+    viewer with no coarse/detail concept (napari, vizarr) shows a visible
+    brightness step at the level where the kernel changes. A user who wants
+    max-pooled navigation converts with ``"max"`` throughout.
+
+    Mean-pool is the default and the right answer for intensity imagery: it is
+    what the OME-Zarr ecosystem assumes, and max-pool biases every level above 0
+    high — at high factors it lifts background toward the noise maximum, since
+    the max of 32,768 draws sits roughly 4σ out. ``"max"`` exists for the
+    sparse-label case, where that bias is the point: a 15 µm soma occupying
+    1.6 % of a level-5 voxel mean-pools to 114 against a background of 100, and
+    max-pools to 1000 against ~141.
 
     Each coarsen is cast back to the input dtype so all levels share dtype, and
     trims a trailing row rather than padding when an extent is odd — which is
@@ -332,6 +363,9 @@ def build_pyramid(
     levels_shapes = [tuple(int(s) for s in shape) for shape in level_shapes]
     if not levels_shapes:
         raise ValueError("build_pyramid needs at least one level shape")
+    # Keyed rather than branched so "which kernel?" is answered once, above the
+    # loop: every level provably gets the same one.
+    kernel = _DOWNSAMPLE_KERNELS[geometry.downsample_method]
 
     target_dtype = arr.dtype
     levels: list[da.Array] = [arr]
@@ -356,7 +390,7 @@ def build_pyramid(
             if factor > 1:
                 factors[i] = factor
         if factors:
-            cur = da.coarsen(np.mean, cur, factors, trim_excess=True).astype(
+            cur = da.coarsen(kernel, cur, factors, trim_excess=True).astype(
                 target_dtype
             )
         levels.append(cur)

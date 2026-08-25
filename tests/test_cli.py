@@ -4,7 +4,9 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
+import zarr
 from click.testing import CliRunner
 
 from tests.conftest import FakePhysicalPixelSizes, FakeReader
@@ -538,6 +540,119 @@ def test_convert_coarse_bounds_are_documented_in_help(runner: CliRunner) -> None
     assert result.exit_code == 0
     assert "--coarse-max-bytes" in result.output
     assert "--coarse-max-long-axis" in result.output
+
+
+# ---------- convert (downsample method, ADR-0010) ----------
+
+
+def _punctum_reader() -> FakeReader:
+    """A 64² field of uniform 100 background with one 1000-valued voxel.
+
+    The sparse-label case ADR-0010 exposes `--downsample-method max` for: at the
+    32x cumulative factor the levels below reach, one punctum in 1024 pooled
+    voxels either survives at full intensity or vanishes into the background.
+    """
+    volume = np.full((1, 1, 64, 64), 100, dtype=np.uint16)
+    volume[0, 0, 32, 32] = 1000
+    return FakeReader(
+        scenes=["s"],
+        dims="TCYX",
+        shape=volume.shape,
+        channel_names=["GFP"],
+        data=volume,
+    )
+
+
+def test_convert_downsample_method_builds_one_policy(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    result = runner.invoke(
+        app,
+        # fmt: off
+        [
+            "convert", "/tmp/x.lif", str(tmp_path / "out"),
+            "--downsample-method", "max",
+        ],
+        # fmt: on
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["geometry"].downsample_method == "max"
+    # Naming the kernel says nothing about the shapes.
+    assert captured["geometry"].pyramid_min_size == DEFAULT_GEOMETRY.pyramid_min_size
+
+
+@pytest.mark.parametrize(
+    ("flag", "coarsest_peak"),
+    # No flag at all is the third case worth pinning: the default has to stay
+    # mean, not merely be spelled "mean" in the help text.
+    [
+        ([], 100),
+        (["--downsample-method", "mean"], 100),
+        (["--downsample-method", "max"], 1000),
+    ],
+)
+def test_convert_downsample_method_reaches_the_written_pixels(
+    tmp_path: Path,
+    runner: CliRunner,
+    patched_reader,
+    flag: list[str],
+    coarsest_peak: int,
+) -> None:
+    patched_reader(_punctum_reader())
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        # fmt: off
+        [
+            "convert", "/tmp/x.lif", str(out),
+            "--pyramid-min-size", "2", "--no-contrast", "--no-validate",
+            *flag,
+        ],
+        # fmt: on
+    )
+    assert result.exit_code == 0, result.output
+
+    group = zarr.open_group(str(out / "s.ome.zarr"), mode="r")
+    assert int(group["0"][:].max()) == 1000
+    assert int(group["5"][:].max()) == coarsest_peak
+
+
+def test_convert_rejects_an_unknown_downsample_method(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    # Caught by click's Choice before any file is opened — a typo should not
+    # cost a multi-minute read to discover.
+    patched_reader(FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32)))
+
+    result = runner.invoke(
+        app,
+        # fmt: off
+        [
+            "convert", "/tmp/x.lif", str(tmp_path / "out"),
+            "--downsample-method", "median",
+        ],
+        # fmt: on
+    )
+    assert result.exit_code != 0
+    assert "median" in result.output
+    assert "mean" in result.output and "max" in result.output
+
+
+def test_convert_downsample_method_is_documented_in_help(runner: CliRunner) -> None:
+    result = runner.invoke(app, ["convert", "--help"])
+    assert result.exit_code == 0
+    assert "--downsample-method" in result.output
 
 
 # ---------- convert (--layout bf2raw opt-in) ----------

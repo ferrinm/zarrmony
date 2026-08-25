@@ -21,13 +21,12 @@ beside the policy that governs it rather than in a writer.
 ``isotropy_tolerance``, ``axis_floor``, ``pyramid_min_size`` and the two
 ``coarse_max_*`` bounds are consumed by the anisotropy-aware pyramid rule
 (:func:`~zarrmony.writers.pyramid.compute_level_shapes`), which lives beside the
-downsampler that executes it.
+downsampler (:func:`~zarrmony.writers.pyramid.build_pyramid`) that executes it
+and that reads ``downsample_method``.
 
-**Inert field.** ``downsample_method`` is carried and audited but has no
-behaviour yet — mean-pool is the only downsampler in the code, and ``"max"``
-arrives in a later slice of ADR-0010. Until then, setting it changes only the
-audit record. The value is still validated at construction so a typo fails at
-the call site rather than silently at some later release.
+Every field affects written output. ``downsample_method`` is the one that
+changes *pixels* rather than shapes, which is why the audit records it: the same
+source now produces two different pyramids depending on it.
 """
 
 from __future__ import annotations
@@ -123,16 +122,17 @@ class Geometry:
         :func:`~zarrmony.writers.pyramid.is_coarse_level`.
     :param coarse_max_long_axis: Upper bound on a coarse level's longest
         lateral axis, in voxels.
-    :param downsample_method: ``"mean"`` (default) or ``"max"``. Max-pool
-        biases every level above 0 high; it exists for sparse labels.
+    :param downsample_method: The pooling kernel every pyramid level above 0 is
+        built with — ``"mean"`` (default) or ``"max"``, applied uniformly.
+        Max-pool biases every level above 0 high and makes the pyramid useless
+        for measurement; it exists for sparse-label acquisitions, where
+        mean-pooling dissolves small objects into the background. See
+        :func:`~zarrmony.writers.pyramid.build_pyramid`.
     :param pyramid_min_size: Stop halving when the smallest of Y/X would fall
         below this — unless the two ``coarse_max_*`` bounds ask for more depth,
         which they win, so no conversion loses a level.
     :param chunk_shape: Explicit per-axis chunk shape that bypasses the
         planner entirely. ``None`` (default) means "plan it".
-
-    Every field except ``downsample_method`` affects written output today; see
-    the module docstring on that one.
     """
 
     chunk_target_bytes: int = DEFAULT_CHUNK_TARGET_BYTES
