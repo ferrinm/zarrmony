@@ -169,6 +169,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the coarsest pyramid level, and that level is now max-pooled. This is the
   correct window for the pyramid actually written — the default `"mean"` path
   is unchanged. (#87)
+- **2D and plate output get the same geometry as everything else**, with no
+  `Z > 1` gate and no plate exemption — per-scene, bf2raw and plate conversions
+  of the same field now provably plan identical `level_shapes`, `chunk_shapes`
+  and `coarse_level_index`, and write identical arrays. The visible change is
+  on single-plane fields: a 2160² uint16 Phenix field was one
+  `(1,1,1,2160,2160)` chunk of 8.9 MiB — more than a viewer's entire 8 MB
+  per-frame decoded budget in one object, and nothing a frustum cull could trim
+  — and is now 25 chunks of exactly 512 KiB at level 0. On a single plane the
+  *lateral* coarse bound is what decides which level is coarse (8.9 MiB is an
+  eighth of `coarse_max_bytes`), so `--coarse-max-long-axis` is the knob that
+  matters for plate stores and `--coarse-max-bytes` is inert. (#88)
+
+### Migration
+
+- **Object counts rise, and plate owners on object storage should budget for
+  it.** The 512 KiB chunk target trades bytes-per-object for objects: that
+  2160² field goes from 4 chunk objects to 39, a 1080² field from 3 to 14
+  (~4.7×), and a 384-well plate at 4 fields × 3 channels from roughly 23k
+  objects to roughly 106k. This is irrelevant on local disk and costs listing
+  time and per-object metadata on GCS/S3. Raise `--chunk-target-bytes` if your
+  consumer is bandwidth-bound rather than latency-bound; sharding, which would
+  answer this directly, is deliberately not implemented (ADR-0010 — a sharded
+  store cannot currently be read by Lucida).
+- **New stores are not comparable byte-for-byte with v0.14.0 ones.** Chunk
+  shapes, pyramid depth and — for volumetric data — level shapes all change.
+  Existing stores are unaffected and still readable; re-convert from source to
+  pick up the new geometry. Pass `chunk_shape=` / `--chunk-shape` to reproduce
+  an exact previous shape.
 
 ## [0.14.0] - 2026-08-10
 
