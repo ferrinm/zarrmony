@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-25
+
+The ADR-0010 output geometry series (#83–#88), released together: zarrmony now
+plans chunk shapes and pyramid levels itself instead of delegating to
+`bioio-ome-zarr`'s memory-target heuristic. A **minor** bump — on-disk geometry
+changes for every new conversion, including plate output, but no API breaks.
+Read the Migration section before comparing a new store against an old one.
+
 ### Added
 
 - Frozen `Geometry` policy object (ADR-0010), exported as
@@ -92,6 +100,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kernels preserve the input dtype. (#87)
 - `zarrmony convert --downsample-method [mean|max]` exposes the kernel on the
   CLI. (#87)
+- README gains an **Output geometry** section: what the planner does, every
+  `Geometry` field with its default and its CLI flag, what the audit records,
+  the object-count trade, and why sharding is deliberately not implemented.
+  (#89)
 
 ### Changed
 
@@ -183,20 +195,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Migration
 
-- **Object counts rise, and plate owners on object storage should budget for
-  it.** The 512 KiB chunk target trades bytes-per-object for objects: that
-  2160² field goes from 4 chunk objects to 39, a 1080² field from 3 to 14
-  (~4.7×), and a 384-well plate at 4 fields × 3 channels from roughly 23k
-  objects to roughly 106k. This is irrelevant on local disk and costs listing
-  time and per-object metadata on GCS/S3. Raise `--chunk-target-bytes` if your
-  consumer is bandwidth-bound rather than latency-bound; sharding, which would
-  answer this directly, is deliberately not implemented (ADR-0010 — a sharded
-  store cannot currently be read by Lucida).
+Nothing in the API breaks — `chunk_shape` and `pyramid_min_size` keep working
+as sugar over the new policy object, and existing stores are unaffected and
+still readable. What changes is the geometry of every store written from here
+on, so a new conversion will not match an old one. Five things to expect when
+comparing them.
+
+- **Object count rises ~37× on volumetric data, and that is the one number this
+  policy makes materially worse.** The reference whole-brain light-sheet store
+  goes from **87,048 objects to ~3.2 M** (2.78 M of them at level 0) — the
+  512 KiB chunk target trades bytes-per-object for objects. Plate output rises
+  less: a 2160² field goes from 4 chunk objects to 39 (~10×), a 1080² field
+  from 3 to 14 (~4.7×), and a 384-well plate at 4 fields × 3 channels from
+  roughly 23k objects to roughly 106k. This is irrelevant on local disk. **On
+  object storage it is listing and per-object metadata cost** — budget for it
+  before re-converting a large store to GCS/S3, and raise
+  `--chunk-target-bytes` if your consumer is bandwidth-bound rather than
+  latency-bound.
+- **Sharding — the thing that would answer that object count — is deliberately
+  not implemented.** A 256³ shard holding 64 chunks of 64³ would bring the
+  reference store to ~47k objects with chunks still individually
+  range-readable, and `bioio-ome-zarr` supports the write side today. It is
+  omitted because `lucida-store`'s codec-chain parser accepts only `[bytes]` or
+  `[bytes, compressor]` and rejects `sharding_indexed`: a sharded store fails to
+  open with `first storage codec must be 'bytes', got 'sharding_indexed'`, an
+  error that reads as corruption rather than as an unsupported feature. That is
+  a consumer limitation, not a zarrmony one; revisit when the reader gains
+  sharded-read support (ADR-0010).
+- **The pyramid looks different at its coarsest level, for anyone who was
+  seeing a server-generated coarse tier.** A volumetric store now contains a
+  real coarse level, so a viewer that previously fell back to generating its own
+  max-pooled tier stops doing that and reads the written one instead. The
+  written one is **mean-pooled**, so sparse structures — labelled somata,
+  puncta, thin processes — appear **dimmer** at the coarsest level than they did
+  before. This is an appearance change, not a data loss: mean-pool is what the
+  OME-Zarr ecosystem assumes and is the only pooling that keeps the pyramid
+  usable for measurement. Convert with `--downsample-method max` to keep the
+  previous look throughout the pyramid.
+- **The pyramid gains a level but shrinks in relative overhead; do not budget
+  for a size reduction.** Because Z now halves alongside Y and X, each level is
+  **⅛** of the previous rather than ¼: on the reference volume, levels 1–5 add
+  ~14 % over level 0 where levels 1–4 previously added ~33 %. Smaller chunks
+  compress somewhat worse than full-width slabs, so the net is a wash to
+  modestly smaller overall rather than a guaranteed saving.
 - **New stores are not comparable byte-for-byte with v0.14.0 ones.** Chunk
-  shapes, pyramid depth and — for volumetric data — level shapes all change.
-  Existing stores are unaffected and still readable; re-convert from source to
-  pick up the new geometry. Pass `chunk_shape=` / `--chunk-shape` to reproduce
-  an exact previous shape.
+  shapes, pyramid depth and — for volumetric data — level shapes all change, so
+  a checksum or object-listing diff against an old store will differ everywhere.
+  Re-convert from source to pick up the new geometry; pass `chunk_shape=` /
+  `--chunk-shape` to reproduce an exact previous shape. An OME-Zarr → OME-Zarr
+  `zarrmony rechunk` migration command is a follow-up (ADR-0010).
 
 ## [0.14.0] - 2026-08-10
 
