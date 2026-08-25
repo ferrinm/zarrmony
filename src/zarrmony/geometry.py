@@ -27,6 +27,15 @@ and that reads ``downsample_method``.
 Every field affects written output. ``downsample_method`` is the one that
 changes *pixels* rather than shapes, which is why the audit records it: the same
 source now produces two different pyramids depending on it.
+
+Every rule here is written over *the axes that are present*, never over
+dimensionality: nothing asks whether the array is 2D, and ADR-0010 rejects
+gating the policy on ``Z > 1`` by name. A singleton Z contributes one candidate
+length to the chunk search and a constant µm extent to the cubeness score, so
+it moves neither the winning chunk nor the pyramid depth — a 2160² plate field
+is planned by exactly the rule a whole-brain volume is. That is stated as a
+property in ``test_geometry_parity.py``; do not add a 2D or a plate shortcut
+without reading the "Follow-up (issue #88)" section of that ADR first.
 """
 
 from __future__ import annotations
