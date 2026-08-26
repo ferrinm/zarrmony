@@ -220,14 +220,14 @@ dict, or the CLI's repeatable `--reader-kwarg KEY=VALUE`:
 ```python
 from zarrmony import inspect
 inspect(
-    "/mnt/readonly/56502",
-    reader_kwargs={"metadata_path": "/writable/metadata_56502.json"},
+    "/mnt/readonly/<dataset>",
+    reader_kwargs={"metadata_path": "/writable/metadata_<dataset>.json"},
 )
 ```
 
 ```bash
-zarrmony inspect /mnt/readonly/56502 \
-  --reader-kwarg metadata_path=/writable/metadata_56502.json
+zarrmony inspect /mnt/readonly/<dataset> \
+  --reader-kwarg metadata_path=/writable/metadata_<dataset>.json
 ```
 
 Values from the CLI stay as strings; the reader coerces internally

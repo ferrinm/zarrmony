@@ -30,3 +30,10 @@ notebooks/zarrmony_functions.py
 tests/_tmp/
 *.ome.zarr/
 
+# Google Drive doc pointers (may name internal datasets)
+*.gslides
+*.gsheet
+*.gdoc
+
+# Site-local redaction patterns for scripts/check_no_internal_paths.py
+.internal-patterns

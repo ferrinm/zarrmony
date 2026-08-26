@@ -306,14 +306,14 @@ comparing them.
   ```python
   from zarrmony import inspect
   inspect(
-      "/Volumes/PD_external_WuLab-ro/56502",
-      reader_kwargs={"metadata_path": "/gdrive/.../metadata_56502.json"},
+      "/mnt/readonly/<dataset>",
+      reader_kwargs={"metadata_path": "/gdrive/.../metadata_<dataset>.json"},
   )
   ```
 
   ```bash
-  zarrmony inspect /mnt/readonly/56502 \
-    --reader-kwarg metadata_path=/writable/metadata_56502.json
+  zarrmony inspect /mnt/readonly/<dataset> \
+    --reader-kwarg metadata_path=/writable/metadata_<dataset>.json
   ```
 
   Values from the CLI stay as strings; readers coerce internally

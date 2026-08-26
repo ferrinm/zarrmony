@@ -1,12 +1,14 @@
-# 56502 geometry acceptance run
+# Geometry acceptance run
 
 Runbook for [issue #90](https://github.com/ferrinm/zarrmony/issues/90) — the acceptance test for the [ADR-0010](../adr/0010-output-geometry-policy.md) output-geometry series. The reference SmartSPIM dataset is re-converted from source under the new geometry, and the defect the ADR was written against is confirmed gone in a live viewer.
 
 Two halves: a multi-hour conversion that a human has to launch on a machine with the source mounted, and a visual check in Lucida that a human has to eyeball. Everything in between is scripted.
 
+The commands below take the source export from `$SRC`. Set it to the reference dataset's path before running; dataset identifiers and share paths are tracked internally rather than in this public repo.
+
 ## Pre-flight (already done)
 
-The predicted geometry below was computed by running today's `main` planner over 56502's shape and voxel spacing — `compute_level_shapes` and `plan_level_chunk_shapes` at `(1, 3, 3627, 8835, 7452)` uint16, Z 2.0 / Y 1.8 / X 1.8 µm. Every number matches the ADR and the issue, so the acceptance criteria are checks on the run, not open questions about the policy.
+The predicted geometry below was computed by running today's `main` planner over the reference dataset's shape and voxel spacing — `compute_level_shapes` and `plan_level_chunk_shapes` at `(1, 3, 3627, 8835, 7452)` uint16, Z 2.0 / Y 1.8 / X 1.8 µm. Every number matches the ADR and the issue, so the acceptance criteria are checks on the run, not open questions about the policy.
 
 | level | shape                      | chunk                | chunks/level | MiB per (t,c) | long axis |
 | ----- | -------------------------- | -------------------- | ------------ | ------------- | --------- |
@@ -36,13 +38,13 @@ If either bites, cap concurrency with `DASK_NUM_WORKERS` and record what happene
 **Do a timed smoke run first.** Build a small SmartSPIM-shaped export by symlinking one channel directory with a Z subrange into scratch, convert that, and extrapolate:
 
 ```bash
-mkdir -p /scratch/56502_smoke/Ex_488_Ch0_stitched
-ls /data/microscopy/PD_external_WuLab/56502/Ex_488_Ch0_stitched/*.tif \
+mkdir -p /scratch/geom_smoke/Ex_488_Ch0_stitched
+ls "$SRC"/Ex_488_Ch0_stitched/*.tif \
   | head -128 \
-  | xargs -I{} ln -s {} /scratch/56502_smoke/Ex_488_Ch0_stitched/
-cp /data/microscopy/PD_external_WuLab/56502/metadata_56502.json /scratch/56502_smoke/
+  | xargs -I{} ln -s {} /scratch/geom_smoke/Ex_488_Ch0_stitched/
+cp "$SRC"/metadata_*.json /scratch/geom_smoke/
 
-time zarrmony convert /scratch/56502_smoke /scratch/56502_smoke_out
+time zarrmony convert /scratch/geom_smoke /scratch/geom_smoke_out
 ```
 
 The reader globs `metadata_*.json`, so the sidecar keeps its original name in the scratch directory. 128 planes is two full Z-blocks — enough to exercise the rechunk that the old geometry never triggered — and ~1/85 of the full read (3627 planes × 3 channels), so a smoke run taking _t_ suggests very roughly 85 _t_ for the real thing. Enough to size the job, not to quote.
@@ -60,10 +62,10 @@ The `validate` extra matters: without `ome-zarr-models` installed the validator 
 Confirm the source reads as expected before committing hours to it:
 
 ```bash
-zarrmony inspect /data/microscopy/PD_external_WuLab/56502
+zarrmony inspect "$SRC"
 ```
 
-Expect scene `volume`, shape `(1, 3, 3627, 8835, 7452)` uint16, Z 2.0 / Y 1.8 / X 1.8 µm, channels Ex488 / Ex561 / Ex639. If the metadata sidecar is missing or the export sits on a read-only share, point at a copy with `--reader-kwarg metadata_path=/writable/metadata_56502.json`.
+Expect scene `volume`, shape `(1, 3, 3627, 8835, 7452)` uint16, Z 2.0 / Y 1.8 / X 1.8 µm, channels Ex488 / Ex561 / Ex639. If the metadata sidecar is missing or the export sits on a read-only share, point at a copy with `--reader-kwarg metadata_path=/writable/metadata_<dataset>.json`.
 
 ## Convert
 
@@ -73,7 +75,7 @@ Default geometry — no geometry flags. That is the point of the run: what the p
 OUT=<destination for the store>
 
 time zarrmony convert \
-  /data/microscopy/PD_external_WuLab/56502 \
+  "$SRC" \
   "$OUT"
 ```
 
