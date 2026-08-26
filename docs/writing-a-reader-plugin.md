@@ -8,6 +8,31 @@ existing reader library (bioio backend, vendor SDK, custom parser) so that
 By the end you will know how to write a `ReaderPlugin`, register it via Python
 entry points, name and version your distribution, and test it in isolation.
 
+## 0. Do you actually need a plugin?
+
+Check [Bio-Formats' supported-formats list](https://bio-formats.readthedocs.io/en/stable/supported-formats.html)
+first. If your format is on it, the whole answer may be:
+
+```bash
+pip install "zarrmony[bioformats]"
+```
+
+Zarrmony's built-in `bioio` catch-all plugin dispatches to `bioio-bioformats`
+with no code from you and no code from us, and the audit record still names the
+backend that produced the store. [ADR-0011](./adr/0011-bioformats-backed-formats.md)
+makes that the standing rule for Bio-Formats-covered formats, so a plugin for
+one of them is work nobody needs. Note the licence trade-off it records:
+`bioio-bioformats` is GPL-3.0, which is why the extra is opt-in.
+
+Write a plugin when Bio-Formats does **not** cover the format, when it covers
+it badly enough to matter for your data, or when a vendor SDK carries domain
+logic Bio-Formats loses (flat-field correction, plate-coordinate parsing,
+mosaic stitching) — the [ADR-0003](./adr/0003-external-adapter-package-for-non-bioio-readers.md)
+cases. Also worth trying before you commit to a plugin: `--reader-kwarg
+KEY=VALUE`, which forwards options to the underlying backend, including through
+the built-in plugin. A backend that reads your file badly with default options
+sometimes reads it well with the right ones.
+
 ## 1. What is a plugin?
 
 A zarrmony reader plugin is a single value:

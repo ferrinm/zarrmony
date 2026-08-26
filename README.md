@@ -24,7 +24,7 @@ pip install zarrmony
 Zarrmony dispatches to a reader plugin per input format. They come in three tiers:
 
 - **Built-in** (bundled by default): CZI, LIF, ND2.
-- **Optional extras** in this repo (opt-in via `pip install "zarrmony[<extra>]"`): OME-TIFF via the `ome-tiff` extra.
+- **Optional extras** in this repo (opt-in via `pip install "zarrmony[<extra>]"`): OME-TIFF via the `ome-tiff` extra, and ~150 vendor formats via the [`bioformats` extra](#bio-formats-backed-vendor-formats) (GPL-3.0 — see below).
 - **External plugins** (separate PyPI distributions, entry-point registered):
   - [`zarrmony-phenix`](https://github.com/ferrinm/zarrmony-phenix) — Opera Phenix (wraps `pyphenix.OperaPhenixReader`) — `pip install zarrmony-phenix`
   - [`zarrmony-blaze`](https://github.com/ferrinm/zarrmony-blaze) — Miltenyi UltraMicroscope Blaze (MACS iQ-processed) — `pip install zarrmony-blaze`
@@ -33,13 +33,35 @@ Zarrmony dispatches to a reader plugin per input format. They come in three tier
 
 ### Extras
 
-| Extra      | Adds                     | When you need it               |
-| ---------- | ------------------------ | ------------------------------ |
-| `gcs`      | `gcsfs`                  | Writing output to `gs://` URIs |
-| `s3`       | `s3fs`                   | Writing output to `s3://` URIs |
-| `ome-tiff` | `bioio-ome-tiff`         | Reading OME-TIFF input         |
-| `all`      | All of the above         |                                |
-| `dev`      | pytest, ruff, pre-commit | Contributing                   |
+| Extra        | Adds                                     | When you need it                                  |
+| ------------ | ---------------------------------------- | ------------------------------------------------- |
+| `gcs`        | `gcsfs`                                  | Writing output to `gs://` URIs                    |
+| `s3`         | `s3fs`                                   | Writing output to `s3://` URIs                    |
+| `ome-tiff`   | `bioio-ome-tiff`                         | Reading OME-TIFF input                            |
+| `validate`   | `ome-zarr-models`                        | Post-conversion OME-NGFF validation               |
+| `bioformats` | `bioio-bioformats`                       | Reading Bio-Formats-only vendor formats (GPL-3.0) |
+| `all`        | All of the above **except `bioformats`** |                                                   |
+| `dev`        | pytest, ruff, pre-commit                 | Contributing                                      |
+
+### Bio-Formats-backed vendor formats
+
+```bash
+pip install "zarrmony[bioformats]"
+```
+
+**What it buys.** Everything on the [Bio-Formats supported-formats list](https://bio-formats.readthedocs.io/en/stable/supported-formats.html) that no permissively-licensed bioio backend covers — around 150 formats. The motivating case is **Olympus/Evident cellSens VSI** whole-slide data; Zeiss ZVI and Hamamatsu NDPI are in the same bucket. No zarrmony code is involved: once `bioio-bioformats` is installed, the built-in `bioio` catch-all plugin dispatches to it, and the audit record's `distribution` field names it. Point zarrmony at the `.vsi` file itself — Bio-Formats follows the `.ets` sidecar directory automatically.
+
+**Licence.** `bioio-bioformats` is **GPL-3.0**; Bio-Formats is GPL. Installing this extra puts GPL code in your environment. Zarrmony itself remains Apache-2.0 and no GPL package is in its default dependency closure — which is exactly why this extra is opt-in and why it is **excluded from `all`**. Do not add it there. See [ADR-0011](docs/adr/0011-bioformats-backed-formats.md).
+
+**Java.** Bio-Formats needs a JVM, but not one you have to install: `bffile` / `scyjava` / `cjdk` fetch their own JDK (~36 MiB, once) and the Bio-Formats maven artifacts on first use. No system Java, no maven, no `JAVA_HOME`. The first file you open is slow while that downloads; everything after is cached.
+
+**Gigapixel inputs need tiling.** `bioio-bioformats` returns **one dask chunk per plane** by default. On a 141k × 168k slide that is a single 47.5 GB chunk, and the writer will try to hold it in memory to rechunk it. Pass:
+
+```bash
+zarrmony convert slide.vsi out/ \
+  --reader-kwarg dask_tiles=true \
+  --reader-kwarg tile_size=1024,1024
+```
 
 ## Usage
 

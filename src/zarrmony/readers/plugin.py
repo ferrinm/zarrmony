@@ -6,6 +6,12 @@ via Python entry points (group ``zarrmony.readers``), or via runtime
 ``register_plugin()``. ``get_reader(path)`` walks all registered plugins,
 calls each ``match()`` cheaply, and ``open()``s the highest-scoring one.
 
+``get_reader(path, reader_kwargs=...)`` forwards those kwargs to the winning
+``plugin.open()``. Every plugin participates, including the built-in ``bioio``
+catch-all, which passes them on to whichever bioio backend wins discovery
+(``dask_tiles``/``tile_size`` for large 2D sources, backend-specific reader
+modes, …) — see ``readers/default.py``.
+
 This module is the new plugin infrastructure (see ADR-0001). The legacy
 extension-keyed dispatch in ``readers/__init__.py`` will be migrated onto this
 registry as a follow-up; the two coexist for now.

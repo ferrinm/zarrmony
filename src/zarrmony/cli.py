@@ -17,7 +17,12 @@ import click
 from zarrmony import __version__
 from zarrmony import api as zm_api
 from zarrmony._storage import format_bytes, size_on_disk
-from zarrmony.errors import OutputExistsError, PlateSelectionError
+from zarrmony.errors import (
+    OutputExistsError,
+    PlateSelectionError,
+    ReaderKwargError,
+    UnsupportedFormatError,
+)
 from zarrmony.geometry import (
     DEFAULT_CHUNK_TARGET_BYTES,
     DEFAULT_COARSE_MAX_BYTES,
@@ -355,9 +360,14 @@ def _parse_reader_kwargs(
         "as **kwargs. Repeatable. Values stay strings; the reader coerces "
         "internally. Motivating case: sidecar-elsewhere overrides like "
         "'--reader-kwarg metadata_path=/writable/metadata.json' for "
-        "SmartSPIM exports on a read-only share. Unknown kwargs surface as "
-        "the reader constructor's native TypeError — zarrmony does not "
-        "validate the shape."
+        "SmartSPIM exports on a read-only share. The built-in 'bioio' "
+        "catch-all participates too, forwarding to whichever bioio backend "
+        "wins discovery — e.g. '--reader-kwarg dask_tiles=true "
+        "--reader-kwarg tile_size=1024,1024' to keep a gigapixel slide from "
+        "arriving as one whole-plane dask chunk (those two keys are coerced "
+        "from their string form; every other key is passed through as a "
+        "string). Unknown kwargs surface as the reader constructor's native "
+        "TypeError — zarrmony does not validate the shape."
     ),
 )
 @click.option(
@@ -445,7 +455,12 @@ def convert_cmd(
             lif_mosaic=lif_mosaic,
             reader_kwargs=reader_kwargs,
         )
-    except (OutputExistsError, PlateSelectionError) as e:
+    except (
+        OutputExistsError,
+        PlateSelectionError,
+        ReaderKwargError,
+        UnsupportedFormatError,
+    ) as e:
         raise click.ClickException(str(e)) from e
 
     # Dispatch on the *resolved* layout the API actually used (so --layout auto
@@ -490,9 +505,14 @@ def convert_cmd(
         "as **kwargs. Repeatable. Values stay strings; the reader coerces "
         "internally. Motivating case: sidecar-elsewhere overrides like "
         "'--reader-kwarg metadata_path=/writable/metadata.json' for "
-        "SmartSPIM exports on a read-only share. Unknown kwargs surface as "
-        "the reader constructor's native TypeError — zarrmony does not "
-        "validate the shape."
+        "SmartSPIM exports on a read-only share. The built-in 'bioio' "
+        "catch-all participates too, forwarding to whichever bioio backend "
+        "wins discovery — e.g. '--reader-kwarg dask_tiles=true "
+        "--reader-kwarg tile_size=1024,1024' to keep a gigapixel slide from "
+        "arriving as one whole-plane dask chunk (those two keys are coerced "
+        "from their string form; every other key is passed through as a "
+        "string). Unknown kwargs surface as the reader constructor's native "
+        "TypeError — zarrmony does not validate the shape."
     ),
 )
 def inspect_cmd(
@@ -501,7 +521,10 @@ def inspect_cmd(
     reader_kwargs: dict[str, str] | None,
 ) -> None:
     """Print scenes, dims, channels, and pixel sizes for INPUT (no conversion)."""
-    info = zm_api.inspect(input_path, reader_kwargs=reader_kwargs)
+    try:
+        info = zm_api.inspect(input_path, reader_kwargs=reader_kwargs)
+    except (PlateSelectionError, ReaderKwargError, UnsupportedFormatError) as e:
+        raise click.ClickException(str(e)) from e
     if as_json:
         click.echo(json.dumps(info, indent=2, default=str))
         return
