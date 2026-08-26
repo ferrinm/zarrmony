@@ -71,6 +71,19 @@ So a full four-scene conversion of B is **~256.7 GB raw / ~491,700 objects**, an
 
 ### Pre-flight on the machine that will run it
 
+Read access first, because every other failure mode is easier to recognise than this one. VSI is multi-file — the `.vsi` is an index and the pyramid lives in a sibling `_<name>_/stackNNNNN/*.ets` tree — so Bio-Formats needs to both **open the file** and **list its directory**:
+
+```bash
+head -c 4 "$SRC/<slide-B>.vsi" | xxd   # expect 4949 2a00  (II*\0, little-endian TIFF)
+ls -d "$SRC"/_*_/                      # the sibling pyramid directory must be listable
+```
+
+Run this as the user and on the machine that will host the JVM. Do not run the conversion against a share the JVM cannot read directly:
+
+- On **macOS**, network and removable volumes under `/Volumes` — SMB, and FUSE mounts such as sshfs — are gated by the privacy layer, not by the file mode. `open()` returns `EPERM` ("Operation not permitted") while `stat` still succeeds, so `ls` on the file looks fine and only the read fails. Grant Full Disk Access to the application hosting the process (Terminal, Emacs, VS Code) under System Settings > Privacy & Security and restart **that application** — restarting only the Python process does not pick up a new grant.
+- Bio-Formats surfaces this as `java.io.FileNotFoundException: <path> (Operation not permitted)`, which bioio then reports as `UnsupportedFileFormatError` recommending you install an extra. That recommendation is wrong for this failure. zarrmony now raises `InputAccessError` instead (ADR-0011), but the underlying trap is worth knowing.
+- Reading a whole-slide VSI over sshfs also means hundreds of thousands of small random reads across the `.ets` files. Prefer running on a host with the storage mounted natively.
+
 ```bash
 zarrmony inspect "$SRC/<slide-B>.vsi"
 ```

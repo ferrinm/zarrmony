@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UnsupportedFormatError` naming the `bioformats` extra (bioio's original
   chained as `__cause__`). Suppressed when `bioio-bioformats` is already
   installed. (#102)
+- **A post-mortem that tells "no reader" apart from "cannot read".** bioio
+  reports every dispatch failure as `UnsupportedFileFormatError` recommending
+  an extra, discarding the real cause into a log line — so a read-denied
+  mount, a dead JVM and a genuinely unknown format are indistinguishable, and
+  the recommended fix is wrong for two of the three. On that failure path the
+  default plugin now checks whether the input can actually be opened and its
+  directory listed, raising the new `InputAccessError` when it cannot
+  (naming macOS's privacy layer for an `EPERM`, which is what a denied SMB or
+  FUSE volume under `/Volumes` looks like), flagging a readable file in an
+  unlistable directory (how a multi-file format such as VSI fails when its
+  sibling pyramid is out of reach), and folding bioio's discarded per-backend
+  errors into the message. When `bioio-bioformats` is installed the message
+  now says so and reports what was tried instead of falling back to bioio's
+  "install an extra".
 - `docs/writing-a-reader-plugin.md` opens with a "do you actually need a
   plugin?" section pointing at the Bio-Formats list first, and
   `docs/references/vsi-acceptance-run.md` is the runbook for the ADR-0011
