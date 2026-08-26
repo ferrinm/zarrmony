@@ -1,0 +1,41 @@
+# Bio-Formats-backed formats ship as an opt-in GPL extra, not a `zarrmony-<vendor>` adapter
+
+**Status:** Accepted (2026-08-26).
+
+For any format [Bio-Formats](https://bio-formats.readthedocs.io/en/stable/supported-formats.html) supports and no permissively-licensed bioio backend does, zarrmony's answer is `pip install "zarrmony[bioformats]"` — an opt-in extra pulling `bioio-bioformats`, which the built-in `bioio` catch-all plugin then dispatches to with **no zarrmony code at all**. We do not write a `zarrmony-<vendor>` adapter for those formats. [ADR-0003](./0003-external-adapter-package-for-non-bioio-readers.md)'s adapter pattern stays reserved for the two cases Bio-Formats does not answer: instruments it does not cover, and instruments where a vendor SDK carries domain logic Bio-Formats loses (Opera Phenix flat-field-correction maths, plate-coordinate parsing, mosaic stitching). `bioio-bioformats` is **GPL-3.0** and zarrmony is Apache-2.0, so the extra is opt-in in the strict sense: it is **never** in the default install and **never** in the `all` extra, and the same exclusion binds the internal fork. This ADR qualifies ADR-0003 rather than replacing it.
+
+## Why this needs writing down
+
+Olympus/Evident cellSens VSI whole-slide data brought the question. Nothing in the bioio ecosystem reads VSI — `bioio.plugin_feasibility_report()` returns `supported=False` for all five backends zarrmony depends on today (`bioio-ome-tiff`, `bioio-ome-zarr`, `bioio-lif`, `bioio-nd2`, `bioio-czi`), `BioImage()` raises `UnsupportedFileFormatError`, and there is no `bioio-vsi`. Read literally, ADR-0003 says that is a new `zarrmony-vsi` repo.
+
+But VSI is covered by Bio-Formats' `CellSensReader`, and `bioio-bioformats` already exposes Bio-Formats as an ordinary bioio backend. Installed alongside zarrmony and pointed at one of the reference slides, the existing catch-all wins on its own:
+
+```
+winning plugin: bioio  score 0  source builtin
+distribution:   bioio-bioformats
+scenes: ('label', 'overview', '20x_DAPI_N, FITC, TRITC, Cy5_01', 'macro image')
+```
+
+`derive_bioio_distribution()` resolves the `distribution` field correctly, so the audit record still names the backend that produced the store and the provenance boundary stays recoverable — the property ADR-0003 relies on. Nothing is missing except the packaging.
+
+So the choice is not "adapter or nothing", it is "adapter or `pip install`", and the thing that makes it a decision worth recording is the licence, not the architecture.
+
+## Considered Options
+
+- **Opt-in `bioformats` extra (accepted).** Zero reader code, and the best available result on the motivating format: Bio-Formats is the reference VSI implementation and exposes all four sub-images as first-class scenes with OME metadata (instrument, 3 detectors, 3 objectives), correct per-scene pixel sizes and `resolution_levels`. Its costs are a GPL dependency the user installs knowingly and a JVM, both bounded and both stated below.
+- **Write a `zarrmony-vsi` adapter over `slideio`** (BSD-3, native C++ VSI driver, no JVM). Verified working against the reference slide — correct geometry, channel names, 0.325 µm/px, 20×, 10 zoom levels, working block reads — so this is a real option and not a straw man, and it is the one to reach for if the GPL or the JVM turns out to block a specific deployment. Rejected as the default because it is strictly worse for more work: it collapses the VSI to one scene plus two "aux images" instead of four scenes, produces no OME metadata (just a ~1 MB proprietary JSON tag dump), and its `read_block(rect, size)` API would need a hand-written dask wrapper that `bioio-bioformats` gives us for free. Choosing it would mean maintaining a repo, a release process and a dask shim in order to get less metadata.
+- **Vendor Bio-Formats into zarrmony directly.** Rejected. This is the trap the ADR exists to name: it puts GPL code in zarrmony's own distribution, and zarrmony's effective licence changes from Apache-2.0 to GPL-3.0 for every user, including those who never touch a vendor format. The distinction that makes the accepted option safe is precisely that the user assembles the GPL environment themselves.
+- **Fold Bio-Formats into the `all` extra so "install everything" means everything.** Rejected, and it is the failure mode most likely to arrive later as a well-meaning cleanup — `all` looks incomplete without it. But `all` is what CI jobs, Dockerfiles and "just give me the works" users install without reading, which is exactly the population that must not acquire a GPL dependency by accident. `all` therefore means "all the permissively-licensed extras", and `pyproject.toml` carries a comment saying so at the definition site.
+- **Do nothing; tell users to run `bioformats2raw` standalone.** Rejected as the primary answer. It works and it is a reasonable fallback to document for anyone who wants the Java CLI and nothing else, but it bypasses zarrmony's audit record, the ADR-0010 geometry policy and the metadata extractors entirely — the user gets an OME-Zarr store, not a zarrmony store, and none of the guarantees the rest of these ADRs establish apply to it.
+- **Ship the extra but re-license zarrmony GPL-3.0 to be safe.** Rejected. It solves a problem that does not exist — an optional dependency the user installs does not reach back and re-license the package that named it — and it would impose GPL on every downstream consumer of zarrmony, including the ones that will never install the extra.
+
+## Consequences
+
+- **Roughly 150 formats become reachable with no zarrmony code**, on one `pip install`. The reader tier list in the README gains an entry rather than the repo gaining a package.
+- **The GPL boundary is now a maintained invariant, not an accident.** `bioformats` is absent from `all` and from `dev` (the latter also because CI would resolve a JVM toolchain on every run for a backend no in-tree test exercises), with a comment in `pyproject.toml` recording why. Anyone who moves it has to delete that comment first.
+- **The internal Calico fork inherits the constraint.** `INTERNAL_FORK.md` describes a private fork that may vendor or redistribute; nothing vendored there may pull `bioio-bioformats` into a default install path, for the same reason and with the same consequence.
+- **A JVM enters the picture, but not a system dependency.** `bffile` + `scyjava` + `cjdk` fetch their own JDK (~36 MiB, once) and the Bio-Formats maven artifacts on first use — verified on a machine with no `mvn` on `PATH`. The first open of the first file is slow; later ones are cached. This is worth documenting in the README because "needs Java" reads as much worse than it is.
+- **Gigapixel Bio-Formats inputs need `dask_tiles`.** `bioio-bioformats` hands back one dask chunk per plane by default; on the reference slide that is a single 47.5 GB chunk, which the writer's `rechunk` cannot split without materialising it. `--reader-kwarg dask_tiles=true --reader-kwarg tile_size=1024,1024` is the answer, reachable because the built-in plugin forwards `reader_kwargs` (#101). Users who skip it hit an OOM rather than a diagnosable error, so the README says it next to the extra.
+- **`UnsupportedFileFormatError` is no longer the end of the conversation.** The default plugin wraps it with a zarrmony-level hint naming this extra, chaining the bioio original, and suppresses the hint when `bioio-bioformats` is already installed. Discoverability was the real gap: the decision is worthless if the user never learns the extra exists.
+- **A Bio-Formats-covered format is now a "no" to a plugin-authoring request.** `docs/writing-a-reader-plugin.md` opens by asking whether the format is on the Bio-Formats list, because the cheapest plugin is the one nobody writes.
+- **We inherit Bio-Formats' behaviour, including its bugs, on those formats.** There is no adapter layer to patch around a bad reader — the escape hatch is the ADR-0003 route (a `zarrmony-<vendor>` package over a permissive driver such as `slideio`), taken per-format when a specific defect justifies it rather than pre-emptively.

@@ -1,5 +1,7 @@
 # External adapter package for non-bioio readers
 
+> **Qualified by [ADR-0011](./0011-bioformats-backed-formats.md).** Read the two together: when a format is already covered by Bio-Formats, the answer is the opt-in `zarrmony[bioformats]` extra, not a `zarrmony-<vendor>` package. The adapter pattern below applies to instruments Bio-Formats does not cover, or where a vendor SDK carries domain logic Bio-Formats loses.
+
 Non-bioio reader plugins (Phenix and future custom-instrument readers) ship as separate distributable packages, not as in-tree extras of zarrmony. Specifically, Opera Phenix support is a new `zarrmony-phenix` package that depends on both `pyphenix` and `zarrmony` and contains a thin adapter wrapping `pyphenix.OperaPhenixReader` to satisfy zarrmony's Reader Protocol. PyPhenix itself is not modified.
 
 ## Considered Options

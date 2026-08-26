@@ -19,6 +19,30 @@ class PlateLayoutError(ZarrmonyError):
     """
 
 
+class ReaderKwargError(ZarrmonyError):
+    """A ``reader_kwargs`` value could not be coerced to the type the reader wants.
+
+    ``--reader-kwarg KEY=VALUE`` hands every value to the reader as a string,
+    on the contract that readers coerce internally. The built-in ``bioio``
+    plugin coerces on behalf of third-party bioio backends it does not own
+    (``dask_tiles`` to a bool, ``tile_size`` to an ``(int, int)`` pair — see
+    ``readers/default.py``); raised when the string does not parse. The
+    message names the key, the offending value and the accepted spelling.
+    """
+
+
+class UnsupportedFormatError(ZarrmonyError):
+    """The default ``bioio`` plugin found no installed backend for the input.
+
+    Wraps ``bioio``'s ``UnsupportedFileFormatError`` (chained as ``__cause__``)
+    to add the zarrmony-level hint that a Bio-Formats-covered vendor format
+    may only need ``pip install "zarrmony[bioformats]"`` (ADR-0011). The hint
+    is suppressed — and the original error re-raised untouched — when
+    ``bioio-bioformats`` is already installed, since then it is not the
+    missing piece.
+    """
+
+
 class LayoutMismatchError(ZarrmonyError):
     """Explicit ``layout='plate'`` was passed against a non-plate-shaped reader.
 

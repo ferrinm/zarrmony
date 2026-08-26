@@ -9,6 +9,9 @@ license-files = ["LICENSE.md"]
 authors = [{ name = "Max Ferrin", email = "ferrin@calicolabs.com" }]
 dependencies = [
     "bioio>=3.3.0",
+    # Transitive via bioio, but declared because readers/default.py imports
+    # UnsupportedFileFormatError from it directly — bioio does not re-export it.
+    "bioio-base>=3.3.0",
     "bioio-czi>=2.6.1",
     "bioio-lif>=1.4.2",
     "bioio-nd2>=1.7.0",
@@ -32,6 +35,14 @@ gcs = ["gcsfs"]
 s3 = ["s3fs"]
 ome-tiff = ["bioio-ome-tiff"]
 validate = ["ome-zarr-models>=1.0"]
+# Bio-Formats-backed vendor formats (Olympus cellSens VSI, Zeiss ZVI,
+# Hamamatsu NDPI, ...). Deliberately opt-in — see ADR-0011.
+bioformats = ["bioio-bioformats>=2"]
+# `bioformats` is intentionally NOT in `all`, and must stay out of it:
+# bioio-bioformats is GPL-3.0 and zarrmony is Apache-2.0, so it is only ever
+# a GPL environment the *user* assembles for themselves (ADR-0011). It is out
+# of `dev` for the same reason plus a practical one — CI would resolve a JVM
+# toolchain on every run for a backend no in-tree test exercises.
 all = ["zarrmony[gcs,s3,ome-tiff,validate]"]
 dev = [
     "black~=25.12.0",

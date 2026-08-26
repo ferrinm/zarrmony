@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`bioformats` optional extra** — `pip install "zarrmony[bioformats]"`
+  installs `bioio-bioformats`, which the built-in `bioio` catch-all plugin
+  then dispatches to with no zarrmony code, unlocking the ~150 vendor
+  formats on the Bio-Formats supported-formats list that no permissively
+  licensed bioio backend covers (Olympus/Evident cellSens VSI, Zeiss ZVI,
+  Hamamatsu NDPI, …). `bioio-bioformats` is **GPL-3.0** and zarrmony is
+  Apache-2.0, so the extra is opt-in in the strict sense: it is deliberately
+  **not** part of `all`, not part of `dev`, and never in the default install
+  — the user assembles the GPL environment themselves and zarrmony's own
+  dependency closure stays Apache-2.0. Bio-Formats needs a JVM but not a
+  system one: `bffile`/`scyjava`/`cjdk` fetch their own JDK (~36 MiB) and the
+  maven artifacts on first use. New [ADR-0011](docs/adr/0011-bioformats-backed-formats.md)
+  records the rule and the licence constraint, and qualifies ADR-0003 —
+  Bio-Formats-covered formats get the extra, not a `zarrmony-<vendor>`
+  adapter package. (#100, #102)
+- **`reader_kwargs` now reach the built-in `bioio` plugin.** `_open_default`
+  forwards `**kwargs` to `BioImage`, which forwards them to whichever bioio
+  backend wins discovery — so `--reader-kwarg`/`reader_kwargs=` finally
+  works for the catch-all path, not just for external plugins. The
+  motivating case is gigapixel 2D: `bioio-bioformats` returns one dask chunk
+  per plane (47.5 GB on the reference whole-slide input), which the writer
+  cannot rechunk without materialising it, so
+  `--reader-kwarg dask_tiles=true --reader-kwarg tile_size=1024,1024` is the
+  difference between a conversion and an OOM. `dask_tiles` and `tile_size`
+  are coerced from their CLI string form because the backends that accept
+  them are third-party; every other key keeps the documented
+  string-passthrough contract, and unknown keys still surface as the backend
+  constructor's native `TypeError`. (#101)
+- **Install hint on unreadable input.** When the default plugin's `BioImage`
+  raises `UnsupportedFileFormatError`, zarrmony now wraps it in
+  `UnsupportedFormatError` naming the `bioformats` extra (bioio's original
+  chained as `__cause__`). Suppressed when `bioio-bioformats` is already
+  installed. (#102)
+- `docs/writing-a-reader-plugin.md` opens with a "do you actually need a
+  plugin?" section pointing at the Bio-Formats list first, and
+  `docs/references/vsi-acceptance-run.md` is the runbook for the ADR-0011
+  acceptance conversion. (#102, #103)
+
+### Changed
+
+- `bioio-base` is now a declared dependency rather than an undeclared
+  transitive one — `readers/default.py` imports `UnsupportedFileFormatError`
+  from it and `bioio` does not re-export it. No resolution change in
+  practice; `bioio` already required it.
+
 ## [0.15.0] - 2026-08-25
 
 The ADR-0010 output geometry series (#83–#88), released together: zarrmony now
