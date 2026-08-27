@@ -9,9 +9,13 @@ applies to *every* level — see :data:`_DOWNSAMPLE_KERNELS`.
 
 Which axes shrink from one level to the next, and how many levels there are, is
 an ADR-0010 geometry decision (:func:`compute_level_shapes`); how the pixels get
-there is this module's job (:func:`build_pyramid`). The two meet at the
-level-shape list: ``build_pyramid`` derives its coarsen factors from consecutive
-entries of it, so uniform and per-axis-varying downsampling are one code path.
+there is this module's job (:func:`downsample_step`, and :func:`build_pyramid`
+over it). The two meet at the level-shape list: a step's coarsen factors are
+read off a consecutive pair of entries, so uniform and per-axis-varying
+downsampling are one code path. Whether the whole pyramid is one lazy graph
+(``build_pyramid``) or one written level feeding the next
+(:meth:`~zarrmony.writers.scene.ZarrmonyWriter.write_pyramid`) is the caller's
+choice; both walk the same shapes through the same step.
 
 Depth answers a question about the *output*, not about the input: "does a level
 exist that a viewer can hold whole?" :func:`is_coarse_level` is that question
@@ -324,6 +328,56 @@ def compute_level_shapes(
     return levels
 
 
+def downsample_step(
+    arr: da.Array,
+    prev_shape: Sequence[int],
+    next_shape: Sequence[int],
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> da.Array:
+    """Pool one level into the next, with the coarsen factors read off the shapes.
+
+    Axis ``i``'s factor is ``prev_shape[i] // next_shape[i]``. Axes with a factor
+    of 1 — T, C, and any spatial axis held back by the isotropy or floor rule —
+    are left untouched, and when no axis shrinks at all ``arr`` is returned
+    unchanged.
+
+    ``arr`` only has to *hold* ``prev_shape``'s pixels; it need not be the lazy
+    level :func:`build_pyramid` produced. Both kernels in
+    :data:`_DOWNSAMPLE_KERNELS` are exact over a block of any shape, so pooling a
+    level that has been written to disk and read back gives the same pixels as
+    pooling it inside one graph — the equivalence that lets
+    :meth:`~zarrmony.writers.scene.ZarrmonyWriter.write_pyramid` write each level
+    from the previous one on disk (issue #111) instead of holding a single graph
+    spanning the whole pyramid.
+
+    The result is cast back to ``arr.dtype`` so every level shares a dtype, and
+    trims a trailing row rather than padding when an extent is odd — which is
+    exactly the floor division :func:`compute_level_shapes` predicted.
+    """
+    prev = tuple(int(s) for s in prev_shape)
+    nxt = tuple(int(s) for s in next_shape)
+    if len(prev) != len(nxt):
+        raise ValueError(
+            f"level shapes must have the same number of axes; got {prev} then {nxt}"
+        )
+    factors: dict[int, int] = {}
+    for i, (prev_dim, next_dim) in enumerate(zip(prev, nxt, strict=True)):
+        if next_dim < 1 or next_dim > prev_dim:
+            raise ValueError(
+                f"level shape {nxt} does not downsample {prev} on axis {i}: a "
+                f"level must be positive and no larger than its parent"
+            )
+        factor = prev_dim // next_dim
+        if factor > 1:
+            factors[i] = factor
+    if not factors:
+        return arr
+    # Keyed rather than branched, and keyed off ``geometry`` alone, so every
+    # call for one conversion provably resolves to the same kernel.
+    kernel = _DOWNSAMPLE_KERNELS[geometry.downsample_method]
+    return da.coarsen(kernel, arr, factors, trim_excess=True).astype(arr.dtype)
+
+
 def build_pyramid(
     arr: da.Array,
     level_shapes: Sequence[Sequence[int]],
@@ -359,40 +413,21 @@ def build_pyramid(
     exactly the floor division :func:`compute_level_shapes` predicted.
 
     The returned list always begins with ``arr`` itself.
+
+    This builds the whole pyramid as one lazy graph, which is the right shape
+    for a scene that fits in memory but not for an 80+ GB slide — see
+    :meth:`~zarrmony.writers.scene.ZarrmonyWriter.write_pyramid`, which walks the
+    same level shapes through :func:`downsample_step` one written level at a time
+    (issue #111).
     """
     levels_shapes = [tuple(int(s) for s in shape) for shape in level_shapes]
     if not levels_shapes:
         raise ValueError("build_pyramid needs at least one level shape")
-    # Keyed rather than branched so "which kernel?" is answered once, above the
-    # loop: every level provably gets the same one.
-    kernel = _DOWNSAMPLE_KERNELS[geometry.downsample_method]
 
-    target_dtype = arr.dtype
     levels: list[da.Array] = [arr]
     cur = arr
     for prev_shape, next_shape in zip(levels_shapes, levels_shapes[1:], strict=False):
-        if len(prev_shape) != len(next_shape):
-            raise ValueError(
-                f"level shapes must have the same number of axes; got "
-                f"{prev_shape} then {next_shape}"
-            )
-        factors: dict[int, int] = {}
-        for i, (prev_dim, next_dim) in enumerate(
-            zip(prev_shape, next_shape, strict=True)
-        ):
-            if next_dim < 1 or next_dim > prev_dim:
-                raise ValueError(
-                    f"level shape {next_shape} does not downsample {prev_shape} "
-                    f"on axis {i}: a level must be positive and no larger than "
-                    f"its parent"
-                )
-            factor = prev_dim // next_dim
-            if factor > 1:
-                factors[i] = factor
-        if factors:
-            cur = da.coarsen(kernel, cur, factors, trim_excess=True).astype(
-                target_dtype
-            )
+        cur = downsample_step(cur, prev_shape, next_shape, geometry)
         levels.append(cur)
 
     return levels

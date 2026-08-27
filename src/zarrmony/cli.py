@@ -308,9 +308,10 @@ def _parse_reader_kwargs(
     help=(
         "Data-driven omero display window: per-channel (min, Nth percentile) "
         "computed off the coarsest pyramid level and written into "
-        "omero.channels[i].window.start/end. Fused into the pyramid write so "
-        "raw data is read once. Pass -1 (or use --no-contrast) to disable and "
-        "keep the dtype-range placeholder from issue #50."
+        "omero.channels[i].window.start/end. Read back off the store after "
+        "the pyramid is written, so it costs no raw-pixel read. Pass -1 (or "
+        "use --no-contrast) to disable and keep the dtype-range placeholder "
+        "from issue #50."
     ),
 )
 @click.option(

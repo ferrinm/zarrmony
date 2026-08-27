@@ -80,6 +80,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Gigapixel conversions no longer stall in graph construction.** The writer
+  built every pyramid level as one lazy dask graph and handed the lot to a
+  single `da.compute`, so the coarsest level's graph reached back through every
+  intermediate level to the reader and every level's rechunk was constructed up
+  front. On a 141k × 172k × 4-channel whole-slide scene that graph never
+  finished being *built*: py-spy showed hours inside `Task.__init__`,
+  `blockwise.cull` and `rechunk._compute_rechunk` at ~115 % CPU with almost
+  nothing written, and what did get written cost 4.2× more source reads than
+  the input's own size. `ZarrmonyWriter.write_pyramid` now writes one level at
+  a time, pooling each from the level just written and re-opened off the store,
+  so the graph held at any moment is bounded by a single level's task count and
+  raw pixels are read exactly once, by level 0. Correctness rests on both
+  pooling kernels being exact over a block of any shape, which is why the
+  pyramid could always have been built this way — a level pooled from disk is
+  bit-identical to the same level pooled inside one graph, asserted for `mean`
+  and `max` alike. The cost is reading each written level back once: the
+  pyramid's own bytes, roughly a third of level 0. (#111)
+- **Data-driven contrast no longer blocks the write.** The per-channel min and
+  percentile were fused into the pyramid's single `da.compute` as `extra_ops`,
+  on the theory that sharing a graph meant sharing the chunk reads. Measured
+  against a whole-slide input it did the opposite: a controlled A/B differing
+  only in `contrast_percentile` wrote **0 bytes in 610 s** with contrast on —
+  while reading 200–370 MB/min — against a first chunk at 291 s and 12–38
+  chunks/min with it off. Contrast is now computed after the pyramid is on
+  disk, reading back the coarsest level, which `geometry.coarse_max_bytes`
+  already caps at 64 MiB. Same values, no effect on the write. (#114)
 - **Pyramids build on readers that hand back lazy blocks.**
   `bioio-bioformats` assembles its dask graph out of `LazyBioArray` handles
   rather than materialised arrays. Level 0 wrote fine — zarr only needs
@@ -95,6 +121,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `ZarrmonyWriter.write_pyramid()` takes the **base array** plus a `geometry=`
+  keyword and returns `None`, where it used to take the full list of per-level
+  dask arrays plus `extra_ops=` and return the computed extras. It derives the
+  levels itself now (#111), so the caller no longer builds a lazy pyramid to
+  hand it. The new `read_level(i)` re-opens a written level as a dask array.
+  `build_pyramid()` is unchanged and still the right tool for a scene that fits
+  in memory; the one-step-at-a-time primitive both paths share is the new
+  `writers.pyramid.downsample_step()`. Neither name is exported from the
+  `zarrmony` namespace.
 - `bioio-base` is now a declared dependency rather than an undeclared
   transitive one — `readers/default.py` imports `UnsupportedFileFormatError`
   from it and `bioio` does not re-export it. No resolution change in
