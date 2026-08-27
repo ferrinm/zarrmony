@@ -12,7 +12,11 @@ from click.testing import CliRunner
 from tests.conftest import FakePhysicalPixelSizes, FakeReader
 from zarrmony import api as api_module
 from zarrmony.cli import app
-from zarrmony.geometry import DEFAULT_GEOMETRY
+from zarrmony.geometry import (
+    CHUNK_TARGET_WARN_BYTES,
+    DEFAULT_GEOMETRY,
+    DEFAULT_SHARD_TARGET_BYTES,
+)
 from zarrmony.readers.plugin import ReaderPlugin
 
 
@@ -315,6 +319,234 @@ def test_convert_chunk_target_bytes_is_documented_in_help(runner: CliRunner) -> 
     result = runner.invoke(app, ["convert", "--help"])
     assert result.exit_code == 0
     assert "--chunk-target-bytes" in result.output
+
+
+def test_convert_large_chunk_target_warns_but_succeeds(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A big target is supported; the residency cost is said out loud once.
+
+    ADR-0010's "Follow-up (issue #113)": 8 MiB chunks cut object count 16x and
+    cut Lucida's resident slice-atlas chunks from 121 to 4, a cost paid in a
+    viewer rather than in the conversion. So it warns rather than fails.
+    """
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "out"),
+            "--chunk-target-bytes",
+            str(8 * 1024 * 1024),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Warning" in result.output
+    assert "resident" in result.output
+    # Warned, not overridden — the caller gets the target they asked for.
+    assert captured["geometry"].chunk_target_bytes == 8 * 1024 * 1024
+
+
+def test_convert_default_chunk_target_does_not_warn(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At or below the threshold the flag is silent, including at the boundary."""
+    monkeypatch.setattr(
+        api_module,
+        "convert",
+        lambda **kwargs: {"layout": "per-scene", "stores": []},
+    )
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "out"),
+            "--chunk-target-bytes",
+            str(CHUNK_TARGET_WARN_BYTES),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Warning" not in result.output
+
+
+def test_convert_shard_target_bytes_bare_uses_the_recommended_value(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--shard-target-bytes`` with no value means "the recommended one".
+
+    Smart default plus override: the common case is one word, and a caller who
+    knows what they want still says a number.
+    """
+    captured: dict = {}
+
+    def _fake_convert(**kwargs):
+        captured.update(kwargs)
+        return {"layout": "per-scene", "stores": []}
+
+    monkeypatch.setattr(api_module, "convert", _fake_convert)
+
+    result = runner.invoke(
+        app,
+        ["convert", "/tmp/x.lif", str(tmp_path / "out"), "--shard-target-bytes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["geometry"].shard_target_bytes == DEFAULT_SHARD_TARGET_BYTES
+    assert captured["geometry"].sharding_enabled
+
+    captured.clear()
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "out"),
+            "--shard-target-bytes",
+            str(32 * 1024 * 1024),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["geometry"].shard_target_bytes == 32 * 1024 * 1024
+
+
+def test_convert_sharding_warns_about_codec_chain_consumers(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asking for shards says who cannot read the result.
+
+    Sharding is a codec, so it is invisible to anything reading through a zarr
+    library — and fatal to anything parsing the codec chain itself. That
+    asymmetry is not guessable from the flag name (ADR-0010, issue #117).
+    """
+    monkeypatch.setattr(
+        api_module,
+        "convert",
+        lambda **kwargs: {"layout": "per-scene", "stores": []},
+    )
+    result = runner.invoke(
+        app,
+        ["convert", "/tmp/x.lif", str(tmp_path / "out"), "--shard-target-bytes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Warning" in result.output
+    assert "sharding_indexed" in result.output
+    assert "Lucida" in result.output
+
+
+def test_convert_shard_shape_and_shard_target_bytes_are_exclusive(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 32, 32))
+    patched_reader(reader)
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "out"),
+            "--shard-shape",
+            "1,1,32,32",
+            "--shard-target-bytes",
+            "4096",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_convert_shard_shape_reaches_the_written_store(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """The outer grid is the shard; the read unit is inside the codec.
+
+    Asserting both is the point — a store whose ``chunk_grid`` says 32² and
+    whose sharding codec says 16² reads in 16² units, and a test that looked
+    only at ``chunk_grid`` would report the opposite.
+    """
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCZYX",
+        shape=(1, 1, 8, 128, 128),
+        pixel_sizes=FakePhysicalPixelSizes(Z=4.0, Y=0.5, X=0.5),
+    )
+    patched_reader(reader)
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(out),
+            "--chunk-shape",
+            "1,1,2,32,32",
+            "--shard-shape",
+            "1,1,4,64,64",
+            "--pyramid-min-size",
+            "32",
+            "--no-contrast",
+            "--no-validate",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    array = json.loads((out / "s.ome.zarr" / "0" / "zarr.json").read_text())
+    assert array["chunk_grid"]["configuration"]["chunk_shape"] == [1, 1, 4, 64, 64]
+    assert [c["name"] for c in array["codecs"]] == ["sharding_indexed"]
+    assert array["codecs"][0]["configuration"]["chunk_shape"] == [1, 1, 2, 32, 32]
+
+
+def test_convert_shard_shape_that_does_not_tile_the_chunk_fails_clearly(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    reader = FakeReader(
+        scenes=["s"],
+        dims="TCZYX",
+        shape=(1, 1, 8, 128, 128),
+        pixel_sizes=FakePhysicalPixelSizes(Z=4.0, Y=0.5, X=0.5),
+    )
+    patched_reader(reader)
+
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "out"),
+            "--chunk-shape",
+            "1,1,2,32,32",
+            "--shard-shape",
+            "1,1,4,48,64",
+            "--no-contrast",
+            "--no-validate",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "whole multiple" in str(result.output) + str(result.exception)
+
+
+def test_convert_shard_flags_are_documented_in_help(runner: CliRunner) -> None:
+    result = runner.invoke(app, ["convert", "--help"])
+    assert result.exit_code == 0
+    assert "--shard-target-bytes" in result.output
+    assert "--shard-shape" in result.output
 
 
 def _anisotropic_stack_shapes(store: Path) -> list[list[int]]:

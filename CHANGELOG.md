@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sharding, opt-in and off by default.** `Geometry.shard_target_bytes` /
+  `--shard-target-bytes` and `Geometry.shard_shape` / `--shard-shape` pack
+  whole chunks into larger storage objects, reversing ADR-0010's rejection of
+  the feature. The shard is the write unit and the storage object; the chunk
+  stays the read unit, individually range-readable. That resolves what looked
+  like a trade-off between a conversion that finishes and a store a viewer can
+  use: on a 141k × 172k × 4-channel slide scene, 512 KiB chunks inside 8 MiB
+  shards give level 0 the 8 MiB write unit that took a projected nine days
+  down to 3 h 02 m, the 23,184 objects that run wrote instead of 369,600, and
+  the 512 KiB read unit that fills a viewer's residency budget with 121 chunks
+  instead of 4. Shards are planned per level by the same world-cubic rule as
+  chunks, over whole-chunk multiples, so isotropic data at the defaults gets a
+  `128 × 128 × 256` shard holding 16 chunks of 64³; `--shard-target-bytes`
+  with no value resolves to 8 MiB. **It is off by default because it changes
+  who can read the store.** Every zarr-python 3 consumer is unaffected —
+  napari-ome-zarr, dask, plain `__getitem__` and subsets straddling either
+  grid were verified byte-identical against an unsharded store — but a
+  consumer that parses the codec chain itself sees `sharding_indexed` where it
+  expects `bytes` and refuses to open the array, which today includes
+  `lucida-store`. The CLI warns whenever sharding is on, naming exactly that.
+  (#117)
 - **RGB scenes convert.** Bio-Formats models a colour plane as one *channel*
   of three interleaved *samples* (`C=1, S=3`), but NGFF has no samples axis,
   so `normalize_axes` rejected the sixth dim and zarrmony could not convert
@@ -121,6 +142,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`audit_schema_version` bumps `11 → 12`.** Additive. Each scene / plate
+  field record gains `shard_shapes` — one shard shape per pyramid level,
+  positionally aligned with `level_shapes` and `chunk_shapes`, or `null` for
+  the whole record when sharding is off, which is every default conversion —
+  and `config.geometry` gains `shard_target_bytes` and `shard_shape`. Worth a
+  bump rather than a silent addition because object layout, and whether a
+  consumer needs `sharding_indexed` support to open the store at all, are no
+  longer inferable from `chunk_shapes`. The bump also covers
+  `axis_normalization.rgb_samples_folded` (#107), which landed against 11.
+  Consumers pinned to 11 can widen their pin. (#117)
 - `ZarrmonyWriter.write_pyramid()` takes the **base array** plus a `geometry=`
   keyword and returns `None`, where it used to take the full list of per-level
   dask arrays plus `extra_ops=` and return the computed extras. It derives the

@@ -15,7 +15,12 @@ import xarray as xr
 from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 
 from zarrmony._storage import open_root_group
-from zarrmony.geometry import DEFAULT_GEOMETRY, Geometry, plan_level_chunk_shapes
+from zarrmony.geometry import (
+    DEFAULT_GEOMETRY,
+    Geometry,
+    plan_level_chunk_shapes,
+    plan_level_shard_shapes,
+)
 from zarrmony.transforms import NGFF_AXIS_TYPE, NGFF_AXIS_UNIT, normalize_axes
 from zarrmony.writers.pyramid import (
     coarse_level_index,
@@ -40,6 +45,20 @@ from zarrmony.writers.pyramid import (
 _CONTRAST_METHOD = "coarsest-pyramid-level"
 
 
+def _write_grid(dataset: Any) -> tuple[int, ...]:
+    """The block shape one write to ``dataset`` should cover — shard, else chunk.
+
+    ``zarr.Array.chunks`` is the smallest independently *readable* unit;
+    ``.shards`` is the storage object actually written. They are the same thing
+    only on an unsharded array, and every place this writer reasons about "one
+    unit of work" means the latter. Getting it backwards on a sharded array is
+    correct but pathological: dask blocks land chunk-aligned *inside* shards,
+    so each write read-modify-writes a whole object — 16× write amplification
+    at the default targets, measurably slower even on a toy array.
+    """
+    return tuple(int(s) for s in (dataset.shards or dataset.chunks))
+
+
 class ZarrmonyWriter(OMEZarrWriter):
     """OMEZarrWriter subclass that lets us initialize the on-disk arrays
     separately from writing data, so we can write a pre-computed pyramid.
@@ -53,12 +72,21 @@ class ZarrmonyWriter(OMEZarrWriter):
     def read_level(self, index: int) -> da.Array:
         """Re-open one already-written level as a dask array over the store.
 
-        Chunked on the store's own chunk grid, so a pass over a written level
-        costs one task per chunk and nothing is re-derived from the source
+        Chunked on the store's own *write* grid — the shard where the level has
+        one, the chunk where it does not — so a pass over a written level costs
+        one task per stored object and nothing is re-derived from the source
         reader. Negative indices work as they do on any list.
+
+        The distinction is not cosmetic. ``da.from_zarr`` left to itself adopts
+        ``Array.chunks``, which on a sharded array is the *inner* chunk: a
+        16-chunk shard would produce 16 tasks per object, multiplying this
+        level's task count by the chunks-per-shard ratio and reintroducing
+        #111's symptom on the pyramid's own read-back — the one place we
+        deliberately spend a read.
         """
         self.initialize()
-        return da.from_zarr(self.datasets[index])
+        dataset = self.datasets[index]
+        return da.from_zarr(dataset, chunks=_write_grid(dataset))
 
     def write_pyramid(
         self,
@@ -112,12 +140,19 @@ class ZarrmonyWriter(OMEZarrWriter):
                 src = downsample_step(
                     self.read_level(i - 1), prev.shape, dataset.shape, geometry
                 )
-            tgt_chunks = dataset.chunks
+            tgt_chunks = _write_grid(dataset)
             if src.chunks != tgt_chunks:
                 src = src.rechunk(tgt_chunks)
             if self.zarr_format == 2:
                 da.to_zarr(src, dataset)
             else:
+                # ``lock=True`` is load-bearing under sharding, not tidiness.
+                # On an unsharded array a block maps 1:1 to an object and two
+                # writers never touch the same key. A shard is one object per
+                # many blocks, so where a rechunk leaves a partial shard at an
+                # edge, concurrent writers to it read-modify-write the same key
+                # and lose each other's updates. Do not drop this without
+                # re-reading :func:`_write_grid`.
                 da.store(src, dataset, lock=True)
 
 
@@ -323,7 +358,7 @@ def write_scene(
     """Convert one scene to an OME-Zarr image at ``store_path``.
 
     Returns an audit dict (scene_index/name, dims, level_shapes, chunk_shapes,
-    coarse_level_index, axis_normalization record, channel_count,
+    shard_shapes, coarse_level_index, axis_normalization record, channel_count,
     physical_pixel_size).
 
     ``geometry`` (ADR-0010) carries every output-geometry choice — pyramid
@@ -339,9 +374,12 @@ def write_scene(
     planned per level from that level's own physical voxel spacing
     (:func:`~zarrmony.geometry.plan_level_chunk_shapes`) and recorded under
     ``chunk_shapes``, one entry per level, alongside the ``level_shapes`` they
-    were planned against. ``coarse_level_index`` names which of those levels is
-    the coarse one (``None`` if none reaches the bounds), so the guarantee is
-    checkable in the audit rather than in a viewport. ``downsample_method`` then
+    were planned against. ``shard_shapes`` records the outer grid the same way
+    and is ``None`` — the default — when the policy writes no shards, in which
+    case the chunk is also the storage object. ``coarse_level_index`` names
+    which of those levels is the coarse one (``None`` if none reaches the
+    bounds), so the guarantee is checkable in the audit rather than in a
+    viewport. ``downsample_method`` then
     decides how the pixels of every level above 0 are pooled — mean by default,
     ``"max"`` for sparse labels — uniformly across the pyramid.
 
@@ -427,6 +465,14 @@ def write_scene(
         level_shapes, dims, physical_pixel_size, canonical.dtype, geometry
     )
 
+    # ADR-0010 (#117): ``None`` unless the caller asked for shards, in which
+    # case the chunk stops being an object and becomes purely a read unit. The
+    # planner returns whole multiples of the chunk shapes just planned, so the
+    # two grids nest by construction rather than by the writer's validation.
+    shard_shapes = plan_level_shard_shapes(
+        chunk_shapes, level_shapes, dims, physical_pixel_size, canonical.dtype, geometry
+    )
+
     writer = ZarrmonyWriter(
         store=store_path,
         level_shapes=level_shapes,
@@ -439,6 +485,9 @@ def write_scene(
         axes_units=axes_units,
         physical_pixel_size=physical_pixel_size,
         chunk_shape=[list(c) for c in chunk_shapes],
+        shard_shape=(
+            [list(s) for s in shard_shapes] if shard_shapes is not None else None
+        ),
         creator_info=creator_info,
     )
 
@@ -470,6 +519,9 @@ def write_scene(
         "dims": dims,
         "level_shapes": [list(s) for s in level_shapes],
         "chunk_shapes": [list(c) for c in chunk_shapes],
+        "shard_shapes": (
+            [list(s) for s in shard_shapes] if shard_shapes is not None else None
+        ),
         "coarse_level_index": coarse_index,
         "axis_normalization": axis_record,
         "channel_count": channel_count,

@@ -25,6 +25,7 @@ from zarrmony.errors import (
     UnsupportedFormatError,
 )
 from zarrmony.geometry import (
+    CHUNK_TARGET_WARN_BYTES,
     DEFAULT_CHUNK_TARGET_BYTES,
     DEFAULT_COARSE_MAX_BYTES,
     DEFAULT_COARSE_MAX_LONG_AXIS,
@@ -32,6 +33,7 @@ from zarrmony.geometry import (
     DEFAULT_GEOMETRY,
     DEFAULT_ISOTROPY_TOLERANCE,
     DEFAULT_PYRAMID_MIN_SIZE,
+    DEFAULT_SHARD_TARGET_BYTES,
     Geometry,
 )
 
@@ -64,11 +66,12 @@ def _parse_chunk_shape(
 ) -> tuple[int, ...] | None:
     if value is None:
         return None
+    name = param.name.replace("_", "-") if param.name else "chunk-shape"
     try:
         return tuple(int(x.strip()) for x in value.split(","))
     except ValueError as e:
         raise click.BadParameter(
-            f"chunk-shape must be comma-separated ints (e.g. '1,1,1,512,512'); got {value!r}"
+            f"{name} must be comma-separated ints (e.g. '1,1,1,512,512'); got {value!r}"
         ) from e
 
 
@@ -81,6 +84,8 @@ def _build_geometry(
     coarse_max_long_axis: int | None,
     downsample_method: str | None,
     chunk_shape: tuple[int, ...] | None,
+    shard_target_bytes: int | None,
+    shard_shape: tuple[int, ...] | None,
 ) -> Geometry | None:
     """Fold the geometry flags into one :class:`Geometry`, or ``None``.
 
@@ -95,12 +100,50 @@ def _build_geometry(
     ``--chunk-shape`` bypasses the planner outright, so combining it with
     ``--chunk-target-bytes`` would silently ignore the target; that is an error
     here rather than a surprise discovered on disk.
+
+    A large ``--chunk-target-bytes`` warns rather than fails. It is a supported
+    choice — an archival store read in big sequential sweeps genuinely wants
+    it — but its cost is paid by a viewer months later rather than by the
+    conversion in front of the user, which is the kind of trade that deserves
+    saying out loud once. See :data:`CHUNK_TARGET_WARN_BYTES`.
+
+    The shard flags mirror the chunk pair exactly, including the exclusion, and
+    default to off. Asking for shards also warns, for the opposite reason: the
+    store gets cheaper to write and no harder to read *through a zarr library*,
+    but a consumer that parses the codec chain itself refuses it outright.
     """
-    if chunk_shape is not None and chunk_target_bytes is not None:
-        raise click.BadParameter(
-            "--chunk-shape and --chunk-target-bytes are mutually exclusive; "
-            "--chunk-shape sets the chunk directly, so the byte target the "
-            "planner would aim for is never consulted"
+    for shape_flag, target_flag, shape, target in (
+        ("--chunk-shape", "--chunk-target-bytes", chunk_shape, chunk_target_bytes),
+        ("--shard-shape", "--shard-target-bytes", shard_shape, shard_target_bytes),
+    ):
+        if shape is not None and target is not None:
+            raise click.BadParameter(
+                f"{shape_flag} and {target_flag} are mutually exclusive; "
+                f"{shape_flag} sets the shape directly, so the byte target the "
+                f"planner would aim for is never consulted"
+            )
+    if shard_target_bytes is not None or shard_shape is not None:
+        click.echo(
+            "Warning: sharding is on. Chunks stay individually readable and "
+            "every zarr-python 3 consumer — napari-ome-zarr, dask, plain "
+            "__getitem__ — is unaffected, but a consumer that parses the codec "
+            "chain itself sees 'sharding_indexed' where it expects 'bytes' and "
+            "refuses the store. Lucida cannot read a sharded store today "
+            "(ADR-0010, issue #117).",
+            err=True,
+        )
+    if chunk_target_bytes is not None and chunk_target_bytes > CHUNK_TARGET_WARN_BYTES:
+        click.echo(
+            f"Warning: --chunk-target-bytes {chunk_target_bytes} is above "
+            f"{CHUNK_TARGET_WARN_BYTES} ({CHUNK_TARGET_WARN_BYTES // 1024} KiB). "
+            "Large chunks cut object count, but a viewer that budgets its "
+            "resident tiles in bytes then holds far fewer of them at once — "
+            "Lucida's 2D slice atlas drops from 121 resident chunks at the "
+            "512 KiB default to 4 at 8 MiB. If object count is what you are "
+            "after, --shard-target-bytes cuts it without touching the read "
+            "unit. Prefer a large chunk only for archival stores read in big "
+            "sequential sweeps.",
+            err=True,
         )
     overrides: dict[str, Any] = {
         name: value
@@ -112,6 +155,8 @@ def _build_geometry(
             ("coarse_max_long_axis", coarse_max_long_axis),
             ("downsample_method", downsample_method),
             ("chunk_shape", chunk_shape),
+            ("shard_target_bytes", shard_target_bytes),
+            ("shard_shape", shard_shape),
         )
         if value is not None
     }
@@ -260,7 +305,10 @@ def _parse_reader_kwargs(
         "Raw (uncompressed) byte target for one chunk. The planner picks the "
         "largest power-of-two chunk that fits and is closest to cubic in "
         "micrometres, per level. Raise it for archival stores read in big "
-        "sequential sweeps; lower it for latency-sensitive interactive viewing."
+        "sequential sweeps; lower it for latency-sensitive interactive "
+        "viewing. Raising it warns: a viewer budgeting resident tiles in "
+        "bytes holds far fewer large ones, and object count is better cut "
+        "with --shard-target-bytes (ADR-0010, issue #113)."
     ),
 )
 @click.option(
@@ -272,6 +320,36 @@ def _parse_reader_kwargs(
         "Bypass the chunk planner with an explicit shape, comma-separated "
         "(e.g. '1,1,1,512,512'). Applied verbatim to every pyramid level; "
         "mutually exclusive with --chunk-target-bytes."
+    ),
+)
+@click.option(
+    "--shard-target-bytes",
+    type=int,
+    is_flag=False,
+    flag_value=str(DEFAULT_SHARD_TARGET_BYTES),
+    default=None,
+    show_default="off (chunks are written as individual objects)",
+    help=(
+        "Pack chunks into shards of about this many raw bytes, so one storage "
+        "object holds many chunks. Pass the flag bare for the recommended "
+        f"{DEFAULT_SHARD_TARGET_BYTES // (1024 * 1024)} MiB. This cuts object "
+        "count and speeds up writes without coarsening reads: the chunk stays "
+        "the unit a viewer fetches and budgets by, and is range-read out of "
+        "the shard. Off by default because a consumer that parses the codec "
+        "chain rather than using a zarr library cannot open a sharded store — "
+        "Lucida cannot today (ADR-0010, issue #117)."
+    ),
+)
+@click.option(
+    "--shard-shape",
+    callback=_parse_chunk_shape,
+    default=None,
+    metavar="T,C,Z,Y,X",
+    help=(
+        "Bypass the shard planner with an explicit shape, comma-separated "
+        "(e.g. '1,1,1,2048,2048'). Must be a whole multiple of each level's "
+        "chunk shape on every axis; mutually exclusive with "
+        "--shard-target-bytes, and enables sharding on its own."
     ),
 )
 @click.option(
@@ -398,6 +476,8 @@ def convert_cmd(
     downsample_method: str | None,
     chunk_target_bytes: int | None,
     chunk_shape: tuple[int, ...] | None,
+    shard_target_bytes: int | None,
+    shard_shape: tuple[int, ...] | None,
     contrast_percentile: float,
     no_contrast: bool,
     force: bool,
@@ -430,6 +510,8 @@ def convert_cmd(
         coarse_max_long_axis=coarse_max_long_axis,
         downsample_method=downsample_method,
         chunk_shape=chunk_shape,
+        shard_target_bytes=shard_target_bytes,
+        shard_shape=shard_shape,
     )
 
     # --plate NAME is a convenience alias for --reader-kwarg plate=NAME. Merge

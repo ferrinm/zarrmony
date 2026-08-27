@@ -10,15 +10,18 @@ about output geometry stay unambiguous.
 
 **Geometry**:
 The set of choices that fix an output store's shape rather than its content —
-how many pyramid levels there are, what each level's extent is, and how each
-level is divided into chunks. Distinct from metadata, which describes the
-content, and from the pixels themselves.
+how many pyramid levels there are, what each level's extent is, how each level
+is divided into chunks, and whether those chunks are grouped into shards.
+Distinct from metadata, which describes the content, and from the pixels
+themselves.
 _Avoid_: layout (reserved for per-scene / plate / bf2raw output structure)
 
 **Chunk**:
-The smallest independently readable unit of an array — one compressed object in
-the store, addressed by its grid coordinate. The unit a viewer fetches, decodes,
-and culls against the camera.
+The smallest independently readable unit of an array, addressed by its grid
+coordinate. The unit a viewer fetches, decodes, culls against the camera, and
+spends its residency budget in. Without a shard a chunk is also one object in
+the store; under a shard it is not — conflating the two is what makes "fewer
+objects" read as "coarser reads".
 _Avoid_: block, tile, brick
 
 **Shard**:
@@ -46,8 +49,11 @@ may contain no such level.
 _Avoid_: overview, thumbnail, lowest level
 
 **Detail level**:
-The pyramid level a viewer inspects at the current camera, held only over the
-region in view rather than whole. Defaults to level `0`.
+The pyramid level a viewer inspects, held only over the region in view rather
+than whole. Nothing in the store fixes which level that is: a viewer may derive
+it from the camera or leave it to the user, and may be pointed at any level.
+How much of it is resident at once is likewise a property of the viewer, not of
+the pyramid. Defaults to level `0`.
 _Avoid_: full-res, native level
 
 **Anisotropy**:

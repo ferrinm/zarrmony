@@ -154,7 +154,15 @@ def test_to_audit_is_json_serializable_and_complete() -> None:
         "pyramid_min_size": 64,
         # JSON has no tuples — the audit records a list.
         "chunk_shape": [1, 1, 64, 64, 64],
+        "shard_target_bytes": None,
+        "shard_shape": None,
     }
+    assert json.loads(json.dumps(record)) == record
+
+
+def test_to_audit_records_an_explicit_shard_shape_as_a_list() -> None:
+    record = Geometry(shard_shape=(1, 1, 256, 256, 256)).to_audit()
+    assert record["shard_shape"] == [1, 1, 256, 256, 256]
     assert json.loads(json.dumps(record)) == record
 
 
