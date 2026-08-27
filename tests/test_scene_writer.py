@@ -420,3 +420,100 @@ def test_stale_caller_channels_are_replaced_after_a_fold(tmp_path) -> None:
     g = zarr.open_group(str(out), mode="r")
     labels = [c["label"] for c in g.attrs["ome"]["omero"]["channels"]]
     assert labels == ["Red", "Green", "Blue"]
+
+
+# --- lazy reader blocks ------------------------------------------------------
+#
+# bioio-bioformats builds its dask graph out of LazyBioArray handles rather
+# than materialised arrays. Level 0 writes fine (zarr only needs __array__),
+# but dask.array.coarsen calls .reshape on every block, so the pyramid dies.
+
+
+class _LazyBlock:
+    """Stand-in for bioio-bioformats' ``LazyBioArray``.
+
+    Exposes ``__array__``, ``shape``, ``dtype``, ``ndim`` and ``__getitem__``
+    — enough for dask to keep it as the array's ``_meta`` and for zarr's
+    level-0 write to succeed, while ``coarsen`` and the contrast pass fail on
+    the missing ``.reshape`` / ``.mean``. ``__getitem__`` matters: without it
+    dask's ``meta_from_array`` cannot slice the prototype and silently
+    substitutes an ndarray meta, which would hide the very thing under test.
+    """
+
+    def __init__(self, arr: np.ndarray) -> None:
+        self._arr = arr
+        self.shape = arr.shape
+        self.dtype = arr.dtype
+        self.ndim = arr.ndim
+
+    def __array__(self, dtype=None, copy=None):
+        return self._arr if dtype is None else self._arr.astype(dtype)
+
+    def __getitem__(self, key):
+        return _LazyBlock(self._arr[key])
+
+    def astype(self, dtype, **kwargs):
+        return _LazyBlock(self._arr.astype(dtype))
+
+
+def _lazy_backed_xarr(shape, dims, chunks):
+    """A dask-backed DataArray whose blocks are ``_LazyBlock``, like bioio's."""
+    n = int(np.prod(shape))
+    arr = (np.arange(n, dtype=np.uint16) % 4096).reshape(shape)
+    lazy = da.from_array(arr, chunks=chunks).map_blocks(
+        _LazyBlock, dtype=arr.dtype, meta=_LazyBlock(np.empty((0,) * len(shape)))
+    )
+    return xr.DataArray(lazy, dims=list(dims))
+
+
+def test_lazy_reader_blocks_do_not_break_the_pyramid(tmp_path) -> None:
+    reader = FakeReader(scenes=["overview"], dims="TCYX", shape=(1, 1, 128, 128))
+    out = tmp_path / "lazy.zarr"
+
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        xarr_override=_lazy_backed_xarr((1, 1, 128, 128), "TCYX", (1, 1, 64, 64)),
+        geometry=Geometry(pyramid_min_size=64),
+    )
+
+    # More than one level is the whole point: level 0 wrote before this fix.
+    assert len(audit["level_shapes"]) > 1
+    g = zarr.open_group(str(out), mode="r")
+    assert g["0"].shape == (1, 1, 128, 128)
+    assert g["1"].shape == (1, 1, 64, 64)
+
+
+def test_lazy_blocks_write_the_right_pixels(tmp_path) -> None:
+    shape = (1, 1, 64, 64)
+    expected = (np.arange(int(np.prod(shape)), dtype=np.uint16) % 4096).reshape(shape)
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=shape)
+    out = tmp_path / "lazypx.zarr"
+
+    write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        xarr_override=_lazy_backed_xarr(shape, "TCYX", (1, 1, 32, 32)),
+        geometry=Geometry(pyramid_min_size=64),
+    )
+
+    g = zarr.open_group(str(out), mode="r")
+    assert np.array_equal(g["0"][:], expected)
+
+
+def test_ndarray_backed_readers_keep_their_graph(tmp_path) -> None:
+    """The coercion must be a no-op for every other reader — otherwise it adds
+    a graph layer to inputs that never needed one.
+    """
+    from zarrmony.writers.scene import _ensure_ndarray_blocks
+
+    plain = xr.DataArray(
+        da.zeros((1, 1, 32, 32), chunks=(1, 1, 16, 16), dtype=np.uint16),
+        dims=["T", "C", "Y", "X"],
+    )
+    assert _ensure_ndarray_blocks(plain) is plain
+
+    numpy_backed = xr.DataArray(np.zeros((4, 4), np.uint16), dims=["Y", "X"])
+    assert _ensure_ndarray_blocks(numpy_backed) is numpy_backed
