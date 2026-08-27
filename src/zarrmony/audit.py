@@ -31,6 +31,17 @@ from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
+# 12: adds per-scene / per-field ``shard_shapes`` — one shard shape per pyramid
+#    level, positionally aligned with ``level_shapes`` and ``chunk_shapes``, or
+#    ``null`` for the whole record when sharding is off (the default, so most
+#    stores). ``config.geometry`` gains the two fields that turn it on,
+#    ``shard_target_bytes`` and ``shard_shape``. A shard is the write unit and
+#    the storage object where the chunk is the read unit, so a consumer cannot
+#    infer object layout — or whether it needs ``sharding_indexed`` support to
+#    open the store at all — from ``chunk_shapes`` alone (ADR-0010 follow-up
+#    #117). Also covers ``axis_normalization.rgb_samples_folded``, which landed
+#    against 11 unreleased (#107). Purely additive: consumers pinned to 11 can
+#    widen their pin. (#117)
 # 11: adds per-scene / per-field ``coarse_level_index`` — the index into that
 #    record's ``level_shapes`` of the coarsest-tier level a viewer can hold
 #    whole (ADR-0010: decoded Z*Y*X*itemsize per (t, c) within
@@ -83,7 +94,7 @@ from zarrmony.readers.plugin import ReaderPlugin
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
-AUDIT_SCHEMA_VERSION = 11
+AUDIT_SCHEMA_VERSION = 12
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:

@@ -13,10 +13,19 @@ that folds into a :class:`Geometry` (see :func:`resolve_geometry`), so callers
 written against the pre-ADR-0010 API keep working unchanged.
 
 This module also owns the **chunk planner** (:func:`plan_chunk_shape` /
-:func:`plan_level_chunk_shapes`) that consumes ``chunk_target_bytes``, and the
-per-level spacing helper (:func:`spacings_for_level`) it is built on. Chunking
-is a geometry choice — "how each level is divided into chunks" — so it lives
-beside the policy that governs it rather than in a writer.
+:func:`plan_level_chunk_shapes`) that consumes ``chunk_target_bytes``, the
+**shard planner** (:func:`plan_shard_shape` / :func:`plan_level_shard_shapes`)
+that consumes ``shard_target_bytes``, and the per-level spacing helper
+(:func:`spacings_for_level`) both are built on. Chunking is a geometry choice —
+"how each level is divided into chunks" — so it lives beside the policy that
+governs it rather than in a writer.
+
+The two planners run the same rule (:func:`_best_spatial_combo`) over different
+candidate sets, which is the whole point: a shard is the shape a chunk would
+have been at the larger target, and it is *how many objects exist* rather than
+*how finely the array can be read*. Sharding is off unless asked for
+(``shard_target_bytes=None``), so an unsharded conversion is byte-identical to
+a pre-#117 one.
 
 ``isotropy_tolerance``, ``axis_floor``, ``pyramid_min_size`` and the two
 ``coarse_max_*`` bounds are consumed by the anisotropy-aware pyramid rule
@@ -58,6 +67,23 @@ DownsampleMethod = Literal["mean", "max"]
 # gives 2.3–4.2x, so 512 KiB raw lands at ~150–220 KiB compressed. On the other
 # side an 8 MB decoded per-frame upload budget admits 16 such chunks.
 DEFAULT_CHUNK_TARGET_BYTES = 512 * 1024
+# Raising the target past this is supported but warned about, because the cost
+# lands in a viewer rather than in the conversion. A consumer that sizes a
+# fixed-byte residency pool in units of the chunk shape holds fewer chunks as
+# the chunk grows, and not merely proportionally: Lucida's 2D slice atlas packs
+# a square slot grid, ``floor(sqrt(budget / chunk_bytes))**2``, so its 64 MB
+# budget holds 121 resident chunks at the 512 KiB default and 4 at 8 MiB. The
+# square floor is what makes the fall-off abrupt rather than gradual. See
+# ADR-0010, "Follow-up (issue #113)".
+CHUNK_TARGET_WARN_BYTES = 2 * 1024 * 1024
+# What ``--shard-target-bytes`` resolves to when asked for without a value. NOT
+# a field default: ``Geometry.shard_target_bytes`` defaults to ``None`` and
+# sharding is off unless a caller says otherwise (ADR-0010, issue #117). 8 MiB
+# is the write unit that took a whole-slide scene from a projected nine days to
+# 3 h 02 m, and it holds 16 chunks of the 512 KiB default — so a sharded store
+# writes in the units that made that run finish while still being read in the
+# units a viewer budgets by.
+DEFAULT_SHARD_TARGET_BYTES = 8 * 1024 * 1024
 # An axis halves only when its physical spacing is within this factor of the
 # finest axis's, so the pyramid moves toward isotropy and the scarce axis
 # (usually Z) is spent last.
@@ -142,6 +168,16 @@ class Geometry:
         which they win, so no conversion loses a level.
     :param chunk_shape: Explicit per-axis chunk shape that bypasses the
         planner entirely. ``None`` (default) means "plan it".
+    :param shard_target_bytes: Raw byte target for a single *shard* — one
+        storage object holding many chunks. ``None`` (default) writes no
+        shards, and the store is byte-identical to a pre-#117 conversion.
+        Setting it turns the chunk into a pure read unit: the shard becomes
+        what is written and counted as an object, while a viewer still range
+        -reads one ``chunk_target_bytes`` chunk out of it. See
+        :func:`plan_shard_shape`.
+    :param shard_shape: Explicit per-axis shard shape that bypasses the shard
+        planner, and independently enables sharding. Must be a whole multiple
+        of each level's chunk shape on every axis.
     """
 
     chunk_target_bytes: int = DEFAULT_CHUNK_TARGET_BYTES
@@ -152,15 +188,27 @@ class Geometry:
     downsample_method: DownsampleMethod = DEFAULT_DOWNSAMPLE_METHOD
     pyramid_min_size: int = DEFAULT_PYRAMID_MIN_SIZE
     chunk_shape: tuple[int, ...] | None = None
+    shard_target_bytes: int | None = None
+    shard_shape: tuple[int, ...] | None = None
+
+    @property
+    def sharding_enabled(self) -> bool:
+        """Whether this policy writes shards at all.
+
+        Either spelling switches it on, so callers test this rather than one
+        field: ``shard_shape`` alone is a complete instruction and does not
+        need a redundant ``shard_target_bytes`` beside it to take effect.
+        """
+        return self.shard_target_bytes is not None or self.shard_shape is not None
 
     def __post_init__(self) -> None:
         # Normalize before validating so a list/tuple/generator all land as one
         # canonical, hashable, JSON-friendly type. ``object.__setattr__`` is the
         # sanctioned frozen-dataclass escape hatch during __post_init__.
-        if self.chunk_shape is not None and not isinstance(self.chunk_shape, tuple):
-            object.__setattr__(
-                self, "chunk_shape", tuple(int(s) for s in self.chunk_shape)
-            )
+        for field in ("chunk_shape", "shard_shape"):
+            value = getattr(self, field)
+            if value is not None and not isinstance(value, tuple):
+                object.__setattr__(self, field, tuple(int(s) for s in value))
 
         for name in (
             "chunk_target_bytes",
@@ -188,12 +236,39 @@ class Geometry:
                 f"Geometry.downsample_method must be one of "
                 f"{list(_VALID_DOWNSAMPLE_METHODS)}; got {self.downsample_method!r}"
             )
-        if self.chunk_shape is not None and (
-            not self.chunk_shape or any(s < 1 for s in self.chunk_shape)
+        for field in ("chunk_shape", "shard_shape"):
+            value = getattr(self, field)
+            if value is not None and (not value or any(s < 1 for s in value)):
+                raise ValueError(
+                    f"Geometry.{field} must be a non-empty sequence of positive "
+                    f"ints (e.g. (1, 1, 64, 64, 64)); got {value!r}"
+                )
+        if self.shard_target_bytes is not None and (
+            not isinstance(self.shard_target_bytes, int)
+            or isinstance(self.shard_target_bytes, bool)
+            or self.shard_target_bytes < 1
         ):
             raise ValueError(
-                "Geometry.chunk_shape must be a non-empty sequence of positive "
-                f"ints (e.g. (1, 1, 64, 64, 64)); got {self.chunk_shape!r}"
+                "Geometry.shard_target_bytes must be None or a positive int; "
+                f"got {self.shard_target_bytes!r}"
+            )
+        # A shard smaller than the chunk it is meant to contain cannot hold one,
+        # so the planner would return a shard equal to the chunk: a
+        # sharding_indexed array with one chunk per shard, which costs the codec
+        # and loses every consumer that cannot read it while cutting the object
+        # count by nothing. Caught here rather than shrugged off at plan time.
+        # Skipped when chunk_shape is explicit, since chunk_target_bytes is then
+        # never consulted and comparing against it would reject valid pairs;
+        # divisibility still checks that case (see :func:`plan_shard_shape`).
+        if (
+            self.shard_target_bytes is not None
+            and self.chunk_shape is None
+            and self.shard_target_bytes < self.chunk_target_bytes
+        ):
+            raise ValueError(
+                f"Geometry.shard_target_bytes ({self.shard_target_bytes}) is below "
+                f"chunk_target_bytes ({self.chunk_target_bytes}); a shard holds "
+                f"whole chunks, so it cannot be smaller than one"
             )
 
     def to_audit(self) -> dict[str, Any]:
@@ -202,13 +277,13 @@ class Geometry:
         Recorded under ``attrs.zarrmony.config.geometry``, replacing the
         pre-ADR-0010 ``chunk_shape`` / ``pyramid_min_size`` input echo. This is
         the *policy*, not its result: what it produced for a given array lives
-        on each scene / field record as ``level_shapes``, ``chunk_shapes`` and
-        ``coarse_level_index``.
+        on each scene / field record as ``level_shapes``, ``chunk_shapes``,
+        ``shard_shapes`` and ``coarse_level_index``.
         """
         record = asdict(self)
-        record["chunk_shape"] = (
-            list(self.chunk_shape) if self.chunk_shape is not None else None
-        )
+        for field in ("chunk_shape", "shard_shape"):
+            value = getattr(self, field)
+            record[field] = list(value) if value is not None else None
         return record
 
 
@@ -317,6 +392,43 @@ def _axis_candidates(extent: int) -> list[int]:
         size *= 2
 
 
+def _best_spatial_combo(
+    candidates: Sequence[Sequence[int]],
+    spacings: Sequence[float],
+    max_voxels: int,
+) -> tuple[int, ...]:
+    """The largest candidate combination under ``max_voxels``, closest to cubic.
+
+    ADR-0010's shape rule, factored out because both grids obey it: pick the
+    most voxels that fit, break ties toward cubic *in micrometres*, then break
+    remaining ties positionally toward length on the inner (fastest-varying)
+    axis so the answer is deterministic. Only the candidate lists differ — the
+    chunk planner offers powers of two from ``1``, the shard planner offers
+    whole multiples of the chunk — so keeping one scorer is what makes a shard
+    the same shape a chunk would have been at the larger target.
+
+    Falls back to the smallest candidate on every axis when nothing fits, which
+    is ``1`` for chunks and one chunk for shards.
+    """
+    best_key: tuple[int, float, tuple[int, ...]] | None = None
+    best_combo = tuple(axis[0] for axis in candidates)
+    for combo in itertools.product(*candidates):
+        voxels = math.prod(combo)
+        if voxels > max_voxels:
+            continue
+        extents = [
+            length * spacing for length, spacing in zip(combo, spacings, strict=True)
+        ]
+        # Rounded so that two shapes that are equally cubic in exact arithmetic
+        # tie here too, and the positional tie-break — not float noise — picks
+        # between them.
+        cubeness = round(max(extents) / min(extents), 9)
+        key = (voxels, -cubeness, tuple(reversed(combo)))
+        if best_key is None or key > best_key:
+            best_key, best_combo = key, combo
+    return best_combo
+
+
 def plan_chunk_shape(
     level_shape: Sequence[int],
     dims: Sequence[str],
@@ -375,23 +487,7 @@ def plan_chunk_shape(
     spacings = [_safe_spacing(spacings_um[i]) for i in spatial]
     candidates = [_axis_candidates(shape[i]) for i in spatial]
 
-    best_key: tuple[int, float, tuple[int, ...]] | None = None
-    best_combo: tuple[int, ...] = tuple(1 for _ in spatial)
-    for combo in itertools.product(*candidates):
-        voxels = math.prod(combo)
-        if voxels > max_voxels:
-            continue
-        extents = [
-            length * spacing for length, spacing in zip(combo, spacings, strict=True)
-        ]
-        # Rounded so that two shapes that are equally cubic in exact arithmetic
-        # tie here too, and the positional tie-break — not float noise — picks
-        # between them.
-        cubeness = round(max(extents) / min(extents), 9)
-        key = (voxels, -cubeness, tuple(reversed(combo)))
-        if best_key is None or key > best_key:
-            best_key, best_combo = key, combo
-
+    best_combo = _best_spatial_combo(candidates, spacings, max_voxels)
     for axis, length in zip(spatial, best_combo, strict=True):
         chunk[axis] = length
     return tuple(chunk)
@@ -434,7 +530,171 @@ def plan_level_chunk_shapes(
     ]
 
 
+def _shard_axis_candidates(chunk_length: int, extent: int) -> list[int]:
+    """Whole multiples of ``chunk_length``, doubling, up to covering ``extent``.
+
+    A shard must contain a whole number of chunks on every axis — that is what
+    lets its index address them — so the candidate set is the chunk length
+    doubled rather than the powers of two from ``1``. The list stops at the
+    first multiple that covers the axis: a shard longer than the chunks that
+    exist buys nothing, since the trailing chunks are absent rather than
+    padded.
+    """
+    chunk_length = max(1, int(chunk_length))
+    n_chunks = max(1, math.ceil(max(1, int(extent)) / chunk_length))
+    values: list[int] = []
+    multiple = 1
+    while True:
+        values.append(min(multiple, n_chunks) * chunk_length)
+        if multiple >= n_chunks:
+            return values
+        multiple *= 2
+
+
+def plan_shard_shape(
+    chunk_shape: Sequence[int],
+    level_shape: Sequence[int],
+    dims: Sequence[str],
+    spacings_um: Sequence[float],
+    dtype: Any,
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> tuple[int, ...]:
+    """The largest whole-chunk shard under ``shard_target_bytes``, closest to cubic.
+
+    The chunk rule (:func:`plan_chunk_shape`) applied one level up, against a
+    candidate set of whole chunk multiples rather than powers of two from ``1``
+    — same byte-target-then-cubeness scoring, same positional tie-break
+    (:func:`_best_spatial_combo`). On near-isotropic uint16 data at the default
+    targets a 64³ chunk lands in a ``128 × 128 × 256`` shard: 16 chunks per
+    object, 8 MiB.
+
+    That shard is 2:1 rather than cubic, and deliberately so. Filling the byte
+    target comes before cubeness in the shared rule, and 8 MiB of uint16 is
+    4.19 M voxels — 1.6 M short of a 128³ cube and far short of a 256³ one, so
+    the only way to spend the target is to double one axis. Cubeness is what
+    makes a *chunk* cull well against a camera; nothing culls a shard, which is
+    a write unit and an object count. The tie-break then puts the long axis on
+    X, so a shard is also the most contiguous of the equally-good options.
+
+    T and C stay at the chunk's own length, which the chunk rule pins to ``1``.
+    A shard spanning channels would make one write object depend on pixels from
+    two channels, coupling writes that the whole store is otherwise careful to
+    keep independent — and it buys nothing, because a shard's index already
+    lets a reader take one chunk out without the rest.
+
+    An explicit ``geometry.shard_shape`` bypasses this and is validated for
+    divisibility against ``chunk_shape`` instead: a shard that is not a whole
+    multiple of the chunk on every axis is not a shard zarr can write, and
+    saying so here beats a codec-layer error once pixels are moving.
+
+    :param chunk_shape: This level's chunk shape, from :func:`plan_chunk_shape`
+        — the unit the returned shard is a whole multiple of.
+    :param level_shape: This level's extent, one entry per axis.
+    :param dims: Axis names in the same order (e.g. ``"TCZYX"``).
+    :param spacings_um: This level's physical spacing per axis, from
+        :func:`spacings_for_level`.
+    :param dtype: Anything :func:`numpy.dtype` accepts; only ``itemsize`` is used.
+    :param geometry: The policy supplying ``shard_target_bytes`` / ``shard_shape``.
+    """
+    chunk = tuple(int(s) for s in chunk_shape)
+    shape = tuple(int(s) for s in level_shape)
+    if not (len(shape) == len(dims) == len(spacings_um) == len(chunk)):
+        raise ValueError(
+            f"plan_shard_shape needs one entry per axis; got {len(shape)} dims, "
+            f"{len(dims)} axis names, {len(spacings_um)} spacings and "
+            f"{len(chunk)} chunk lengths"
+        )
+
+    if geometry.shard_shape is not None:
+        shard = tuple(int(s) for s in geometry.shard_shape)
+        if len(shard) != len(chunk):
+            raise ValueError(
+                f"Geometry.shard_shape has {len(shard)} axes but the level has "
+                f"{len(chunk)}; got {shard!r} against chunk {chunk!r}"
+            )
+        bad = [
+            (axis, s, c)
+            for axis, (s, c) in enumerate(zip(shard, chunk, strict=True))
+            if s % c
+        ]
+        if bad:
+            detail = ", ".join(
+                f"axis {axis} ({dims[axis]}): shard {s} is not a multiple of chunk {c}"
+                for axis, s, c in bad
+            )
+            raise ValueError(
+                f"Geometry.shard_shape {shard!r} must be a whole multiple of the "
+                f"chunk shape {chunk!r} on every axis — {detail}"
+            )
+        return shard
+
+    if geometry.shard_target_bytes is None:
+        raise ValueError(
+            "plan_shard_shape called with sharding disabled; check "
+            "Geometry.sharding_enabled first"
+        )
+
+    itemsize = max(1, np.dtype(dtype).itemsize)
+    max_voxels = max(1, geometry.shard_target_bytes // itemsize)
+
+    spatial = [i for i, d in enumerate(dims) if d in SPATIAL_AXES]
+    shard = list(chunk)
+    if not spatial:
+        return tuple(shard)
+
+    spacings = [_safe_spacing(spacings_um[i]) for i in spatial]
+    candidates = [_shard_axis_candidates(chunk[i], shape[i]) for i in spatial]
+
+    best_combo = _best_spatial_combo(candidates, spacings, max_voxels)
+    for axis, length in zip(spatial, best_combo, strict=True):
+        shard[axis] = length
+    return tuple(shard)
+
+
+def plan_level_shard_shapes(
+    chunk_shapes: Sequence[Sequence[int]],
+    level_shapes: Sequence[Sequence[int]],
+    dims: Sequence[str],
+    base_spacings: Sequence[float],
+    dtype: Any,
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> list[tuple[int, ...]] | None:
+    """Plan one shard shape per pyramid level, or ``None`` when sharding is off.
+
+    ``None`` rather than a list of "no shard" sentinels, so the caller passes it
+    straight to the writer's ``shard_shape=`` and an unsharded conversion stays
+    byte-identical to a pre-#117 one. Each level is planned against its own
+    spacing and its own chunk, for the same reason chunk planning is per level:
+    a level that halved Y and X but not Z needs a shard that is still cubic in
+    µm *there*.
+    """
+    if not geometry.sharding_enabled:
+        return None
+    levels = [tuple(int(s) for s in shape) for shape in level_shapes]
+    chunks = [tuple(int(s) for s in shape) for shape in chunk_shapes]
+    if len(levels) != len(chunks):
+        raise ValueError(
+            f"plan_level_shard_shapes needs one chunk shape per level; got "
+            f"{len(chunks)} chunk shapes for {len(levels)} levels"
+        )
+    if not levels:
+        raise ValueError("plan_level_shard_shapes needs at least one level shape")
+    base_shape = levels[0]
+    return [
+        plan_shard_shape(
+            chunk,
+            shape,
+            dims,
+            spacings_for_level(base_spacings, base_shape, shape),
+            dtype,
+            geometry,
+        )
+        for chunk, shape in zip(chunks, levels, strict=True)
+    ]
+
+
 __all__ = [
+    "CHUNK_TARGET_WARN_BYTES",
     "DEFAULT_AXIS_FLOOR",
     "DEFAULT_CHUNK_TARGET_BYTES",
     "DEFAULT_COARSE_MAX_BYTES",
@@ -443,11 +703,14 @@ __all__ = [
     "DEFAULT_GEOMETRY",
     "DEFAULT_ISOTROPY_TOLERANCE",
     "DEFAULT_PYRAMID_MIN_SIZE",
+    "DEFAULT_SHARD_TARGET_BYTES",
     "SPATIAL_AXES",
     "DownsampleMethod",
     "Geometry",
     "plan_chunk_shape",
     "plan_level_chunk_shapes",
+    "plan_level_shard_shapes",
+    "plan_shard_shape",
     "resolve_geometry",
     "spacings_for_level",
 ]

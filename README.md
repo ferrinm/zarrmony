@@ -163,12 +163,18 @@ Every field lives on the frozen `zarrmony.Geometry` policy object, passed as
 | `downsample_method`    | `--downsample-method`    | `"mean"`            | Pooling kernel for every level above 0: `mean` or `max`.                                                                                                                                  |
 | `pyramid_min_size`     | `--pyramid-min-size`     | `256`               | Stop halving when the smaller of Y/X would fall below this — a floor on depth, not a cap.                                                                                                 |
 | `chunk_shape`          | `--chunk-shape`          | `None`              | Explicit chunk shape that bypasses the planner outright, so no byte target is consulted. `--chunk-shape` and `--chunk-target-bytes` are rejected together on the CLI.                     |
+| `shard_target_bytes`   | `--shard-target-bytes`   | `None` (off)        | Raw byte target for one shard — the write unit and the storage object. Setting it turns sharding on; the bare flag resolves to 8 MiB. Must be at least `chunk_target_bytes`.              |
+| `shard_shape`          | `--shard-shape`          | `None` (off)        | Explicit shard shape that bypasses the shard planner. Must be a whole multiple of the chunk on every axis. `--shard-shape` and `--shard-target-bytes` are rejected together on the CLI.   |
 
 The two coarse-level bounds are the defaults of the viewer this output is
 tuned for; they are fields rather than constants so a store can be planned for
 a consumer with a different budget.
 
 ```bash
+# Fewer objects, same read granularity: 512 KiB chunks packed into 8 MiB
+# shards. Only for consumers that read sharded zarr v3 — see below.
+zarrmony convert slide.vsi output_dir/ --shard-target-bytes
+
 # Bigger chunks: fewer objects, coarser culling. For object storage where
 # listing cost matters more than round-trip latency.
 zarrmony convert input.czi output_dir/ --chunk-target-bytes 2097152
@@ -193,28 +199,36 @@ object keep working. Passing `geometry=` together with either raises
 `ValueError` rather than silently picking a winner.
 
 The resolved policy is recorded in the audit under `config.geometry`, and what
-it produced is recorded per scene / per field as `level_shapes`, `chunk_shapes`
-and `coarse_level_index` — so "does this store have a level a viewer can hold
-whole?" is answerable from the store's own metadata.
+it produced is recorded per scene / per field as `level_shapes`, `chunk_shapes`,
+`shard_shapes` and `coarse_level_index` — so "does this store have a level a
+viewer can hold whole?" is answerable from the store's own metadata.
 
-### Object count, and why there is no sharding
+### Object count, and sharding
 
 Small chunks trade bytes-per-object for objects. A whole-brain light-sheet
 store goes from 87,048 objects to ~3.2 M (~37×); a 2160² plate field goes from
-4 to 39. That is irrelevant on local disk and is listing time plus per-object
-metadata cost on GCS/S3 — raise `--chunk-target-bytes` if your consumer is
-bandwidth-bound rather than latency-bound.
+4 to 39; a gigapixel slide scene reaches ~370k objects at level 0 alone. On
+local disk that is irrelevant. On GCS/S3 it is listing time plus per-object
+metadata cost, and at slide scale it is also conversion wall-clock — writing in
+512 KiB units is what made one such scene project to nine days.
 
-Sharding would answer this directly — a 256³ shard holding 64 chunks of 64³
-brings that store to ~47k objects, with chunks still individually range-readable
-— and `bioio-ome-zarr` supports the write side today. It is deliberately not
-implemented because the consumer this output is tuned for cannot read it:
-`lucida-store`'s codec-chain parser accepts only `[bytes]` or
-`[bytes, compressor]` and rejects `sharding_indexed`, so a sharded store fails
-to open with `first storage codec must be 'bytes', got 'sharding_indexed'` — an
-error that reads as corruption rather than as an unsupported feature. Shipping
-the flag would ship that trap. Revisit when the reader gains sharded-read
-support; see ADR-0010.
+Sharding answers this without giving up read granularity, because the shard is
+the write unit and the chunk is the read unit. `--shard-target-bytes` packs
+whole chunks into 8 MiB storage objects: that slide scene's level 0 becomes
+512² chunks inside 2048² shards, 369,600 objects down to 23,184, with each
+512 KiB chunk still individually range-readable. Shards are planned by the same
+world-cubic rule as chunks, per level, so an isotropic volume at the defaults
+gets a `128 × 128 × 256` shard holding 16 chunks of 64³.
+
+It is **off by default**, because it changes who can read the store. Chunks
+stay individually readable and every zarr-python 3 consumer is unaffected —
+napari-ome-zarr, dask, plain `__getitem__`, subsets straddling either grid, all
+verified byte-identical against an unsharded store. But a consumer that parses
+the codec chain itself sees `sharding_indexed` where it expects `bytes` and
+refuses the store: `lucida-store` accepts only `[bytes]` or
+`[bytes, compressor]`, so a sharded store fails there with
+`first storage codec must be 'bytes', got 'sharding_indexed'`. The CLI warns
+whenever sharding is on. See ADR-0010 for the measurements and the reversal.
 
 ## Extending zarrmony
 
