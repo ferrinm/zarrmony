@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RGB scenes convert.** Bio-Formats models a colour plane as one *channel*
+  of three interleaved *samples* (`C=1, S=3`), but NGFF has no samples axis,
+  so `normalize_axes` rejected the sixth dim and zarrmony could not convert
+  any RGB image — brightfield scans, and the `label`/`macro` thumbnails that
+  every whole-slide format carries beside its fluorescence scan. Since
+  `convert()` has no scene selector, one 375×504 RGB thumbnail aborted the
+  entire multi-scene conversion with `UnsupportedAxesError`. The new
+  `transforms.fold_samples_axis` turns `S` into `C` before the order check —
+  a rename, not a reshape, so it costs no dask rechunk on a gigapixel scene —
+  and labels the result `Red`/`Green`/`Blue` (`Alpha` for RGBA). Those get
+  the literal primaries rather than the ADR-0007 palette: those five hues
+  encode fluorescence emission bands, and compositing a photograph's red
+  sample in cyan would reproduce the wrong picture. A degenerate `S=1` is
+  dropped instead of folded, and `C>1` with `S>1` raises rather than
+  inventing an ordering. The audit's `axis_normalization` block gains
+  `rgb_samples_folded`, with `input_dims` still showing the reader's own
+  pre-fold dims — the `S` is the only record that the input was in colour.
 - **`bioformats` optional extra** — `pip install "zarrmony[bioformats]"`
   installs `bioio-bioformats`, which the built-in `bioio` catch-all plugin
   then dispatches to with no zarrmony code, unlocking the ~150 vendor

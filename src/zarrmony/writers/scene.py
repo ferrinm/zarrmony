@@ -111,6 +111,24 @@ def _dtype_window(dtype: np.dtype) -> dict[str, int | float]:
     return {"min": lo, "max": hi, "start": lo, "end": hi}
 
 
+def _rgb_sample_channels(n_samples: int, dtype: np.dtype) -> list[Channel]:
+    """Channels for a folded samples axis: the primaries, not the ADR-0007 palette.
+
+    ``_default_channels`` would route these through the emission-band mapping,
+    which has no entry for "Red"/"Green"/"Blue" and would fall through to the
+    colorblind-safe palette — compositing a colour photograph's red sample in
+    cyan. See :func:`zarrmony.metadata.channel_colors.sample_axis_channels`.
+    """
+    from zarrmony.metadata.channel_colors import sample_axis_channels
+
+    labels, colors = sample_axis_channels(n_samples)
+    window = _dtype_window(dtype)
+    return [
+        Channel(label=label, color=color, window=window)
+        for label, color in zip(labels, colors, strict=True)
+    ]
+
+
 def _default_channels(channel_names: Sequence[str], dtype: np.dtype) -> list[Channel]:
     """Emission-band-colored channels for readers that surface no wavelength.
 
@@ -280,6 +298,14 @@ def write_scene(
     canonical, axis_record = normalize_axes(xarr)
     dims = list(canonical.dims)
     base_shape = tuple(int(s) for s in canonical.shape)
+
+    # A folded samples axis invalidates whatever the caller derived: those
+    # channels describe the reader's one pre-fold channel ("Channel:0:0"),
+    # not the primaries C now holds. Overriding here rather than at the
+    # caller keeps every entry point (convert, plate, per-tile) correct,
+    # since all of them come through this function.
+    if axis_record["rgb_samples_folded"]:
+        channels = _rgb_sample_channels(int(canonical.sizes["C"]), canonical.dtype)
 
     # ADR-0010 (#85): level shapes are anisotropy-aware, so they need the
     # scene's physical spacing — an axis halves only while its spacing is within
