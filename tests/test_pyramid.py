@@ -1,6 +1,6 @@
 """Tests for the ADR-0010 anisotropy-aware pyramid (issues #85, #86, #87).
 
-Five concerns, in order:
+Six concerns, in order:
 
 1. :func:`compute_level_shapes` — the shape rule: halve every spatial axis
    whose µm spacing is within ``isotropy_tolerance`` of the finest still-
@@ -12,9 +12,13 @@ Five concerns, in order:
 3. :func:`build_pyramid` — pooling with the coarsen factors read off
    consecutive level shapes, so per-axis-varying and uniform downsampling are
    one code path.
-4. The pooling kernel — ``downsample_method``, mean by default and ``"max"``
+4. :func:`downsample_step` — one level into the next, and the fact that taking
+   the steps over materialised levels gives the same pixels as taking them
+   inside one lazy graph, which is what lets the writer go level-by-level
+   through the store (#111).
+5. The pooling kernel — ``downsample_method``, mean by default and ``"max"``
    for sparse labels, applied to every level rather than to a tier (#87).
-5. That per-axis factors reach the store's ``coordinateTransformations``, which
+6. That per-axis factors reach the store's ``coordinateTransformations``, which
    ``OMEZarrWriter`` derives from the level shapes we hand it, that the coarse
    level's index reaches the audit record, and that the kernel reaches the
    pixels on disk.
@@ -41,6 +45,7 @@ from zarrmony.writers.pyramid import (
     build_pyramid,
     coarse_level_index,
     compute_level_shapes,
+    downsample_step,
     is_coarse_level,
 )
 
@@ -667,6 +672,48 @@ def test_build_pyramid_rejects_a_level_larger_than_its_parent() -> None:
 def test_build_pyramid_needs_at_least_one_level_shape() -> None:
     with pytest.raises(ValueError, match="at least one level"):
         build_pyramid(da.from_array(np.zeros((4, 4), dtype=np.uint16)), [])
+
+
+# ---------- one step at a time (#111) ----------
+
+
+def test_downsample_step_is_the_identity_when_no_axis_shrinks() -> None:
+    """A level pair that only holds T/C fixed pools nothing — and must not add a
+    graph layer that says otherwise."""
+    base_da = da.from_array(np.zeros((1, 2, 4, 4), dtype=np.uint16))
+    assert downsample_step(base_da, (1, 2, 4, 4), (1, 2, 4, 4)) is base_da
+
+
+@pytest.mark.parametrize("method", ["mean", "max"])
+def test_downsample_step_from_a_materialised_level_matches_one_graph(method) -> None:
+    """#111's correctness premise, asserted rather than assumed.
+
+    ``write_pyramid`` pools each level from the *written* one below it, which
+    means the input to every step above 0 has been rounded to the output dtype
+    and re-chunked by the store. If either mattered, a pyramid written
+    level-by-level would drift from one built as a single lazy graph. It does
+    not: both kernels are exact over a block of any shape, and both paths cast
+    back to the source dtype at every level, so the truncation composes
+    identically.
+    """
+    rng = np.random.default_rng(7)
+    source = rng.integers(0, 4096, size=(32, 32), dtype=np.uint16)
+    geometry = Geometry(downsample_method=method)
+    shapes = [(32, 32), (16, 16), (8, 8)]
+
+    one_graph = build_pyramid(da.from_array(source, chunks=(8, 8)), shapes, geometry)
+
+    # Materialise between steps and re-chunk on a different grid, the way a
+    # round trip through the store does.
+    cur = da.from_array(source, chunks=(8, 8))
+    step_by_step = [cur]
+    for prev_shape, next_shape in zip(shapes, shapes[1:], strict=False):
+        pooled = downsample_step(cur, prev_shape, next_shape, geometry).compute()
+        cur = da.from_array(pooled, chunks=(4, 4))
+        step_by_step.append(cur)
+
+    for stepped, fused in zip(step_by_step, one_graph, strict=True):
+        np.testing.assert_array_equal(stepped.compute(), fused.compute())
 
 
 # ---------- the pooling kernel (#87) ----------

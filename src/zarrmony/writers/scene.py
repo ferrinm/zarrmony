@@ -18,18 +18,22 @@ from zarrmony._storage import open_root_group
 from zarrmony.geometry import DEFAULT_GEOMETRY, Geometry, plan_level_chunk_shapes
 from zarrmony.transforms import NGFF_AXIS_TYPE, NGFF_AXIS_UNIT, normalize_axes
 from zarrmony.writers.pyramid import (
-    build_pyramid,
     coarse_level_index,
     compute_level_shapes,
+    downsample_step,
 )
 
 # Approximation label recorded in the audit whenever data-driven contrast runs.
 # The min + percentile are computed off the COARSEST pyramid level rather than
-# the base — the coarse level is derived from the base in the same dask graph,
-# so raw pixels are still read once (piggybacks on the pyramid write pass), and
-# the sort/quantile stays trivially cheap even for 80+ GB inputs. Mean-pooling
-# raises the observed min a hair and blurs the tail slightly; for a viewer
-# auto-contrast default the difference is well below what a human eye reads.
+# the base, and read back off the store after that level has been written — so
+# the pass touches no raw pixels at all, and the level it does read is bounded
+# by ``geometry.coarse_max_bytes`` (64 MiB by default). Until #111 it was fused
+# into the pyramid's single da.compute instead, on the theory that sharing the
+# graph meant sharing the reads; measured, that fusion stalled an 80+ GB slide
+# outright (#114) — 0 bytes written in 10 minutes against 12-38 chunks/min with
+# contrast off. Mean-pooling raises the observed min a hair and blurs the tail
+# slightly; for a viewer auto-contrast default the difference is well below what
+# a human eye reads.
 # Under ``downsample_method="max"`` that level is max-pooled, so the window
 # opens higher — which is the right window for the pyramid actually written,
 # and the audit records the method alongside the resolved bounds either way.
@@ -46,37 +50,75 @@ class ZarrmonyWriter(OMEZarrWriter):
         if not self._initialized:
             self._initialize()
 
-    def write_pyramid(
-        self,
-        level_arrays: Sequence[da.Array],
-        *,
-        extra_ops: Sequence[da.Array] = (),
-    ) -> tuple[Any, ...]:
-        """Write pre-computed per-level dask arrays into the on-disk pyramid.
+    def read_level(self, index: int) -> da.Array:
+        """Re-open one already-written level as a dask array over the store.
 
-        ``extra_ops`` are additional lazy dask values (e.g. per-channel min /
-        percentile) fused into the same ``da.compute`` call so the raw data is
-        read once — the pyramid write and the extras share the underlying
-        chunk reads. Returns a tuple of the computed values for ``extra_ops``
-        in the order they were passed; empty when no extras were provided.
+        Chunked on the store's own chunk grid, so a pass over a written level
+        costs one task per chunk and nothing is re-derived from the source
+        reader. Negative indices work as they do on any list.
         """
         self.initialize()
-        if len(level_arrays) != len(self.datasets):
+        return da.from_zarr(self.datasets[index])
+
+    def write_pyramid(
+        self,
+        base_array: da.Array,
+        *,
+        geometry: Geometry = DEFAULT_GEOMETRY,
+    ) -> None:
+        """Write the pyramid one level at a time, each pooled from the one below.
+
+        Level 0 is written from ``base_array``; every level above it is pooled
+        (:func:`~zarrmony.writers.pyramid.downsample_step`) from the level that
+        was *just written*, re-opened off the store, and written in a
+        ``da.compute`` of its own.
+
+        The alternative — build every level as one lazy graph and hand the lot
+        to a single ``da.compute`` — is what this replaces (issue #111). It does
+        not survive a whole-slide input: on a 141k × 172k × 4ch scene, dask spent
+        hours in ``Task.__init__`` / ``blockwise.cull`` before writing a byte,
+        because the graph for the coarsest level still reaches all the way back
+        through every level to the reader, and every level's rechunk is
+        constructed up front. Writing level-by-level bounds the graph held at any
+        one moment to a single level's task count, and each level above 0 then
+        reads ~a quarter of the chunks the level below wrote instead of
+        re-deriving its pixels from the base — measured at 4.2× read
+        amplification before the change.
+
+        The cost is that each written level is read back once. That is the
+        pyramid's own bytes, not the source's, and it buys the property the old
+        path only appeared to have: raw pixels are read exactly once, by level 0.
+        Correctness rests on both pooling kernels being exact over a block of any
+        shape, so a level pooled from disk is bit-identical to the same level
+        pooled inside one graph — see
+        :data:`~zarrmony.writers.pyramid._DOWNSAMPLE_KERNELS`.
+
+        Per-channel contrast is no longer fusable into the write, since there is
+        no single compute to fuse it into; :func:`write_scene` computes it from
+        :meth:`read_level` after the fact, which is cheaper anyway (issue #114).
+        """
+        self.initialize()
+        declared = tuple(int(s) for s in self.datasets[0].shape)
+        if tuple(int(s) for s in base_array.shape) != declared:
             raise ValueError(
-                f"level_arrays length {len(level_arrays)} does not match "
-                f"declared level_shapes length {len(self.datasets)}"
+                f"base_array shape {tuple(base_array.shape)} does not match the "
+                f"declared level-0 shape {declared}"
             )
-        ops = []
-        for i, arr in enumerate(level_arrays):
-            tgt_chunks = self.datasets[i].chunks
-            src = arr if arr.chunks == tgt_chunks else arr.rechunk(tgt_chunks)
-            if self.zarr_format == 2:
-                ops.append(da.to_zarr(src, self.datasets[i], compute=False))
+        for i, dataset in enumerate(self.datasets):
+            if i == 0:
+                src = base_array
             else:
-                ops.append(da.store(src, self.datasets[i], lock=True, compute=False))
-        n_write = len(ops)
-        results = da.compute(*ops, *extra_ops)
-        return tuple(results[n_write:])
+                prev = self.datasets[i - 1]
+                src = downsample_step(
+                    self.read_level(i - 1), prev.shape, dataset.shape, geometry
+                )
+            tgt_chunks = dataset.chunks
+            if src.chunks != tgt_chunks:
+                src = src.rechunk(tgt_chunks)
+            if self.zarr_format == 2:
+                da.to_zarr(src, dataset)
+            else:
+                da.store(src, dataset, lock=True)
 
 
 def _physical_scales_for_dims(dims: Sequence[str], reader: Any) -> list[float]:
@@ -192,11 +234,14 @@ def _channel_contrast_ops(
 
     Returns a flat list of length ``2 * channel_count``: for channel ``i`` the
     entries live at indices ``2*i`` (min) and ``2*i + 1`` (percentile). Callers
-    thread this list through :meth:`ZarrmonyWriter.write_pyramid`'s
-    ``extra_ops`` so the underlying chunk reads fuse with the pyramid writes,
-    then re-pair the results. Emits nothing (returns ``[]``) when the array
+    ``da.compute`` the list and re-pair the results with
+    :func:`_pair_contrast_results`. Emits nothing (returns ``[]``) when the array
     carries no channel dimension AND ``channel_count`` is zero, so the "no
     omero channels to update" path stays a no-op.
+
+    ``coarse`` is expected to be the *written* coarsest level, read back with
+    :meth:`ZarrmonyWriter.read_level` — one task per stored chunk, over an array
+    the pyramid's own depth rule caps at ``geometry.coarse_max_bytes``.
 
     Percentile is computed via :func:`dask.array.percentile`'s default
     ``internal_method`` — no ``crick`` T-digest dependency — and only on the
@@ -310,8 +355,9 @@ def write_scene(
 
     ``contrast_percentile`` (issue #53) drives data-driven display contrast:
     when set (a float in ``(0, 100)``, typically ``99.9``), per-channel ``(min,
-    percentile)`` values are computed off the coarsest pyramid level — fused
-    into the pyramid dask graph so the raw data is read once — and written into
+    percentile)`` values are computed off the coarsest pyramid level — read back
+    off the store once the pyramid is written, so no raw pixel is touched twice
+    (issue #114) — and written into
     the omero ``window.start`` / ``window.end`` fields, replacing the
     dtype-range placeholders (issue #50). ``None`` skips the extra ops entirely
     and leaves ``start`` / ``end`` matching ``min`` / ``max``. The audit dict
@@ -348,9 +394,6 @@ def write_scene(
     level_shapes = compute_level_shapes(
         base_shape, dims, physical_pixel_size, canonical.dtype, geometry
     )
-    # ADR-0010 (#87): the same level shapes, pooled by whichever kernel the
-    # policy names — mean by default, max for sparse labels.
-    pyramid = build_pyramid(canonical.data, level_shapes, geometry)
 
     # ADR-0010 (#86): which level a viewer can hold whole is the property the
     # depth rule now targets, so record it rather than leaving it to be
@@ -399,20 +442,25 @@ def write_scene(
         creator_info=creator_info,
     )
 
+    # ADR-0010 (#87): the writer pools each level from the one below it with
+    # whichever kernel the policy names — mean by default, max for sparse
+    # labels — writing them one at a time rather than as one graph (#111).
+    writer.write_pyramid(canonical.data, geometry=geometry)
+
     # Only run the extra contrast ops when we actually have channels to update.
     # A scene with no C dim and no `channels` argument has no omero.channels
-    # to rewrite, so there's nothing to compute; skipping keeps the pyramid
-    # write graph unchanged for that case.
+    # to rewrite, so there's nothing to compute. Runs against the written
+    # coarsest level, after the pyramid is on disk (#114).
     run_contrast = contrast_percentile is not None and channel_count > 0
     if run_contrast:
         contrast_ops = _channel_contrast_ops(
-            pyramid[-1], dims, channel_count, float(contrast_percentile)
+            writer.read_level(-1), dims, channel_count, float(contrast_percentile)
         )
-        results = writer.write_pyramid(pyramid, extra_ops=contrast_ops)
-        contrast_stats = _pair_contrast_results(results, channel_count)
+        contrast_stats = _pair_contrast_results(
+            da.compute(*contrast_ops), channel_count
+        )
         _update_omero_window_start_end(store_path, contrast_stats)
     else:
-        writer.write_pyramid(pyramid)
         contrast_stats = []
 
     record = {

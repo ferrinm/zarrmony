@@ -503,6 +503,181 @@ def test_lazy_blocks_write_the_right_pixels(tmp_path) -> None:
     assert np.array_equal(g["0"][:], expected)
 
 
+# ---------- level-by-level writing (#111, #114) ----------
+
+
+def _counting_xarr(shape, dims, chunks, tally):
+    """A dask-backed DataArray that appends to ``tally`` on every block read.
+
+    Stands in for the reader: it is the *source* graph, so counting its block
+    reads counts how many times the conversion goes back to the raw pixels.
+    """
+    base = (np.arange(int(np.prod(shape)), dtype=np.uint16) % 997).reshape(shape)
+
+    def touch(block):
+        tally.append(1)
+        return block
+
+    # ``meta`` given explicitly: dask would otherwise infer it by calling
+    # ``touch`` on a zero-element prototype at graph-construction time, which is
+    # not a read and must not be counted as one.
+    data = da.from_array(base, chunks=chunks).map_blocks(
+        touch, dtype=base.dtype, meta=np.empty((0,) * len(shape), dtype=base.dtype)
+    )
+    return xr.DataArray(data, dims=list(dims)), base
+
+
+def _store_spy(monkeypatch, source_layer: str, tally: list[int]) -> list[dict]:
+    """Record, per ``da.store`` call, what the writer handed the scheduler.
+
+    ``source_layer`` is the reader graph's layer name, so ``reaches_reader``
+    answers the question #111 turns on: does this level's graph still stretch
+    all the way back to the raw pixels?
+    """
+    seen: list[dict] = []
+    real_store = da.store
+
+    def spy(sources, targets, **kwargs):
+        seen.append(
+            {
+                "shape": tuple(int(s) for s in sources.shape),
+                "reaches_reader": any(
+                    str(layer).startswith(source_layer) for layer in sources.dask.layers
+                ),
+                "deferred": kwargs.get("compute", True) is False,
+                "source_reads_before": len(tally),
+            }
+        )
+        return real_store(sources, targets, **kwargs)
+
+    monkeypatch.setattr(da, "store", spy)
+    return seen
+
+
+def test_each_level_is_written_from_the_one_below_it(tmp_path, monkeypatch) -> None:
+    """The #111 restructure, asserted on the graphs the writer actually submits.
+
+    Three properties, and the old single-``da.compute`` pyramid broke all three:
+    it deferred every level (``compute=False``) into one graph, so nothing was
+    written until the last level's graph had been *constructed* — hours in
+    ``Task.__init__`` on a whole-slide input — and that last graph reached back
+    through every intermediate level to the reader. Now each level is its own
+    compute, only level 0 names the reader, and the source is fully read by the
+    time level 1 is submitted.
+
+    Note this checks the graph's *shape*, not throughput: at test scale dask
+    keeps the whole pyramid in memory and reuses level 0's blocks, so the 4.2x
+    read amplification measured in production does not reproduce here. The
+    structure is what the amplification followed from.
+    """
+    shape = (1, 1, 128, 128)
+    tally: list[int] = []
+    xarr, _ = _counting_xarr(shape, "TCYX", (1, 1, 32, 32), tally)
+    seen = _store_spy(monkeypatch, xarr.data.name, tally)
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=shape)
+
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(tmp_path / "onepass.zarr"),
+        xarr_override=xarr,
+        geometry=Geometry(pyramid_min_size=16),
+    )
+
+    assert len(audit["level_shapes"]) >= 3, "need a deep enough pyramid to matter"
+    assert [call["shape"] for call in seen] == [tuple(s) for s in audit["level_shapes"]]
+    assert not any(call["deferred"] for call in seen)
+    assert [call["reaches_reader"] for call in seen] == [True] + [False] * (
+        len(seen) - 1
+    )
+    # 128/32 squared source blocks, all of them consumed by level 0 alone.
+    assert seen[1]["source_reads_before"] == 16
+    assert len(tally) == 16
+
+
+def test_contrast_does_not_send_the_writer_back_to_the_reader(tmp_path) -> None:
+    """#114: contrast used to be fused into the pyramid's single compute, on the
+    theory that sharing a graph meant sharing the reads. It stalled an 80+ GB
+    slide outright — 0 bytes in 10 minutes. Computed off the written coarse
+    level instead, it costs the source nothing: the block count is identical
+    with contrast on and off.
+    """
+    shape = (1, 2, 128, 128)
+    reader = FakeReader(
+        scenes=["s"], dims="TCYX", shape=shape, channel_names=["DAPI", "GFP"]
+    )
+    geometry = Geometry(pyramid_min_size=16)
+
+    off: list[int] = []
+    xarr_off, _ = _counting_xarr(shape, "TCYX", (1, 1, 32, 32), off)
+    write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(tmp_path / "off.zarr"),
+        xarr_override=xarr_off,
+        geometry=geometry,
+        contrast_percentile=None,
+    )
+
+    on: list[int] = []
+    xarr_on, _ = _counting_xarr(shape, "TCYX", (1, 1, 32, 32), on)
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(tmp_path / "on.zarr"),
+        xarr_override=xarr_on,
+        geometry=geometry,
+        contrast_percentile=99.9,
+    )
+
+    assert "contrast" in audit, "the contrast pass has to have actually run"
+    assert len(on) == len(off)
+
+
+def test_written_pyramid_matches_the_lazy_one(tmp_path) -> None:
+    """Pixel-for-pixel: going through the store changes no value."""
+    shape = (1, 1, 64, 64)
+    rng = np.random.default_rng(3)
+    base = rng.integers(0, 4096, size=shape, dtype=np.uint16)
+    xarr = xr.DataArray(
+        da.from_array(base, chunks=(1, 1, 16, 16)), dims=["T", "C", "Y", "X"]
+    )
+    reader = FakeReader(scenes=["s"], dims="TCYX", shape=shape)
+    geometry = Geometry(pyramid_min_size=8)
+
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(tmp_path / "match.zarr"),
+        xarr_override=xarr,
+        geometry=geometry,
+    )
+
+    from zarrmony.writers.pyramid import build_pyramid
+
+    expected = build_pyramid(
+        da.from_array(base, chunks=(1, 1, 16, 16)), audit["level_shapes"], geometry
+    )
+    g = zarr.open_group(str(tmp_path / "match.zarr"), mode="r")
+    for i, level in enumerate(expected):
+        np.testing.assert_array_equal(g[str(i)][:], level.compute())
+
+
+def test_write_pyramid_rejects_a_base_that_is_not_level_zero(tmp_path) -> None:
+    """The old signature took every level and could check the list length; this
+    one derives the levels itself, so level 0's shape is the whole contract."""
+    from zarrmony.writers.scene import ZarrmonyWriter
+
+    writer = ZarrmonyWriter(
+        store=str(tmp_path / "mismatch.zarr"),
+        level_shapes=[(1, 1, 32, 32), (1, 1, 16, 16)],
+        dtype=np.uint16,
+        zarr_format=3,
+    )
+    with pytest.raises(ValueError, match="does not match the declared level-0 shape"):
+        writer.write_pyramid(da.zeros((1, 1, 16, 16), dtype=np.uint16))
+
+
 def test_ndarray_backed_readers_keep_their_graph(tmp_path) -> None:
     """The coercion must be a no-op for every other reader — otherwise it adds
     a graph layer to inputs that never needed one.

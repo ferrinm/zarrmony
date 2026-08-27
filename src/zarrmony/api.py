@@ -772,13 +772,14 @@ def convert(
     ``contrast_percentile`` (issue #53) drives the omero display window's
     ``start``/``end`` fields from actual data instead of the dtype range:
 
-    - ``99.9`` (default) — per-channel ``(min, 99.9th percentile)`` computed
-      from the coarsest pyramid level, fused into the pyramid write's dask
-      graph so raw data is read once. Fixes "everything opens black except
-      the brightest pixel" on uint16 fluorescence stores.
+    - ``99.9`` (default) — per-channel ``(min, 99.9th percentile)`` read back
+      off the coarsest pyramid level once the store is written, so it touches
+      no raw pixel and no more than ``geometry.coarse_max_bytes``. Fixes
+      "everything opens black except the brightest pixel" on uint16
+      fluorescence stores.
     - ``float`` in ``(0, 100)`` — same shape, but at a different percentile.
-    - ``None`` — skip the extra ops; ``start``/``end`` stay pinned to the
-      dtype range (the issue-#50 behavior).
+    - ``None`` — skip the pass; ``start``/``end`` stay pinned to the dtype
+      range (the issue-#50 behavior).
 
     ``channel_colors`` (ADR-0007) governs per-channel display colors:
 
