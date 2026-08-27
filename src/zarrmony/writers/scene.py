@@ -111,6 +111,37 @@ def _dtype_window(dtype: np.dtype) -> dict[str, int | float]:
     return {"min": lo, "max": hi, "start": lo, "end": hi}
 
 
+def _ensure_ndarray_blocks(xarr: xr.DataArray) -> xr.DataArray:
+    """Force a dask array's blocks to be real arrays before the pyramid runs.
+
+    ``bioio-bioformats`` builds its graph out of ``LazyBioArray`` handles
+    rather than materialised arrays, and reports one as the array's ``_meta``.
+    Level 0 still writes, because zarr only needs ``__array__`` — but every
+    level above it goes through :func:`dask.array.coarsen`, which calls
+    ``.reshape`` on each block and dies with ``AttributeError: 'LazyBioArray'
+    object has no attribute 'reshape'``. The same handles break the contrast
+    pass, which needs ``.mean``.
+
+    Gated on the block prototype's capabilities rather than on the reader's
+    identity: a dask array whose blocks cannot reshape is broken for any
+    backend, and readers that already yield ndarrays keep their graph exactly
+    as built. Testing ``_meta`` costs nothing — it is dask's zero-element
+    prototype, so nothing is read to decide this.
+    """
+    data = getattr(xarr, "data", None)
+    if not isinstance(data, da.Array):
+        return xarr
+    meta = getattr(data, "_meta", None)
+    if meta is None or (hasattr(meta, "reshape") and hasattr(meta, "mean")):
+        return xarr
+    coerced = data.map_blocks(
+        np.asarray,
+        dtype=data.dtype,
+        meta=np.empty((0,) * data.ndim, dtype=data.dtype),
+    )
+    return xarr.copy(data=coerced)
+
+
 def _rgb_sample_channels(n_samples: int, dtype: np.dtype) -> list[Channel]:
     """Channels for a folded samples axis: the primaries, not the ADR-0007 palette.
 
@@ -295,6 +326,7 @@ def write_scene(
         getattr(reader, "mosaic_summary", None) if record_mosaic_summary else None
     )
     xarr = xarr_override if xarr_override is not None else reader.xarray_dask_data
+    xarr = _ensure_ndarray_blocks(xarr)
     canonical, axis_record = normalize_axes(xarr)
     dims = list(canonical.dims)
     base_shape = tuple(int(s) for s in canonical.shape)

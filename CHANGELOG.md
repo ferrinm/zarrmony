@@ -78,6 +78,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/references/vsi-acceptance-run.md` is the runbook for the ADR-0011
   acceptance conversion. (#102, #103)
 
+### Fixed
+
+- **Pyramids build on readers that hand back lazy blocks.**
+  `bioio-bioformats` assembles its dask graph out of `LazyBioArray` handles
+  rather than materialised arrays. Level 0 wrote fine — zarr only needs
+  `__array__` — but every level above it goes through `dask.array.coarsen`,
+  which reshapes each block, so the conversion died mid-write with
+  `AttributeError: 'LazyBioArray' object has no attribute 'reshape'` (and the
+  contrast pass hit the same wall needing `.mean`). `write_scene` now maps
+  `np.asarray` over the blocks when the array's `_meta` cannot reshape. The
+  check is on the block prototype's capabilities, not the reader's identity —
+  a dask array whose blocks cannot reshape is broken for any backend — and it
+  reads nothing, so every reader that already yields ndarrays keeps its graph
+  untouched.
+
 ### Changed
 
 - `bioio-base` is now a declared dependency rather than an undeclared
