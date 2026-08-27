@@ -18,6 +18,7 @@ from zarrmony import __version__
 from zarrmony import api as zm_api
 from zarrmony._storage import format_bytes, size_on_disk
 from zarrmony.errors import (
+    InputAccessError,
     OutputExistsError,
     PlateSelectionError,
     ReaderKwargError,
@@ -456,6 +457,7 @@ def convert_cmd(
             reader_kwargs=reader_kwargs,
         )
     except (
+        InputAccessError,
         OutputExistsError,
         PlateSelectionError,
         ReaderKwargError,
@@ -523,7 +525,12 @@ def inspect_cmd(
     """Print scenes, dims, channels, and pixel sizes for INPUT (no conversion)."""
     try:
         info = zm_api.inspect(input_path, reader_kwargs=reader_kwargs)
-    except (PlateSelectionError, ReaderKwargError, UnsupportedFormatError) as e:
+    except (
+        InputAccessError,
+        PlateSelectionError,
+        ReaderKwargError,
+        UnsupportedFormatError,
+    ) as e:
         raise click.ClickException(str(e)) from e
     if as_json:
         click.echo(json.dumps(info, indent=2, default=str))

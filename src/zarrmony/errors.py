@@ -37,9 +37,23 @@ class UnsupportedFormatError(ZarrmonyError):
     Wraps ``bioio``'s ``UnsupportedFileFormatError`` (chained as ``__cause__``)
     to add the zarrmony-level hint that a Bio-Formats-covered vendor format
     may only need ``pip install "zarrmony[bioformats]"`` (ADR-0011). The hint
-    is suppressed — and the original error re-raised untouched — when
-    ``bioio-bioformats`` is already installed, since then it is not the
-    missing piece.
+    is suppressed when ``bioio-bioformats`` is already installed, since then
+    it is not the missing piece; in that case the message instead reports
+    which backends bioio tried and what each one said, because bioio itself
+    discards those failures into a log line and raises a generic "you may
+    need to install an extra format dependency" (see ``readers/default.py``).
+    """
+
+
+class InputAccessError(ZarrmonyError):
+    """The input path exists but the OS will not let zarrmony read it.
+
+    Raised instead of :class:`UnsupportedFormatError` when the post-mortem
+    probe in ``readers/default.py`` finds that the file cannot be opened at
+    all — an unreadable mount, a directory zarrmony may not list, a revoked
+    permission. bioio reports every backend failure as "unsupported format"
+    regardless of cause, so without this the user is told to install a reader
+    for a file no reader could have read.
     """
 
 

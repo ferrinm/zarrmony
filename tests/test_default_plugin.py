@@ -1,12 +1,16 @@
 """Tests for the built-in ``bioio`` catch-all plugin (``readers/default.py``).
 
-Covers the ``reader_kwargs`` passthrough (#101) and the ADR-0011
-``zarrmony[bioformats]`` install hint (#102). ``BioImage`` is monkeypatched
-throughout so nothing here needs a real file or a bioio backend.
+Covers the ``reader_kwargs`` passthrough (#101), the ADR-0011
+``zarrmony[bioformats]`` install hint (#102), and the post-mortem that keeps
+bioio's one-size-fits-all dispatch failure from misdiagnosing an unreadable
+input as a missing reader. ``BioImage`` is monkeypatched throughout so nothing
+here needs a real backend.
 """
 
 from __future__ import annotations
 
+import errno
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +19,11 @@ from bioio_base.exceptions import UnsupportedFileFormatError
 from click.testing import CliRunner
 
 from zarrmony.cli import app
-from zarrmony.errors import ReaderKwargError, UnsupportedFormatError
+from zarrmony.errors import (
+    InputAccessError,
+    ReaderKwargError,
+    UnsupportedFormatError,
+)
 from zarrmony.readers import default as default_mod
 from zarrmony.readers.default import _open_default, default_plugin
 
@@ -178,29 +186,275 @@ def unsupported(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(default_mod, "BioImage", _raise)
 
 
+@pytest.fixture
+def readable_slide(tmp_path: Path) -> Path:
+    """A real, readable file — so the access probe stays out of the way."""
+    slide = tmp_path / "slide.vsi"
+    slide.write_bytes(b"not really a VSI")
+    return slide
+
+
 def test_hint_names_the_bioformats_extra_when_it_is_absent(
-    unsupported: None, monkeypatch: pytest.MonkeyPatch
+    unsupported: None, readable_slide: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(default_mod, "_bioformats_installed", lambda: False)
 
     with pytest.raises(UnsupportedFormatError) as excinfo:
-        _open_default(Path("/tmp/slide.vsi"))
+        _open_default(readable_slide)
 
     message = str(excinfo.value)
-    assert "/tmp/slide.vsi" in message
+    assert str(readable_slide) in message
     assert 'pip install "zarrmony[bioformats]"' in message
     # The bioio original is chained, not swallowed.
     assert isinstance(excinfo.value.__cause__, UnsupportedFileFormatError)
 
 
 def test_hint_suppressed_when_bioformats_is_installed(
-    unsupported: None, monkeypatch: pytest.MonkeyPatch
+    unsupported: None, readable_slide: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Bio-Formats is present and still cannot read it — naming the extra is noise."""
     monkeypatch.setattr(default_mod, "_bioformats_installed", lambda: True)
 
-    with pytest.raises(UnsupportedFileFormatError):
-        _open_default(Path("/tmp/slide.vsi"))
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        _open_default(readable_slide)
+
+    message = str(excinfo.value)
+    assert 'pip install "zarrmony[bioformats]"' not in message
+    assert "bioio-bioformats is installed" in message
+
+
+# --- distinguishing "unreadable" from "unsupported" -------------------------
+
+
+def test_unreadable_input_is_not_reported_as_a_missing_reader(
+    unsupported: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bug this exists for: EPERM must not be advertised as a missing extra.
+
+    bioio raises ``UnsupportedFileFormatError`` for every dispatch failure,
+    including ones where no backend could have succeeded. Telling the user to
+    install a reader for a file the OS will not hand over sends them down a
+    dead end.
+    """
+    slide = tmp_path / "slide.vsi"
+    slide.write_bytes(b"x")
+    monkeypatch.setattr(default_mod, "_bioformats_installed", lambda: False)
+
+    def _deny(*_args: Any, **_kwargs: Any) -> Any:
+        raise PermissionError(errno.EPERM, "Operation not permitted", str(slide))
+
+    monkeypatch.setattr(default_mod, "open", _deny, raising=False)
+
+    with pytest.raises(InputAccessError) as excinfo:
+        _open_default(slide)
+
+    message = str(excinfo.value)
+    assert str(slide) in message
+    assert "Operation not permitted" in message
+    assert "zarrmony[bioformats]" not in message
+
+
+def test_missing_input_says_so(
+    unsupported: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(default_mod, "_bioformats_installed", lambda: False)
+
+    with pytest.raises(InputAccessError) as excinfo:
+        _open_default(tmp_path / "absent.vsi")
+
+    assert "does not exist" in str(excinfo.value)
+
+
+def test_bioios_filenotfound_is_replaced_with_a_legible_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The path a real missing input takes.
+
+    bioio raises ``FileNotFoundError`` before dispatch and stringifies the
+    fsspec protocol tuple into the message ("('file', 'local'):///x.vsi").
+    The CLI takes INPUT as a raw string — remote URLs are legal — so nothing
+    has checked the path before this point.
+    """
+    absent = tmp_path / "absent.vsi"
+
+    def _raise(path: str, **_kwargs: Any) -> Any:
+        raise FileNotFoundError(f"('file', 'local'):///{path}")
+
+    monkeypatch.setattr(default_mod, "BioImage", _raise)
+
+    with pytest.raises(InputAccessError) as excinfo:
+        _open_default(absent)
+
+    assert "does not exist" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+
+
+def test_filenotfound_about_some_other_file_is_left_alone(
+    readable_slide: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A backend missing a *sibling* knows more than our probe does.
+
+    The input is right there and readable, so rewriting the error to say it is
+    missing would be a lie. Multi-file formats hit this whenever a companion
+    file is absent.
+    """
+
+    def _raise(path: str, **_kwargs: Any) -> Any:
+        raise FileNotFoundError("missing companion: slide.ets")
+
+    monkeypatch.setattr(default_mod, "BioImage", _raise)
+
+    with pytest.raises(FileNotFoundError, match="companion"):
+        _open_default(readable_slide)
+
+
+def test_macos_eperm_names_the_privacy_layer(
+    unsupported: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EPERM on macOS is TCC, not the file mode — the fix is a different one."""
+    slide = tmp_path / "slide.vsi"
+    slide.write_bytes(b"x")
+    monkeypatch.setattr(default_mod.sys, "platform", "darwin")
+
+    def _deny(*_args: Any, **_kwargs: Any) -> Any:
+        raise PermissionError(errno.EPERM, "Operation not permitted", str(slide))
+
+    monkeypatch.setattr(default_mod, "open", _deny, raising=False)
+
+    with pytest.raises(InputAccessError) as excinfo:
+        _open_default(slide)
+
+    assert "Full Disk Access" in str(excinfo.value)
+
+
+def test_eacces_does_not_claim_the_macos_privacy_layer(
+    unsupported: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plain mode-bit denial is a plain mode-bit denial, even on macOS."""
+    slide = tmp_path / "slide.vsi"
+    slide.write_bytes(b"x")
+    monkeypatch.setattr(default_mod.sys, "platform", "darwin")
+
+    def _deny(*_args: Any, **_kwargs: Any) -> Any:
+        raise PermissionError(errno.EACCES, "Permission denied", str(slide))
+
+    monkeypatch.setattr(default_mod, "open", _deny, raising=False)
+
+    with pytest.raises(InputAccessError) as excinfo:
+        _open_default(slide)
+
+    message = str(excinfo.value)
+    assert "Permission denied" in message
+    assert "Full Disk Access" not in message
+
+
+def test_directory_inputs_skip_the_readability_probe(
+    unsupported: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bf2raw bundles and Zarr stores are directories — not access failures."""
+    bundle = tmp_path / "bundle.zarr"
+    bundle.mkdir()
+    monkeypatch.setattr(default_mod, "_bioformats_installed", lambda: False)
+
+    with pytest.raises(UnsupportedFormatError):
+        _open_default(bundle)
+
+
+def test_remote_urls_skip_the_readability_probe(
+    unsupported: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``get_reader`` hands us a ``Path`` even for s3://; do not stat it."""
+    monkeypatch.setattr(default_mod, "_bioformats_installed", lambda: False)
+
+    with pytest.raises(UnsupportedFormatError):
+        _open_default(Path("s3://bucket/slide.vsi"))
+
+
+def test_readable_file_in_an_unlistable_directory_is_diagnosed(
+    unsupported: None, readable_slide: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """VSI's failure mode: the .vsi opens, its sibling pyramid cannot be found."""
+    monkeypatch.setattr(default_mod, "_parent_is_unlistable", lambda _p: True)
+
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        _open_default(readable_slide)
+
+    message = str(excinfo.value)
+    assert str(readable_slide.parent) in message
+    assert "multi-file formats" in message
+
+
+def test_parent_listability_probe_reflects_the_filesystem(tmp_path: Path) -> None:
+    slide = tmp_path / "slide.vsi"
+    slide.write_bytes(b"x")
+
+    assert default_mod._parent_is_unlistable(slide) is False
+    assert default_mod._parent_is_unlistable(tmp_path / "gone" / "slide.vsi") is True
+
+
+# --- surfacing what bioio tried and discarded -------------------------------
+
+
+def test_backend_failures_bioio_logs_are_folded_into_the_message(
+    readable_slide: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bioio logs each backend's real error, then raises a generic one.
+
+    Without capturing the log line the user is told "install an extra" when a
+    backend was in fact tried and died for an unrelated reason — the exact
+    case that motivated this: a JVM ``FileNotFoundException`` on an SMB mount.
+    """
+    java_error = (
+        f"Attempted file ({readable_slide}) load with reader: "
+        f"<class 'bioio_bioformats.reader.Reader'> failed with error: "
+        f"java.io.FileNotFoundException: {readable_slide} (Operation not permitted)"
+    )
+
+    def _log_then_raise(path: str, **_kwargs: Any) -> Any:
+        logging.getLogger(default_mod._BIOIO_DISPATCH_LOGGER).warning(java_error)
+        raise UnsupportedFileFormatError("BioImage", path)
+
+    monkeypatch.setattr(default_mod, "BioImage", _log_then_raise)
+    monkeypatch.setattr(default_mod, "_bioformats_installed", lambda: True)
+
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        _open_default(readable_slide)
+
+    message = str(excinfo.value)
+    assert "bioio tried:" in message
+    assert "java.io.FileNotFoundException" in message
+
+
+def test_capture_ignores_other_files_open_concurrently(
+    readable_slide: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bioio logger is process-wide; another file's failure is not ours."""
+
+    def _log_then_raise(path: str, **_kwargs: Any) -> Any:
+        logging.getLogger(default_mod._BIOIO_DISPATCH_LOGGER).warning(
+            "Attempted file (/somewhere/else.czi) load with reader: X failed"
+        )
+        raise UnsupportedFileFormatError("BioImage", path)
+
+    monkeypatch.setattr(default_mod, "BioImage", _log_then_raise)
+
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        _open_default(readable_slide)
+
+    assert "else.czi" not in str(excinfo.value)
+
+
+def test_capture_handler_is_always_removed(
+    unsupported: None, readable_slide: Path
+) -> None:
+    """A handler leaked per failed open would accumulate across a batch run."""
+    logger = logging.getLogger(default_mod._BIOIO_DISPATCH_LOGGER)
+    before = list(logger.handlers)
+
+    with pytest.raises(UnsupportedFormatError):
+        _open_default(readable_slide)
+
+    assert logger.handlers == before
 
 
 def test_bioformats_extra_stays_out_of_all_and_dev() -> None:
