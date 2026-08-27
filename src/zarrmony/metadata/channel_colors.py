@@ -42,6 +42,35 @@ YELLOW = "ffff00"
 MAGENTA = "ff00ff"
 WHITE = "ffffff"
 
+# The primaries, used *only* for a folded samples axis (see
+# ``transforms.fold_samples_axis``) and deliberately outside the palette above.
+# Those five hues encode fluorescence emission bands and are chosen to stay
+# distinguishable for colorblind viewers. An RGB image's samples are not
+# emissions — they are the literal red, green and blue components of a colour
+# photograph, and compositing them in any other hue reproduces the wrong
+# picture. Alpha gets white because it modulates rather than carries colour.
+RED = "ff0000"
+BLUE = "0000ff"
+RGB_SAMPLE_LABELS: tuple[str, ...] = ("Red", "Green", "Blue", "Alpha")
+RGB_SAMPLE_COLORS: tuple[str, ...] = (RED, GREEN, BLUE, WHITE)
+
+
+def sample_axis_channels(n_samples: int) -> tuple[list[str], list[str]]:
+    """``(labels, colors)`` for a samples axis of size ``n_samples``.
+
+    Covers the interleaved layouts Bio-Formats reports as ``S``: 3 (RGB) and 4
+    (RGBA) are the ones that occur in practice, and 2 shows up in the odd
+    two-sample scan. Anything wider is not a colour model we can name, so it
+    degrades to positional labels in white rather than guessing a mapping.
+    """
+    if n_samples <= len(RGB_SAMPLE_LABELS):
+        return (
+            list(RGB_SAMPLE_LABELS[:n_samples]),
+            list(RGB_SAMPLE_COLORS[:n_samples]),
+        )
+    return ([f"S:{i}" for i in range(n_samples)], [WHITE] * n_samples)
+
+
 # Emission-midpoint → color, per the ADR-0007 table. Half-open intervals so
 # exact-boundary emissions (500, 545, 580, 610, 660, 740 nm) land in the upper
 # band. NIR + brightfield/DIC/phase both surface as white (the "no principled

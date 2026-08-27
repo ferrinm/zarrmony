@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 import xarray as xr
 import zarr
+from bioio_ome_zarr.writers import Channel
 
 from tests.conftest import FakePhysicalPixelSizes, FakeReader
 from zarrmony.geometry import Geometry
@@ -321,3 +322,101 @@ def test_write_scene_records_mosaic_summary(tmp_path) -> None:
     )
 
     assert audit["mosaic"] == mosaic
+
+
+# --- RGB scenes --------------------------------------------------------------
+#
+# Bio-Formats reports a colour plane as one channel of three interleaved
+# samples (C=1, S=3). Whole-slide formats carry an RGB `label` and `macro`
+# scene beside the fluorescence scan, and before the fold the first of them
+# aborted the whole conversion with UnsupportedAxesError.
+
+
+def test_write_scene_converts_an_rgb_scene(tmp_path) -> None:
+    reader = FakeReader(
+        scenes=["label"],
+        dims="TCZYXS",
+        shape=(1, 1, 1, 64, 48, 3),
+        dtype=np.uint8,
+        channel_names=["Channel:0:0"],
+    )
+    out = tmp_path / "label.zarr"
+
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        geometry=Geometry(pyramid_min_size=32),
+    )
+
+    assert audit["dims"] == ["T", "C", "Z", "Y", "X"]
+    assert audit["channel_count"] == 3
+    assert audit["axis_normalization"]["rgb_samples_folded"] is True
+    assert audit["axis_normalization"]["input_dims"] == [
+        "T",
+        "C",
+        "Z",
+        "Y",
+        "X",
+        "S",
+    ]
+
+    g = zarr.open_group(str(out), mode="r")
+    assert g["0"].shape == (1, 3, 1, 64, 48)
+
+
+def test_rgb_channels_get_the_primaries_not_the_palette(tmp_path) -> None:
+    """The ADR-0007 palette encodes fluorescence emission bands and has no
+    entry for "Red"/"Green"/"Blue", so routing folded samples through it would
+    composite a colour photograph's red sample in cyan.
+    """
+    reader = FakeReader(
+        scenes=["macro image"],
+        dims="TCZYXS",
+        shape=(1, 1, 1, 32, 32, 3),
+        dtype=np.uint8,
+    )
+    out = tmp_path / "macro.zarr"
+
+    write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        geometry=Geometry(pyramid_min_size=16),
+    )
+
+    g = zarr.open_group(str(out), mode="r")
+    channels = g.attrs["ome"]["omero"]["channels"]
+    assert [c["label"] for c in channels] == ["Red", "Green", "Blue"]
+    assert [c["color"] for c in channels] == ["ff0000", "00ff00", "0000ff"]
+    # uint8 RGB, so the window is the full 8-bit range rather than a placeholder.
+    assert channels[0]["window"]["min"] == 0
+    assert channels[0]["window"]["max"] == 255
+
+
+def test_stale_caller_channels_are_replaced_after_a_fold(tmp_path) -> None:
+    """``api.convert`` derives channels from ``reader.channel_names`` before
+    ``write_scene`` runs, so for an RGB scene it hands us exactly one channel
+    describing the pre-fold state. Writing that against a C of 3 would put a
+    single mislabelled entry in omero.
+    """
+    reader = FakeReader(
+        scenes=["label"],
+        dims="TCZYXS",
+        shape=(1, 1, 1, 32, 32, 3),
+        dtype=np.uint8,
+    )
+    out = tmp_path / "stale.zarr"
+
+    audit = write_scene(
+        reader,
+        scene_index=0,
+        store_path=str(out),
+        channels=[Channel(label="Channel:0:0", color="ffffff", window=None)],
+        geometry=Geometry(pyramid_min_size=16),
+    )
+
+    assert audit["channel_count"] == 3
+    g = zarr.open_group(str(out), mode="r")
+    labels = [c["label"] for c in g.attrs["ome"]["omero"]["channels"]]
+    assert labels == ["Red", "Green", "Blue"]
