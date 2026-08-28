@@ -10,22 +10,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.15.1] - 2026-08-28
 
 Documentation only; no code change, and no reason to upgrade except to read
-the corrected text. 0.15.0 described sharding's benefit in a way that implies
-a measurement that has not been taken.
+the corrected text. 0.15.0 described sharding's benefit in a way that implied
+a measurement nobody had taken. That measurement has since been taken, so
+this release replaces the claim rather than merely qualifying it.
 
 ### Fixed
 
-- **The sharding wall-clock in 0.15.0 was not measured on a sharded store.**
-  The 3 h 02 m figure comes from a whole-slide conversion run at
-  `--chunk-target-bytes 8388608` — 8 MiB *chunks*, no shards, on a pre-#112
-  build. Sharding is expected to reproduce it, because #113 established that
-  the write unit is what the cost scales with, but "expected" is not
-  "measured": **no dataset has been converted with `--shard-target-bytes` or
-  `--shard-shape` on.** What has been exercised is the planner's arithmetic,
-  a 4096² × 2ch synthetic through `ZarrmonyWriter`, and `napari-ome-zarr`
-  read compatibility. The Migration note in 0.15.0 attributed the figure to
-  sharding outright and the Added note read the same way; both now name their
-  provenance. Tracked in #124.
+- **0.15.0's sharding wall-clock was measured with 8 MiB _chunks_, not shards
+  — and the sharded figure is now in hand.** The 3 h 02 m attributed to
+  sharding came from a whole-slide conversion run at
+  `--chunk-target-bytes 8388608`, no shards, on a pre-#112 build. That scene
+  has since been re-converted at 512²-in-2048² on the same host at stock
+  geometry (#124):
+
+  | | 8 MiB chunks, no shards | 512² in 2048² shards |
+  | --- | --- | --- |
+  | wall-clock | 3 h 02 m 00 s | 3 h 04 m 54 s (+1.6 %) |
+  | store size | 139.0 GiB | 138.92 GiB |
+  | objects | 31,634 | 31,634 |
+  | peak RSS | 12.35 GiB | 15.33 GiB |
+  | CPU | 152 % | 177 % |
+
+  So the transfer #113 predicted holds, and the inference is retired: sharding
+  costs 1.6 % of wall-clock for a read unit 16× smaller. The object count
+  landed on the planner's prediction exactly at all ten levels — 31,156 shard
+  objects for the main scene against 493,484 chunks, 15.84× — the
+  `TileAlignmentWarning` count over the whole run was **zero**, and write
+  amplification was 1.0005, which settles the read-modify-write concern
+  ADR-0010 raised against `lock=True`. README and ADR-0010 now carry the
+  measured figures.
+- **0.15.0 also predicted a sharded store would be larger, and it is not.**
+  "512 KiB chunks compress worse than 8 MiB ones" is sound in principle and
+  does not bite at this ratio: the two stores are 88 MB apart on 139 GiB. The
+  prediction is removed from the README and corrected in ADR-0010. Note the
+  scope — that is a 2D scene whose chunk is a 512² plane tile. The volumetric
+  case, whose chunk is a 64³ cube cutting across the axis light-sheet data is
+  most correlated along, is still unmeasured (#126).
+- **`scripts/verify_geometry.py` turns out to be shard-blind in a way the
+  0.15.0 notes understated.** It was known to predict object count from the
+  chunk grid. Run against a real sharded store for the first time, the report
+  **never mentions sharding at all** — no shard shape in the checks, no shard
+  column in the levels table — and every check passes while it prints the
+  unsharded object prediction. Use `--no-object-count` and measure the count
+  directly until #124 lands the fix; do not quote the report as evidence of a
+  store's geometry without saying in the surrounding text that it is sharded.
 - **The reference volume's sharded object count in 0.15.0's Migration note was
   wrong** — "a 256³ shard holding 64 chunks of 64³ … ~47k objects" was the
   pre-implementation illustration from ADR-0010, which #117 had already
@@ -147,9 +175,10 @@ one.
   down to 3 h 02 m, the 23,184 objects that run wrote instead of 369,600, and
   the 512 KiB read unit that fills a viewer's residency budget with 121 chunks
   instead of 4. **Those two figures were measured with 8 MiB _chunks_, not
-  shards** — no dataset has yet been converted with sharding on, and the
-  transfer rests on #113's finding that cost scales with the write unit
-  (#124). Shards are planned per level by the same world-cubic rule as
+  shards** — the transfer rested on #113's finding that cost scales with the
+  write unit, and has since been confirmed directly: the same scene at
+  512²-in-2048² took 3 h 04 m 54 s, +1.6 % (#124, see 0.15.1). Shards are
+  planned per level by the same world-cubic rule as
   chunks, over whole-chunk multiples, so isotropic data at the defaults gets a
   `128 × 128 × 256` shard holding 16 chunks of 64³; `--shard-target-bytes`
   with no value resolves to 8 MiB. **It is off by default because it changes
@@ -463,8 +492,9 @@ comparing them.
   210,345 with every chunk still individually range-readable; the reference
   whole-slide scene's level 0 goes from 369,600 to 23,184. Both are the
   planner's arithmetic. The 8 MiB **write unit** is also what took that scene
-  from a projected nine days to 3 h 02 m — but that run used 8 MiB chunks, and
-  no conversion has yet been measured with sharding on (#124). It stays off by
+  from a projected nine days to 3 h 02 m — that run used 8 MiB chunks, and the
+  sharded re-conversion has since matched it at 3 h 04 m 54 s (#124, see
+  0.15.1). It stays off by
   default because it changes who can read the store: `lucida-store`'s
   codec-chain parser accepts only `[bytes]` or `[bytes, compressor]` and
   rejects `sharding_indexed`, so a sharded store fails to open there with
