@@ -3,7 +3,9 @@
 Every conversion writes ``attrs["zarrmony"]`` at the root of the output store,
 recording: zarrmony version, the winning reader plugin (name, distribution,
 source, version, match score), the input file's path / size / mtime / optional
-SHA256, the ``output`` block declaring the writer's OME-NGFF version (ADR-0008,
+SHA256 — plus the wider file set the reader read, when it can report one, since
+for a multi-file vendor format the named path is an index and describes none of
+the pixels — the ``output`` block declaring the writer's OME-NGFF version (ADR-0008,
 one stable audit path so BigQuery ingest never hardcodes ``"0.5"``), the
 conversion config the user passed (including the resolved ADR-0010 output
 geometry under ``config.geometry``), started/finished timestamps, per-scene
@@ -19,7 +21,7 @@ record's shape changes.
 
 from __future__ import annotations
 
-import hashlib
+from collections.abc import Sequence
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
@@ -28,9 +30,21 @@ from typing import Any
 
 from zarrmony import __version__
 from zarrmony._constants import NGFF_VERSION
+from zarrmony._inputs import file_digest, summarize_used_files
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
+# 14: adds ``input.files`` and ``input.size_is_partial`` — what the reader says
+#    it actually read, when it can say. ``input.size_bytes`` and ``input.sha256``
+#    keep their meaning (the path the user named), which for a multi-file vendor
+#    format is an index: a whole-slide VSI names 4.4 MB of ``.vsi`` beside 37 GB
+#    of ``.ets`` tiles, so both fields described none of the converted data and
+#    nothing in the record said so. ``files`` carries ``count`` / ``size_bytes``
+#    / ``size_human``, a ``paths`` listing capped at 64 with ``listing_truncated``,
+#    and under ``--checksum`` a ``sha256`` manifest digest over the whole set.
+#    ``size_is_partial`` is omitted rather than ``false`` when no reader could
+#    answer — unknown and known-complete are different claims (#116). Purely
+#    additive: consumers pinned to 13 can widen their pin.
 # 13: adds ``config.reader_tile_size`` — the ``(Y, X)`` tile zarrmony asked the
 #    reader for so its blocks would nest in the planned write grid, or ``null``
 #    when it left the reader's own blocking alone (a caller-pinned ``tile_size``,
@@ -103,10 +117,27 @@ from zarrmony.readers.plugin import ReaderPlugin
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
-AUDIT_SCHEMA_VERSION = 13
+AUDIT_SCHEMA_VERSION = 14
 
 
-def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:
+def _file_forensics(
+    path: str | Path,
+    *,
+    checksum: bool = False,
+    used_files: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Size / mtime / optional SHA256 of the input, plus its file set if known.
+
+    ``size_bytes`` and ``sha256`` always describe **the path the user named**.
+    When the reader can report the file set it actually read (``used_files``),
+    the block gains ``files`` — exact count, total bytes, a capped listing and,
+    under ``--checksum``, a manifest digest over the whole set — and
+    ``size_is_partial``, which says outright whether the top-level number
+    covers the data or just an index (#116).
+
+    ``size_is_partial`` is absent, not ``False``, when no reader could answer:
+    unknown and known-complete are different claims.
+    """
     p = Path(path)
     info: dict[str, Any] = {
         "path": str(p.resolve()),
@@ -118,11 +149,11 @@ def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, An
         info["size_human"] = format_bytes(info["size_bytes"])
         info["mtime_iso"] = datetime.fromtimestamp(st.st_mtime).astimezone().isoformat()
         if checksum and p.is_file():
-            h = hashlib.sha256()
-            with open(p, "rb") as f:
-                for chunk in iter(lambda: f.read(2**20), b""):
-                    h.update(chunk)
-            info["sha256"] = h.hexdigest()
+            info["sha256"] = file_digest(p)
+    if used_files:
+        files = summarize_used_files(used_files, checksum=checksum)
+        info["files"] = files
+        info["size_is_partial"] = files["size_bytes"] > info.get("size_bytes", 0)
     return info
 
 
@@ -171,6 +202,7 @@ def build_audit_record(
     plate: dict[str, Any] | None = None,
     metadata_warnings: list[dict[str, Any]] | None = None,
     checksum: bool = False,
+    used_files: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Assemble the audit-record dict written to ``attrs.zarrmony``.
 
@@ -182,6 +214,10 @@ def build_audit_record(
     Per ADR-0004, plate-layout audits use ``fields`` + ``plate`` (and omit
     ``per_scene``); flat-layout audits keep using ``per_scene``. The top-level
     ``layout`` key is the discriminator consumers switch on.
+
+    ``used_files`` is the file set the reader reported reading (see
+    :func:`zarrmony._inputs.reader_used_files`); pass ``None`` when the reader
+    could not say, and the ``input`` block simply omits the file-set keys.
     """
     record: dict[str, Any] = {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
@@ -190,7 +226,7 @@ def build_audit_record(
         "reader_plugin": _reader_plugin_record(
             reader_plugin, match_score, distribution
         ),
-        "input": _file_forensics(input_path, checksum=checksum),
+        "input": _file_forensics(input_path, checksum=checksum, used_files=used_files),
         "output": {"ome_ngff_version": NGFF_VERSION},
         "config": config,
         "conversion_started_at": started_at.isoformat(),

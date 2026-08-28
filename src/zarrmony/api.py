@@ -16,6 +16,7 @@ from ome_types import OME
 from ome_types.model import Image, Pixels, PixelType
 
 from zarrmony import _validate
+from zarrmony._inputs import reader_used_files, summarize_used_files
 from zarrmony._storage import format_bytes, size_on_disk
 from zarrmony.audit import build_audit_record, write_audit_record
 from zarrmony.errors import (
@@ -1006,6 +1007,14 @@ def convert(
             "to keep the plate structure with butt-jointed FOVs."
         )
 
+    # #116: ask the reader what it actually read, once, before any store is
+    # written. For a multi-file vendor format the path the user named is an
+    # index — a whole-slide VSI is 4.4 MB of `.vsi` beside 37 GB of `.ets` —
+    # so `input.size_bytes` and `--checksum` describe none of the pixels
+    # unless the file set is recorded alongside them. `None` when the reader
+    # cannot say, which the audit reports as "unknown" rather than "one file".
+    used_files = reader_used_files(reader)
+
     # Preserve ``channel_colors`` verbatim in the audit config: the caller may
     # have passed a dict, ``None``, or the ADR-0007 ``"source-file"`` sentinel,
     # and downstream audit consumers should be able to distinguish all three.
@@ -1053,6 +1062,7 @@ def convert(
             contrast_percentile=contrast_percentile,
             force=force,
             checksum=checksum,
+            used_files=used_files,
             config=config,
             validate=validate,
             lif_mosaic=lif_mosaic,
@@ -1070,6 +1080,7 @@ def convert(
             contrast_percentile=contrast_percentile,
             force=force,
             checksum=checksum,
+            used_files=used_files,
             config=config,
             validate=validate,
         )
@@ -1085,6 +1096,7 @@ def convert(
         contrast_percentile=contrast_percentile,
         force=force,
         checksum=checksum,
+        used_files=used_files,
         config=config,
         validate=validate,
         lif_mosaic=lif_mosaic,
@@ -1260,6 +1272,7 @@ def _convert_per_scene(
     contrast_percentile: float | None,
     force: bool,
     checksum: bool,
+    used_files: Sequence[str] | None,
     config: dict,
     validate: bool,
     lif_mosaic: LifMosaic = "auto-stitch",
@@ -1306,6 +1319,7 @@ def _convert_per_scene(
                 contrast_percentile=contrast_percentile,
                 force=force,
                 checksum=checksum,
+                used_files=used_files,
                 config=config,
                 validate=validate,
                 source_xml=source_xml,
@@ -1500,6 +1514,7 @@ def _convert_per_scene(
             per_scene=[scene_record],
             metadata_warnings=metadata_warnings,
             checksum=checksum,
+            used_files=used_files,
         )
         audit["validation_warnings"] = validation_findings
         audit["store_path"] = store_path
@@ -1573,6 +1588,7 @@ def _convert_per_tile_scene(
     contrast_percentile: float | None,
     force: bool,
     checksum: bool,
+    used_files: Sequence[str] | None,
     config: dict,
     validate: bool,
     source_xml: str | None,
@@ -1749,6 +1765,7 @@ def _convert_per_tile_scene(
             per_scene=[scene_record],
             metadata_warnings=metadata_warnings,
             checksum=checksum,
+            used_files=used_files,
         )
         audit["validation_warnings"] = validation_findings
         audit["store_path"] = store_path
@@ -1792,6 +1809,7 @@ def _convert_bf2raw(
     contrast_percentile: float | None,
     force: bool,
     checksum: bool,
+    used_files: Sequence[str] | None,
     config: dict,
     validate: bool,
 ) -> dict:
@@ -1879,6 +1897,7 @@ def _convert_bf2raw(
         per_scene=per_scene_records,
         metadata_warnings=metadata_warnings,
         checksum=checksum,
+        used_files=used_files,
     )
     audit["validation_warnings"] = validation_findings
     write_audit_record(output, audit)
@@ -1899,6 +1918,7 @@ def _convert_plate(
     contrast_percentile: float | None,
     force: bool,
     checksum: bool,
+    used_files: Sequence[str] | None,
     config: dict,
     validate: bool,
     lif_mosaic: LifMosaic = "auto-stitch",
@@ -1983,11 +2003,29 @@ def _convert_plate(
         plate=plate_attr,
         metadata_warnings=metadata_warnings,
         checksum=checksum,
+        used_files=used_files,
     )
     audit["validation_warnings"] = validation_findings
     write_audit_record(output, audit)
 
     return audit
+
+
+def _input_files_info(reader: Any, named_bytes: int) -> dict[str, Any]:
+    """``files`` / ``size_is_partial`` for :func:`inspect`, or ``{}`` if unknown.
+
+    ``size_is_partial`` compares bytes, not file counts: a directory input whose
+    members the reader happens to enumerate is still fully described by
+    ``size_bytes``, and only a set that outweighs the named path is partial.
+
+    Never checksums — ``inspect`` is the cheap pre-flight call and hashing a
+    37 GB file set is not what "inspect" promises.
+    """
+    used_files = reader_used_files(reader)
+    if not used_files:
+        return {}
+    files = summarize_used_files(used_files, checksum=False)
+    return {"files": files, "size_is_partial": files["size_bytes"] > named_bytes}
 
 
 def inspect(
@@ -2068,6 +2106,11 @@ def inspect(
         "input_path": str(input_path),
         "size_bytes": input_bytes,
         "size_human": format_bytes(input_bytes),
+        # #116: same honesty as the audit's `input` block. `size_bytes` is the
+        # named path; `files` is what the reader says it will read, when it can
+        # say. Pre-flight is exactly where the difference matters — this is the
+        # number a user divides the output by to sanity-check a conversion.
+        **_input_files_info(reader, input_bytes),
         "reader_plugin": {
             "name": plugin.name,
             "source": plugin.source,

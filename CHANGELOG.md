@@ -101,6 +101,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`input.size_bytes` and `--checksum` no longer describe an index file and
+  call it the input.** Both stat and hash the path handed to `convert`, but for
+  a multi-file vendor format that path holds no pixels: a whole-slide VSI is
+  4.4 MB of `.vsi` beside 37.2 GB of `.ets` tiles in a sibling directory, so
+  the audit reported `Input: 4.4 MB` against `Output: 139.0 GB` and the
+  recorded SHA256 would not have changed if every tile were replaced.
+  zarrmony now asks the reader what it actually read —
+  `IFormatReader.getUsedFiles()`, via `bffile`'s `BioFile.used_files()` — and
+  records `input.files` (`count`, `size_bytes`, a listing capped at 64 with
+  `listing_truncated`) plus `input.size_is_partial`. Under `--checksum`,
+  `input.files.sha256` is a manifest digest over the whole set: SHA256 of
+  sorted `<relpath>\0<file sha256>` lines, relative to the set's common
+  ancestor, so moving a dataset between filers does not change it but adding,
+  renaming or corrupting a member does. `size_bytes` and `sha256` keep their
+  old meaning — the named path — so nothing pinned to schema 13 reads a
+  different quantity under an old key. Both new keys are **absent**, not
+  `false`, when no reader could report a file set: unknown and known-complete
+  are different claims. `inspect` reports the same block and never hashes it,
+  and the CLI's `Input:` / `Size:` lines now read
+  `37.2 GB across 6 files (the named path alone is 4.4 MB)`. (#116)
 - **Reader tiles now nest in the planned write grid instead of being split
   into it.** Nothing connected the reader's `tile_size` to the geometry the
   ADR-0010 planner picks, so `write_pyramid` absorbed the difference with a
@@ -166,6 +186,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`audit_schema_version` bumps `13 → 14`.** Additive. `input` gains `files`
+  and `size_is_partial` — what the reader says it actually read, when it can
+  say. `input.size_bytes` and `input.sha256` are unchanged and still describe
+  the path the user named. Consumers pinned to 13 can widen their pin, but
+  anything deriving a compression ratio or a "did we convert the whole file"
+  check from `size_bytes` should now branch on `size_is_partial` first. (#116)
 - **`audit_schema_version` bumps `12 → 13`.** Additive. `config` gains
   `reader_tile_size` — the `(Y, X)` tile zarrmony asked the reader for so its
   blocks would nest in the write grid, or `null` when it left the reader's own

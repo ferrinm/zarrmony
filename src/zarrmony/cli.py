@@ -61,6 +61,39 @@ def _format_plate_summary(plate: dict[str, Any]) -> str:
     )
 
 
+def _partial_size_line(named_human: str, files: dict[str, Any] | None) -> str:
+    """A byte count that cannot be mistaken for the whole input (#116).
+
+    A whole-slide VSI stats at 4.4 MB and converts 37 GB, which made the old
+    one-number line read as a 30,000x compression ratio. When the reader
+    reported a wider file set, lead with the number that was actually read and
+    keep the named path's size in parentheses so the two are never confused.
+    """
+    if not files:
+        return named_human
+    noun = "file" if files["count"] == 1 else "files"
+    return (
+        f"{files['size_human']} across {files['count']} {noun} "
+        f"(the named path alone is {named_human})"
+    )
+
+
+def _audit_input_files(result: dict[str, Any]) -> dict[str, Any] | None:
+    """``input.files`` from whichever audit shape ``convert()`` returned.
+
+    Per-scene returns ``{"stores": [audit, ...]}`` — every store's ``input``
+    block is the same, so the first one answers for the run. bf2raw and plate
+    return the single audit itself. ``None`` when the reader could not report
+    a file set, or reported one no wider than the named path.
+    """
+    audit = result["stores"][0] if result.get("stores") else result
+    if not isinstance(audit.get("input"), dict):
+        return None
+    if not audit["input"].get("size_is_partial"):
+        return None
+    return audit["input"].get("files")
+
+
 def _parse_chunk_shape(
     ctx: click.Context, param: click.Parameter, value: str | None
 ) -> tuple[int, ...] | None:
@@ -364,7 +397,13 @@ def _parse_reader_kwargs(
 @click.option(
     "--checksum",
     is_flag=True,
-    help="Include SHA256 of the input file in the audit attrs (slower).",
+    help=(
+        "Include SHA256 of the input in the audit attrs (slower). "
+        "`input.sha256` always covers the path you named. When the reader can "
+        "report the wider file set it read — a .vsi is an index beside its "
+        ".ets tiles — `input.files.sha256` covers the whole set, so hashing "
+        "cost tracks the pixel data rather than the index."
+    ),
 )
 @click.option(
     "--validate/--no-validate",
@@ -569,7 +608,9 @@ def convert_cmd(
         click.echo(f"Wrote {n} {noun} to {output} (bf2raw bundle)", err=True)
         output_bytes = size_on_disk(output)
 
-    click.echo(f"Input:  {format_bytes(size_on_disk(input_path))}", err=True)
+    input_human = format_bytes(size_on_disk(input_path))
+    input_line = _partial_size_line(input_human, _audit_input_files(result))
+    click.echo(f"Input:  {input_line}", err=True)
     click.echo(f"Output: {format_bytes(output_bytes)}", err=True)
 
 
@@ -626,7 +667,8 @@ def inspect_cmd(
     rp = info["reader_plugin"]
     plugin_str = rp["distribution"] or rp["name"]
     click.echo(f"Input:  {info['input_path']}")
-    click.echo(f"Size:   {info['size_human']}")
+    files = info.get("files") if info.get("size_is_partial") else None
+    click.echo(f"Size:   {_partial_size_line(info['size_human'], files)}")
     click.echo(f"Plugin: {plugin_str}")
     if "plates" in info:
         names_str = ", ".join(repr(n) for n in info["plates"])
