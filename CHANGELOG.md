@@ -7,8 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-27
+
+The ADR-0010 output geometry series, start to finish: the policy itself
+(#83–#88) plus the follow-ups it turned up once it met real data (#100–#117).
+zarrmony now plans chunk shapes and pyramid levels itself instead of delegating
+to `bioio-ome-zarr`'s memory-target heuristic; sharding arrives as an opt-in
+answer to the object count that policy costs; and the Bio-Formats extra opens
+the ~150 vendor formats that exercised all of it. A **minor** bump — on-disk
+geometry changes for every new conversion, including plate output, but no API
+breaks. Read the Migration section before comparing a new store against an old
+one.
+
 ### Added
 
+- Frozen `Geometry` policy object (ADR-0010), exported as
+  `zarrmony.Geometry`, carrying every output-geometry choice in one
+  immutable value: `chunk_target_bytes` (512 KiB), `isotropy_tolerance`
+  (1.5), `axis_floor` (32), `coarse_max_bytes` (64 MiB),
+  `coarse_max_long_axis` (2048), `downsample_method` (`"mean"`),
+  `pyramid_min_size` (256) and an explicit `chunk_shape` override
+  (`None`). `convert()` accepts it as `geometry=`, and it is threaded
+  end-to-end through layout dispatch into the per-scene, bf2raw and
+  plate writers — no loose geometry keyword survives in the chain.
+  Values are validated at construction, so a bad policy fails at the
+  call site rather than after a multi-minute read. This slice was
+  behaviour-preserving on its own — the on-disk geometry it produced was
+  byte-identical to v0.14.0 — with the five planner fields plumbed and
+  audited but inert until the ADR-0010 chunk planner and anisotropy-aware
+  pyramid land. (#83)
+- World-cubic chunk planner (ADR-0010). `zarrmony.geometry.plan_chunk_shape()`
+  and `plan_level_chunk_shapes()` pick, for each pyramid level, the largest
+  power-of-two chunk whose raw size fits `chunk_target_bytes` and whose
+  *physical* extents are closest to cubic — cubic in micrometres, not in
+  voxels. Each level is planned against its own µm spacing (derived by
+  the new `spacings_for_level` helper as
+  `spacing_0 × shape_0 / shape_level`), so a level that halved Y and X
+  does not inherit level 0's chunk. Chunks never exceed the level extent,
+  and T and C stay at 1 so a viewer fetching one channel at one timepoint
+  never pays for the others. Near-isotropic uint16 lands on the familiar
+  64³; a 10:1 confocal stack (Z 5 µm, XY 0.5 µm) lands on
+  `1,1,16,128,128` — 80 × 64 × 64 µm — instead of a 64³ that would span
+  320 × 32 × 32 µm. (#84)
+- `zarrmony convert --chunk-target-bytes N` exposes the byte target on the
+  CLI. Mutually exclusive with `--chunk-shape`, which bypasses the planner
+  outright. (#84)
+- Anisotropy-aware pyramid levels (ADR-0010). A level halves every spatial
+  axis whose physical spacing is within `isotropy_tolerance` (1.5) of the
+  finest still-halvable axis's, so levels move *toward* isotropy and the
+  scarce axis — Z, for most volumetric light microscopy — is spent last. On
+  the reference SmartSPIM volume (Z 2.0 / Y 1.8 / X 1.8 µm) every axis is
+  within tolerance, so levels go `(3627,8835,7452) → (1813,4417,3726) →
+  (906,2208,1863) → (453,1104,931) → (226,552,465)` where Z previously stayed
+  at 3627 forever; on a 10:1 confocal stack Y and X halve alone until their
+  spacing has caught up with Z's, taking the coarsest level from 10:1
+  anisotropic to 1.25:1. A per-axis floor of 32 voxels (`axis_floor`) applies:
+  an axis never halves below it, so a 3-plane stack keeps its 3 planes at
+  every level. (#85)
+- `zarrmony convert --isotropy-tolerance F` exposes the tolerance on the CLI.
+  `1.0` halves only exactly-isotropic axes; a large value halves every spatial
+  axis at every level. (#85)
+- Per-scene / per-field audit records gain `chunk_shapes`: one chunk shape
+  per level, positionally aligned with the existing `level_shapes`. (#84)
+- Coarse-level stopping rule (ADR-0010). Pyramid depth is now the **greater**
+  of the `pyramid_min_size` Y/X rule and the depth at which a level becomes a
+  *coarse level* — one a viewer can decode whole and use as spatial context:
+  `Z·Y·X·itemsize ≤ coarse_max_bytes` (64 MiB) per timepoint and channel, and
+  `max(Y, X) ≤ coarse_max_long_axis` (2048). Both `Geometry` fields were
+  present but inert since #83 and are now read. Because depth is a `max()`,
+  the change is monotone — no conversion loses a level — and the per-axis
+  32-voxel floor still holds, so a pyramid that bottoms out while still too
+  large simply has no coarse level. On the reference SmartSPIM volume this
+  adds level 5 at `(113, 276, 232)`: 13.8 MiB per (t,c) with a 276-voxel long
+  axis, where the Y/X rule stopped at level 4's 110 MiB. Both bounds are
+  Lucida's `SourceCoarseConfig` defaults, adopted knowingly. (#86)
+- `zarrmony convert --coarse-max-bytes N` and `--coarse-max-long-axis N`
+  expose both bounds on the CLI, so a store can be planned for a consumer
+  with a different budget. (#86)
+- Per-scene / per-field audit records gain `coarse_level_index`: the index
+  into that record's `level_shapes` of the shallowest coarse level, or `null`
+  when no level reaches the bounds. "Does this store have a level a viewer can
+  hold whole?" is now answerable from the store's own metadata instead of from
+  a viewport. (#86)
+- `Geometry(downsample_method=...)` now selects the pooling kernel every
+  pyramid level above 0 is built with: `"mean"` (unchanged default) or
+  `"max"`. Present but inert since #83; read by `build_pyramid` as of this
+  slice. Mean-pool stays the default and the whole-pyramid answer — it is what
+  the OME-Zarr ecosystem assumes, and max-pool biases every level above 0 high,
+  lifting background toward the noise maximum at high factors. `"max"` exists
+  for sparse-label acquisitions, where mean-pooling dissolves small objects
+  into the background: a 15 µm soma filling 1.6 % of a level-5 voxel
+  mean-pools to 114 against a background of 100, and max-pools to 1000
+  against ~141. Applied **uniformly** to every level — a mean-detail /
+  max-coarse hybrid was rejected because viewers with no coarse/detail concept
+  (napari, vizarr) would show a brightness step at the last level. Both
+  kernels preserve the input dtype. (#87)
+- `zarrmony convert --downsample-method [mean|max]` exposes the kernel on the
+  CLI. (#87)
+- README gains an **Output geometry** section: what the planner does, every
+  `Geometry` field with its default and its CLI flag, what the audit records,
+  the object-count trade, and where sharding does and does not help.
+  (#89, #117)
 - **Sharding, opt-in and off by default.** `Geometry.shard_target_bytes` /
   `--shard-target-bytes` and `Geometry.shard_shape` / `--shard-shape` pack
   whole chunks into larger storage objects, reversing ADR-0010's rejection of
@@ -186,142 +285,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`audit_schema_version` bumps `13 → 14`.** Additive. `input` gains `files`
-  and `size_is_partial` — what the reader says it actually read, when it can
-  say. `input.size_bytes` and `input.sha256` are unchanged and still describe
-  the path the user named. Consumers pinned to 13 can widen their pin, but
-  anything deriving a compression ratio or a "did we convert the whole file"
-  check from `size_bytes` should now branch on `size_is_partial` first. (#116)
-- **`audit_schema_version` bumps `12 → 13`.** Additive. `config` gains
-  `reader_tile_size` — the `(Y, X)` tile zarrmony asked the reader for so its
-  blocks would nest in the write grid, or `null` when it left the reader's own
-  blocking alone. Recorded rather than left to be rediscovered because two runs
-  of the same file produce identical stores and differ only in what they cost.
-  Consumers pinned to 12 can widen their pin. (#112)
-- **`audit_schema_version` bumps `11 → 12`.** Additive. Each scene / plate
-  field record gains `shard_shapes` — one shard shape per pyramid level,
-  positionally aligned with `level_shapes` and `chunk_shapes`, or `null` for
-  the whole record when sharding is off, which is every default conversion —
-  and `config.geometry` gains `shard_target_bytes` and `shard_shape`. Worth a
-  bump rather than a silent addition because object layout, and whether a
-  consumer needs `sharding_indexed` support to open the store at all, are no
-  longer inferable from `chunk_shapes`. The bump also covers
-  `axis_normalization.rgb_samples_folded` (#107), which landed against 11.
-  Consumers pinned to 11 can widen their pin. (#117)
-- `ZarrmonyWriter.write_pyramid()` takes the **base array** plus a `geometry=`
-  keyword and returns `None`, where it used to take the full list of per-level
-  dask arrays plus `extra_ops=` and return the computed extras. It derives the
-  levels itself now (#111), so the caller no longer builds a lazy pyramid to
-  hand it. The new `read_level(i)` re-opens a written level as a dask array.
-  `build_pyramid()` is unchanged and still the right tool for a scene that fits
-  in memory; the one-step-at-a-time primitive both paths share is the new
-  `writers.pyramid.downsample_step()`. Neither name is exported from the
-  `zarrmony` namespace.
-- `bioio-base` is now a declared dependency rather than an undeclared
-  transitive one — `readers/default.py` imports `UnsupportedFileFormatError`
-  from it and `bioio` does not re-export it. No resolution change in
-  practice; `bioio` already required it.
-
-## [0.15.0] - 2026-08-25
-
-The ADR-0010 output geometry series (#83–#88), released together: zarrmony now
-plans chunk shapes and pyramid levels itself instead of delegating to
-`bioio-ome-zarr`'s memory-target heuristic. A **minor** bump — on-disk geometry
-changes for every new conversion, including plate output, but no API breaks.
-Read the Migration section before comparing a new store against an old one.
-
-### Added
-
-- Frozen `Geometry` policy object (ADR-0010), exported as
-  `zarrmony.Geometry`, carrying every output-geometry choice in one
-  immutable value: `chunk_target_bytes` (512 KiB), `isotropy_tolerance`
-  (1.5), `axis_floor` (32), `coarse_max_bytes` (64 MiB),
-  `coarse_max_long_axis` (2048), `downsample_method` (`"mean"`),
-  `pyramid_min_size` (256) and an explicit `chunk_shape` override
-  (`None`). `convert()` accepts it as `geometry=`, and it is threaded
-  end-to-end through layout dispatch into the per-scene, bf2raw and
-  plate writers — no loose geometry keyword survives in the chain.
-  Values are validated at construction, so a bad policy fails at the
-  call site rather than after a multi-minute read. This slice was
-  behaviour-preserving on its own — the on-disk geometry it produced was
-  byte-identical to v0.14.0 — with the five planner fields plumbed and
-  audited but inert until the ADR-0010 chunk planner and anisotropy-aware
-  pyramid land. (#83)
-- World-cubic chunk planner (ADR-0010). `zarrmony.geometry.plan_chunk_shape()`
-  and `plan_level_chunk_shapes()` pick, for each pyramid level, the largest
-  power-of-two chunk whose raw size fits `chunk_target_bytes` and whose
-  *physical* extents are closest to cubic — cubic in micrometres, not in
-  voxels. Each level is planned against its own µm spacing (derived by
-  the new `spacings_for_level` helper as
-  `spacing_0 × shape_0 / shape_level`), so a level that halved Y and X
-  does not inherit level 0's chunk. Chunks never exceed the level extent,
-  and T and C stay at 1 so a viewer fetching one channel at one timepoint
-  never pays for the others. Near-isotropic uint16 lands on the familiar
-  64³; a 10:1 confocal stack (Z 5 µm, XY 0.5 µm) lands on
-  `1,1,16,128,128` — 80 × 64 × 64 µm — instead of a 64³ that would span
-  320 × 32 × 32 µm. (#84)
-- `zarrmony convert --chunk-target-bytes N` exposes the byte target on the
-  CLI. Mutually exclusive with `--chunk-shape`, which bypasses the planner
-  outright. (#84)
-- Anisotropy-aware pyramid levels (ADR-0010). A level halves every spatial
-  axis whose physical spacing is within `isotropy_tolerance` (1.5) of the
-  finest still-halvable axis's, so levels move *toward* isotropy and the
-  scarce axis — Z, for most volumetric light microscopy — is spent last. On
-  the reference SmartSPIM volume (Z 2.0 / Y 1.8 / X 1.8 µm) every axis is
-  within tolerance, so levels go `(3627,8835,7452) → (1813,4417,3726) →
-  (906,2208,1863) → (453,1104,931) → (226,552,465)` where Z previously stayed
-  at 3627 forever; on a 10:1 confocal stack Y and X halve alone until their
-  spacing has caught up with Z's, taking the coarsest level from 10:1
-  anisotropic to 1.25:1. A per-axis floor of 32 voxels (`axis_floor`) applies:
-  an axis never halves below it, so a 3-plane stack keeps its 3 planes at
-  every level. (#85)
-- `zarrmony convert --isotropy-tolerance F` exposes the tolerance on the CLI.
-  `1.0` halves only exactly-isotropic axes; a large value halves every spatial
-  axis at every level. (#85)
-- Per-scene / per-field audit records gain `chunk_shapes`: one chunk shape
-  per level, positionally aligned with the existing `level_shapes`. (#84)
-- Coarse-level stopping rule (ADR-0010). Pyramid depth is now the **greater**
-  of the `pyramid_min_size` Y/X rule and the depth at which a level becomes a
-  *coarse level* — one a viewer can decode whole and use as spatial context:
-  `Z·Y·X·itemsize ≤ coarse_max_bytes` (64 MiB) per timepoint and channel, and
-  `max(Y, X) ≤ coarse_max_long_axis` (2048). Both `Geometry` fields were
-  present but inert since #83 and are now read. Because depth is a `max()`,
-  the change is monotone — no conversion loses a level — and the per-axis
-  32-voxel floor still holds, so a pyramid that bottoms out while still too
-  large simply has no coarse level. On the reference SmartSPIM volume this
-  adds level 5 at `(113, 276, 232)`: 13.8 MiB per (t,c) with a 276-voxel long
-  axis, where the Y/X rule stopped at level 4's 110 MiB. Both bounds are
-  Lucida's `SourceCoarseConfig` defaults, adopted knowingly. (#86)
-- `zarrmony convert --coarse-max-bytes N` and `--coarse-max-long-axis N`
-  expose both bounds on the CLI, so a store can be planned for a consumer
-  with a different budget. (#86)
-- Per-scene / per-field audit records gain `coarse_level_index`: the index
-  into that record's `level_shapes` of the shallowest coarse level, or `null`
-  when no level reaches the bounds. "Does this store have a level a viewer can
-  hold whole?" is now answerable from the store's own metadata instead of from
-  a viewport. (#86)
-- `Geometry(downsample_method=...)` now selects the pooling kernel every
-  pyramid level above 0 is built with: `"mean"` (unchanged default) or
-  `"max"`. Present but inert since #83; read by `build_pyramid` as of this
-  slice. Mean-pool stays the default and the whole-pyramid answer — it is what
-  the OME-Zarr ecosystem assumes, and max-pool biases every level above 0 high,
-  lifting background toward the noise maximum at high factors. `"max"` exists
-  for sparse-label acquisitions, where mean-pooling dissolves small objects
-  into the background: a 15 µm soma filling 1.6 % of a level-5 voxel
-  mean-pools to 114 against a background of 100, and max-pools to 1000
-  against ~141. Applied **uniformly** to every level — a mean-detail /
-  max-coarse hybrid was rejected because viewers with no coarse/detail concept
-  (napari, vizarr) would show a brightness step at the last level. Both
-  kernels preserve the input dtype. (#87)
-- `zarrmony convert --downsample-method [mean|max]` exposes the kernel on the
-  CLI. (#87)
-- README gains an **Output geometry** section: what the planner does, every
-  `Geometry` field with its default and its CLI flag, what the audit records,
-  the object-count trade, and why sharding is deliberately not implemented.
-  (#89)
-
-### Changed
-
 - `convert()`'s `chunk_shape` and `pyramid_min_size` are **retained** as
   sugar that folds into the geometry policy, so no existing caller
   breaks. Passing `geometry=` together with either raises `ValueError`
@@ -407,6 +370,41 @@ Read the Migration section before comparing a new store against an old one.
   *lateral* coarse bound is what decides which level is coarse (8.9 MiB is an
   eighth of `coarse_max_bytes`), so `--coarse-max-long-axis` is the knob that
   matters for plate stores and `--coarse-max-bytes` is inert. (#88)
+- **`audit_schema_version` bumps `11 → 12`.** Additive. Each scene / plate
+  field record gains `shard_shapes` — one shard shape per pyramid level,
+  positionally aligned with `level_shapes` and `chunk_shapes`, or `null` for
+  the whole record when sharding is off, which is every default conversion —
+  and `config.geometry` gains `shard_target_bytes` and `shard_shape`. Worth a
+  bump rather than a silent addition because object layout, and whether a
+  consumer needs `sharding_indexed` support to open the store at all, are no
+  longer inferable from `chunk_shapes`. The bump also covers
+  `axis_normalization.rgb_samples_folded` (#107), which landed against 11.
+  Consumers pinned to 11 can widen their pin. (#117)
+- **`audit_schema_version` bumps `12 → 13`.** Additive. `config` gains
+  `reader_tile_size` — the `(Y, X)` tile zarrmony asked the reader for so its
+  blocks would nest in the write grid, or `null` when it left the reader's own
+  blocking alone. Recorded rather than left to be rediscovered because two runs
+  of the same file produce identical stores and differ only in what they cost.
+  Consumers pinned to 12 can widen their pin. (#112)
+- **`audit_schema_version` bumps `13 → 14`.** Additive. `input` gains `files`
+  and `size_is_partial` — what the reader says it actually read, when it can
+  say. `input.size_bytes` and `input.sha256` are unchanged and still describe
+  the path the user named. Consumers pinned to 13 can widen their pin, but
+  anything deriving a compression ratio or a "did we convert the whole file"
+  check from `size_bytes` should now branch on `size_is_partial` first. (#116)
+- `ZarrmonyWriter.write_pyramid()` takes the **base array** plus a `geometry=`
+  keyword and returns `None`, where it used to take the full list of per-level
+  dask arrays plus `extra_ops=` and return the computed extras. It derives the
+  levels itself now (#111), so the caller no longer builds a lazy pyramid to
+  hand it. The new `read_level(i)` re-opens a written level as a dask array.
+  `build_pyramid()` is unchanged and still the right tool for a scene that fits
+  in memory; the one-step-at-a-time primitive both paths share is the new
+  `writers.pyramid.downsample_step()`. Neither name is exported from the
+  `zarrmony` namespace.
+- `bioio-base` is now a declared dependency rather than an undeclared
+  transitive one — `readers/default.py` imports `UnsupportedFileFormatError`
+  from it and `bioio` does not re-export it. No resolution change in
+  practice; `bioio` already required it.
 
 ### Migration
 
@@ -424,19 +422,22 @@ comparing them.
   from 3 to 14 (~4.7×), and a 384-well plate at 4 fields × 3 channels from
   roughly 23k objects to roughly 106k. This is irrelevant on local disk. **On
   object storage it is listing and per-object metadata cost** — budget for it
-  before re-converting a large store to GCS/S3, and raise
-  `--chunk-target-bytes` if your consumer is bandwidth-bound rather than
-  latency-bound.
-- **Sharding — the thing that would answer that object count — is deliberately
-  not implemented.** A 256³ shard holding 64 chunks of 64³ would bring the
-  reference store to ~47k objects with chunks still individually
-  range-readable, and `bioio-ome-zarr` supports the write side today. It is
-  omitted because `lucida-store`'s codec-chain parser accepts only `[bytes]` or
-  `[bytes, compressor]` and rejects `sharding_indexed`: a sharded store fails to
-  open with `first storage codec must be 'bytes', got 'sharding_indexed'`, an
-  error that reads as corruption rather than as an unsupported feature. That is
-  a consumer limitation, not a zarrmony one; revisit when the reader gains
-  sharded-read support (ADR-0010).
+  before re-converting a large store to GCS/S3, and reach for
+  `--shard-target-bytes` rather than `--chunk-target-bytes`: shards cut the
+  object count without enlarging the read unit, which is what a viewer's
+  residency budget actually cares about. See the next bullet for the catch.
+- **Sharding answers that object count, and you have to ask for it.** A 256³
+  shard holding 64 chunks of 64³ brings the reference store to ~47k objects
+  with every chunk still individually range-readable; on the reference
+  whole-slide scene, 8 MiB shards over 512 KiB chunks were the difference
+  between a projected nine days and 3 h 02 m. It stays off by default because
+  it changes who can read the store: `lucida-store`'s codec-chain parser
+  accepts only `[bytes]` or `[bytes, compressor]` and rejects
+  `sharding_indexed`, so a sharded store fails to open there with `first
+  storage codec must be 'bytes', got 'sharding_indexed'` — an error that reads
+  as corruption rather than as an unsupported feature. Every zarr-python 3
+  consumer is unaffected. Turn it on with `--shard-target-bytes` when you know
+  your reader supports it (ADR-0010 follow-up, #117).
 - **The pyramid looks different at its coarsest level, for anyone who was
   seeing a server-generated coarse tier.** A volumetric store now contains a
   real coarse level, so a viewer that previously fell back to generating its own
