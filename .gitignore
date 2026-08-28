@@ -37,3 +37,7 @@ tests/_tmp/
 
 # Site-local redaction patterns for scripts/check_no_internal_paths.py
 .internal-patterns
+
+# direnv (per-developer shell setup)
+.envrc
+.direnv/

@@ -226,12 +226,29 @@ gets a `128 × 128 × 256` shard holding 16 chunks of 64³ — 3.2 M objects dow
 210,345 on the whole-brain store.
 
 Those object counts are the planner's arithmetic, and they are exact. The
-**wall-clock** is not yet: the 3 h 02 m above was measured with 8 MiB chunks,
-and no dataset has been converted with sharding on. Sharding is expected to
-reproduce it, since the run wrote the same 8 MiB objects, but if you turn this
-on at scale you are the first — see
-[#124](https://github.com/ferrinm/zarrmony/issues/124), and the store will be
-somewhat larger than the 8 MiB-chunk one because 512 KiB chunks compress worse.
+**wall-clock is now measured too.** That same whole-slide scene, re-converted at
+512²-in-2048²:
+
+|            | 8 MiB chunks, no shards | 512² in 2048² shards   |
+| ---------- | ----------------------- | ---------------------- |
+| wall-clock | 3 h 02 m 00 s           | 3 h 04 m 54 s (+1.6 %) |
+| store size | 139.0 GiB               | 138.92 GiB             |
+| objects    | 31,634                  | 31,634                 |
+| peak RSS   | 12.35 GiB               | 15.33 GiB              |
+| CPU        | 152 %                   | 177 %                  |
+
+So sharding costs 1.6 % of wall-clock and buys a read unit 16× smaller. The
+object count landed on the planner's prediction exactly at all ten levels, and
+the +19 % CPU is compression overhead — 493,484 blocks of 512 KiB instead of
+31,156 of 8 MiB — which parallelises rather than showing up as elapsed time.
+
+Earlier text here warned that the store would be larger, since small chunks
+compress worse. It is not: 88 MB apart on a 139 GiB store. zstd on 512 KiB of
+16-bit microscopy still finds essentially all the redundancy that 8 MiB does.
+That is measured on a 2D scene; the volumetric case uses cubic chunks that cut
+across the correlated axis and has not been measured yet
+([#126](https://github.com/ferrinm/zarrmony/issues/126)). Full run details in
+[#124](https://github.com/ferrinm/zarrmony/issues/124).
 
 It is **off by default**, because it changes who can read the store. Chunks
 stay individually readable and every zarr-python 3 consumer is unaffected —

@@ -81,6 +81,22 @@ time zarrmony convert \
 
 The reader's `layout_hint` is `flat`, so this writes one store at `$OUT/volume.ome.zarr`.
 
+## Sharding
+
+Optional, off by default, and **not yet measured on a volume** — tracked in #126. Add `--shard-target-bytes` to the convert above; bare, it resolves to 8 MiB. What the planner returns for this volume:
+
+- **The chunk does not move.** `(1, 1, 64, 64, 64)` at every level, identical to the unsharded run, so `coarse_level_index` is still 5 and every read-side expectation below carries over unchanged. Sharding changes the write unit and nothing else.
+- **16 chunks per shard, 8.00 MiB exactly, at every level** — `(1, 1, 128, 128, 256)` at levels 0–2, flipping to `(1, 1, 128, 256, 128)` at 3–5 as per-level spacing changes which axis is longest in micrometres. No tail-level raggedness, unlike the 2D arm. **3,194,997 objects down to 210,345**, 15.2×.
+
+Four things differ from the 2D acceptance run, and each is a reason not to assume #124's result transfers:
+
+- **`TileAlignmentWarning` will fire on Y and X, and the hint is not actionable.** `_align_reader_tiles` early-returns for any plugin that is not the default `bioio` one, since `tile_size` is that plugin's convention — so `config.reader_tile_size` will be `null` in the audit, which is correct behaviour rather than a defect. The adapter hands back one whole Z-plane per dask block, which divides neither the 128 nor the 256 write grid. The suggested `tile_size=128,256` is generated from the write grid without knowing which plugin is loaded, and this plugin does not accept it. The condition is pre-existing, not caused by sharding: unsharded, the same two axes offend against the 64³ grid.
+- **Size the host for the Z gather, not for the pyramid.** Filling one chunk row needs 64 planes; one shard row needs 128, at ~125.6 MiB per plane per channel — roughly 47 GiB of gather before compression buffers. An in-flight run at these settings has been observed above 60 GiB RSS. Use a large-memory node; the earlier unsharded attempt was killed on a smaller one.
+- **A speedup here is not purely the write-unit effect.** Sharding also cuts the per-plane split factor from 16,263 chunks to 2,100 shards, 7.7× on top of the 15.2× object reduction. #124's 2D arm isolates the write-unit effect because its reader tiles already matched the grid; this one does not. Record it as such.
+- **Do not assume the store will be the same size.** #124 measured no size cost on a 2D scene, but its inner chunk is a 512² plane tile. Here it is a 64³ cube, which cuts across the axis light-sheet data is most correlated along. If small-chunk compression loss shows up anywhere it is here. Record the number; do not predict its sign.
+
+Downstream, `scripts/verify_geometry.py` is shard-blind — the report never mentions sharding at all and its object count comes from the chunk grid, so pass `--no-object-count` and count with `find` instead (#124). And Lucida cannot open a sharded store at all (#117), so the `lucida dataset health` generated-coarse gate below **cannot run**; use `napari-ome-zarr` and the OME-NGFF validator for the visual check.
+
 ## Verify the store
 
 ```bash

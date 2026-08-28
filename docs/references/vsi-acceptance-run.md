@@ -139,6 +139,26 @@ Two things for the runner to settle and record:
 - **Which scenes to keep.** All four convert. `label` and `macro image` are RGB uint8 thumbnails costing 41 MB and 99 objects between them — cheap enough to keep, but decide whether a separate store per thumbnail is the shape downstream wants, and say so on the issue.
 - **Codec.** ~257 GB raw per slide against a 34 GB source. Decide deliberately rather than discovering the default.
 
+## Sharding
+
+Optional, off by default, and now measured on this exact input — #124 re-ran the main scene at 512²-in-2048² against the unsharded baseline on the same host:
+
+|            | 8 MiB chunks, no shards | 512² in 2048² shards   |
+| ---------- | ----------------------- | ---------------------- |
+| wall-clock | 3 h 02 m 00 s           | 3 h 04 m 54 s (+1.6 %) |
+| store size | 139.0 GiB               | 138.92 GiB             |
+| objects    | 31,634                  | 31,634                 |
+| peak RSS   | 12.35 GiB               | 15.33 GiB              |
+| CPU        | 152 %                   | 177 %                  |
+
+Add `--shard-target-bytes` to the convert above; bare, it resolves to 8 MiB. Leave `tile_size` unpinned — `plan_write_grid` derives `[2048, 2048]`, the level-0 shard, and the run emitted **zero** `TileAlignmentWarning` across three hours with write amplification 1.0005. Budget headroom rather than hours: the cost of sharding here is +24 % resident set and +19 % CPU, not elapsed time.
+
+Three things change downstream, and all three have bitten:
+
+- **`verify_geometry.py` is shard-blind.** The report never mentions sharding — no shard shape in the checks, no shard column in the levels table — and reports the inner chunk as if it were the store's only chunking, so its object prediction is the unsharded one (493,484 here against 31,156 on disk) and every check still passes. Pass `--no-object-count`, which suppresses the false failure and skips a multi-minute tree walk, and count with `find "$STORE" -type f | wc -l` instead. Do not paste the report as evidence of geometry without saying in the surrounding text that the store is sharded. Tracked in #124.
+- **Lucida cannot open a sharded store.** `lucida-store`'s codec-chain parser rejects `sharding_indexed`, so the "Verify in Lucida" section below cannot run. That is the documented cost of the flag (#117), not a regression — use `napari-ome-zarr` for the visual check. The level readout in napari's status bar is the useful one: zooming in should step it monotonically down to 0, which proves a 512 KiB chunk is being range-read out of an 8 MiB shard.
+- **The shard shrinks on coarse levels.** Levels 0–6 get `[1,1,1,2048,2048]` (16 chunks, 8.00 MiB), then 1536² (9, 4.50 MiB), 1024² (4, 2.00 MiB) and 274 × 335 (1, 0.18 MiB). The planner returns the smallest whole-chunk multiple covering the level rather than a mostly-empty 2048², so per-level shard shapes are expected to differ. Take object counts only after the pyramid completes; a count read mid-run will not match the grid.
+
 ## Verify the store
 
 `scripts/verify_geometry.py` recomputes the predicted geometry from the store's _own_ recorded policy and compares it against what is on disk, then checks all four of Lucida's source-coarse bounds:
