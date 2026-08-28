@@ -780,7 +780,7 @@ def plan_reader_tile_size(
     scene_shapes: Sequence[Sequence[int]],
     dims: Sequence[str],
     scene_spacings: Sequence[Sequence[float]],
-    dtype: Any,
+    scene_dtypes: Sequence[Any],
     geometry: Geometry = DEFAULT_GEOMETRY,
 ) -> tuple[int, int] | None:
     """The ``(Y, X)`` tile a reader should produce so no scene's blocks get split.
@@ -808,28 +808,41 @@ def plan_reader_tile_size(
     ``label`` and a ``macro`` thumbnail, and those thumbnails are the ones that
     would pay.
 
+    **Why the dtype is per scene too.** It is the one planning input that looks
+    like a property of the file and is not. A whole-slide VSI carries `>u2`
+    fluorescence beside `uint8` RGB thumbnails, and itemsize sets how many
+    voxels fit the byte target — so reading the dtype once, off whichever scene
+    the reader happens to be pointing at, plans half the file against the wrong
+    budget. The failure is one-directional and silent: too small an itemsize
+    plans too *large* a grid, which derives a tile the real grid then has to
+    split. That is the pathology this function exists to remove.
+
     :param scene_shapes: One level-0 shape per scene, each with one entry per
         axis in ``dims`` order.
     :param dims: Axis names shared by every scene (e.g. ``"TCZYX"``).
     :param scene_spacings: One physical-spacing list per scene, matching
         ``scene_shapes``.
-    :param dtype: Anything :func:`numpy.dtype` accepts; only ``itemsize`` is used.
+    :param scene_dtypes: One dtype per scene, matching ``scene_shapes``.
+        Anything :func:`numpy.dtype` accepts; only ``itemsize`` is used.
     :param geometry: The policy supplying the chunk and shard targets.
     """
     axis_index = {name: i for i, name in enumerate(dims)}
     if "Y" not in axis_index or "X" not in axis_index:
         return None
-    if len(scene_shapes) != len(scene_spacings):
+    if not (len(scene_shapes) == len(scene_spacings) == len(scene_dtypes)):
         raise ValueError(
-            f"plan_reader_tile_size needs one spacing list per scene; got "
-            f"{len(scene_spacings)} for {len(scene_shapes)} scenes"
+            f"plan_reader_tile_size needs one spacing list and one dtype per "
+            f"scene; got {len(scene_spacings)} spacings and "
+            f"{len(scene_dtypes)} dtypes for {len(scene_shapes)} scenes"
         )
     if not scene_shapes:
         raise ValueError("plan_reader_tile_size needs at least one scene shape")
 
     best: dict[str, int] = {}
     fallback: dict[str, int] = {}
-    for shape, spacings in zip(scene_shapes, scene_spacings, strict=True):
+    for shape, spacings, dtype in zip(
+        scene_shapes, scene_spacings, scene_dtypes, strict=True
+    ):
         extents = tuple(int(s) for s in shape)
         grid = plan_write_grid(extents, dims, spacings, dtype, geometry)
         for name in ("Y", "X"):

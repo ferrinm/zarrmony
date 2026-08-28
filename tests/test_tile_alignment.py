@@ -33,6 +33,7 @@ Three layers, in order:
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -133,9 +134,9 @@ def test_split_axes_exempts_an_axis_the_grid_already_spans() -> None:
 
 def test_derived_tile_matches_the_write_grid() -> None:
     assert plan_reader_tile_size(
-        [WSI], DIMS, [SPACING], np.uint16, DEFAULT_GEOMETRY
+        [WSI], DIMS, [SPACING], [np.uint16], DEFAULT_GEOMETRY
     ) == (512, 512)
-    assert plan_reader_tile_size([WSI], DIMS, [SPACING], np.uint16, SHARDED) == (
+    assert plan_reader_tile_size([WSI], DIMS, [SPACING], [np.uint16], SHARDED) == (
         2048,
         2048,
     )
@@ -160,7 +161,7 @@ def test_derived_tile_is_the_minimum_across_scenes() -> None:
     assert stack_grid[3:] == (64, 64)
 
     tile = plan_reader_tile_size(
-        [WSI, stack], DIMS, [SPACING, stack_spacing], np.uint16
+        [WSI, stack], DIMS, [SPACING, stack_spacing], [np.uint16, np.uint16]
     )
     assert tile == (64, 64)
 
@@ -178,13 +179,44 @@ def test_a_thumbnail_does_not_drag_the_tile_down() -> None:
     change exists to remove, reintroduced by the fix for it.
     """
     tile = plan_reader_tile_size(
-        [WSI, THUMB], DIMS, [SPACING, SPACING], np.uint16, DEFAULT_GEOMETRY
+        [WSI, THUMB], DIMS, [SPACING, SPACING], [np.uint16, np.uint8], DEFAULT_GEOMETRY
     )
     assert tile == (512, 512)
 
 
+def test_each_scene_is_planned_at_its_own_dtype() -> None:
+    """A whole-slide VSI is `>u2` fluorescence beside `uint8` RGB thumbnails.
+
+    itemsize divides the byte target, so borrowing one scene's dtype for
+    another's grid is wrong by a factor of two in area — and wrong in the
+    dangerous direction: too small an itemsize plans too *large* a grid, hence
+    too large a tile, which the real grid then has to split.
+    """
+    # The four scenes of the reference slide, in reader order. Scene 0 is the
+    # uint8 label, which is where a reader that has not been advanced points.
+    shapes = [(1, 1, 1, 18232, 1675), WSI]
+    spacings = [[1.0, 1.0, 1.0, 2.7382, 2.7385], SPACING]
+    dtypes = [np.uint8, np.dtype(">u2")]
+
+    tile = plan_reader_tile_size(shapes, DIMS, spacings, dtypes)
+    for shape, spacing, dtype in zip(shapes, spacings, dtypes, strict=True):
+        grid = plan_write_grid(shape, DIMS, spacing, dtype)
+        assert split_axes((1, 1, 1, tile[0], tile[1]), grid, shape, DIMS) == []
+
+    # What planning every scene at the label's uint8 would have derived, and
+    # why it is not merely suboptimal: 1024 does not divide the slide's 512.
+    wrong = plan_reader_tile_size([WSI], DIMS, [SPACING], [np.uint8])
+    assert wrong == (512, 1024)
+    true_grid = plan_write_grid(WSI, DIMS, SPACING, np.dtype(">u2"))
+    assert [
+        name for name, _, _ in split_axes((1, 1, 1, *wrong), true_grid, WSI, DIMS)
+    ] == ["X"]
+
+
 def test_derived_tile_is_none_without_lateral_axes() -> None:
-    assert plan_reader_tile_size([(1, 4)], ["T", "C"], [[1.0, 1.0]], np.uint16) is None
+    assert (
+        plan_reader_tile_size([(1, 4)], ["T", "C"], [[1.0, 1.0]], [np.uint16]) is None
+    )
 
 
 # --------------------------------------------------------------------------
@@ -236,11 +268,28 @@ class TiledFakeReader(FakeReader):
     Without this the fake would report the same blocking however it was opened,
     and every assertion about the reopen would be about the kwarg rather than
     about the thing the kwarg exists to change.
+
+    ``scene_dtypes`` additionally lets ``dtype`` vary with the current scene, the
+    way a real multi-scene reader's does; ``FakeReader`` holds one for the file.
     """
 
-    def __init__(self, tile_size: Any = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        tile_size: Any = None,
+        scene_dtypes: Sequence[Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._tile = tile_size
+        self._scene_dtypes = (
+            [np.dtype(d) for d in scene_dtypes] if scene_dtypes else None
+        )
+
+    @property
+    def dtype(self) -> np.dtype:
+        if self._scene_dtypes is None:
+            return self._dtype
+        return self._scene_dtypes[self._current_scene]
 
     @property
     def xarray_dask_data(self):
@@ -311,6 +360,56 @@ def test_convert_reopens_the_reader_with_the_derived_tile(
     assert opens[1]["dask_tiles"] == "true", "other kwargs survive the reopen"
     # The reopen is the point, not the kwarg: the writer has nothing to split.
     assert [w for w in recwarn if issubclass(w.category, TileAlignmentWarning)] == []
+
+
+def test_convert_reads_the_dtype_per_scene(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reader opens on scene 0, whose dtype need not be the file's.
+
+    Scene 0 here is a `uint8` thumbnail and scene 1 the `uint16` image that
+    matters — the shape of a whole-slide VSI. Reading `reader.dtype` once, before
+    advancing, plans scene 1 at half its real itemsize and derives a tile the
+    write grid then splits.
+    """
+    opens: list[dict[str, Any]] = []
+
+    def _open(_path: Path, **kwargs: Any) -> TiledFakeReader:
+        opens.append(dict(kwargs))
+        return TiledFakeReader(
+            tile_size=kwargs.get("tile_size"),
+            scene_dtypes=[np.uint8, np.uint16],
+            scenes=["thumb", "slide"],
+            dims="TCZYX",
+            shape=SCENE,
+            pixel_sizes=FakePhysicalPixelSizes(Z=1.0, Y=0.5, X=0.5),
+        )
+
+    plugin = ReaderPlugin(
+        name="bioio",
+        match=lambda _p: 100,
+        open=_open,
+        distribution="bioio-fake",
+        source="builtin",
+    )
+    monkeypatch.setattr(
+        api_module,
+        "get_reader",
+        lambda _p, *, reader_kwargs=None: (
+            _open(Path("/tmp/x.tif"), **(reader_kwargs or {})),
+            plugin,
+            100,
+        ),
+    )
+    convert(
+        "/tmp/x.tif",
+        tmp_path / "out",
+        reader_kwargs={"dask_tiles": "true"},
+        contrast_percentile=None,
+        validate=False,
+    )
+    # uint8 alone would plan 724² -> (512, 1024); the uint16 scene pins it to 512.
+    assert opens[1]["tile_size"] == SCENE_TILE
 
 
 def test_a_pinned_tile_size_is_respected(tmp_path: Path, recording_plugin) -> None:
