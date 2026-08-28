@@ -209,8 +209,12 @@ Small chunks trade bytes-per-object for objects. A whole-brain light-sheet
 store goes from 87,048 objects to ~3.2 M (~37×); a 2160² plate field goes from
 4 to 39; a gigapixel slide scene reaches ~370k objects at level 0 alone. On
 local disk that is irrelevant. On GCS/S3 it is listing time plus per-object
-metadata cost, and at slide scale it is also conversion wall-clock — writing in
-512 KiB units is what made one such scene project to nine days.
+metadata cost, and at slide scale it is also conversion wall-clock: one such
+scene sustains 55 chunks/min with perfectly aligned reader tiles, which is
+about six days for its pyramid, against 3 h 02 m for the same scene written in
+8 MiB units. Each object is 16× smaller but takes 2.8× longer to write, so the
+cost is graph size rather than bytes — which is why sharding fixes it and a
+bigger chunk only trades it for a worse viewer.
 
 Sharding answers this without giving up read granularity, because the shard is
 the write unit and the chunk is the read unit. `--shard-target-bytes` packs
