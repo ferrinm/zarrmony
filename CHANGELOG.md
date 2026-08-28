@@ -117,7 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   divide it; the grid is `shards or chunks`, so the derived tile follows the
   write unit under sharding rather than the read unit. Files with several
   scenes get the element-wise minimum, which is provably split-free and is not
-  dragged down by a `label` thumbnail whose grid already spans it. **Pass
+  dragged down by a `label` thumbnail whose grid already spans it, and each
+  scene is planned at **its own** dtype — a whole-slide VSI is `>u2`
+  fluorescence beside `uint8` RGB thumbnails, and itemsize divides the byte
+  target. **Pass
   `--reader-kwarg dask_tiles=true` alone now**; a pinned `tile_size` is still
   honoured, and the writer warns — naming the tile that would have worked —
   whenever source blocks split, whatever the reason. The tile zarrmony asked

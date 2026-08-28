@@ -712,8 +712,8 @@ _PLANNABLE_AXES = frozenset("TCZYX")
 
 def _scene_planning_inputs(
     reader: Any,
-) -> tuple[list[str], list[tuple[int, ...]], list[list[float]], Any] | None:
-    """Per-scene ``(dims, shapes, spacings, dtype)`` read from metadata alone.
+) -> tuple[list[str], list[tuple[int, ...]], list[list[float]], list[Any]] | None:
+    """Per-scene ``(dims, shapes, spacings, dtypes)`` read from metadata alone.
 
     ``None`` when the reader does not expose what the planners need, or when its
     scenes disagree about axis order — either way there is no single tile size
@@ -723,22 +723,27 @@ def _scene_planning_inputs(
     expensive thing this alignment exists to stop doing badly, and doing it once
     to decide how to do it again would cost more than the mismatch. Everything
     the planners need — extents, spacings, itemsize — is metadata.
-    """
-    try:
-        dtype = np.dtype(reader.dtype)
-    except Exception:  # noqa: BLE001 — ADR-0001 trust model; alignment is optional
-        return None
 
+    ``reader.dtype`` is read *inside* the loop, because it is a property of the
+    current scene and not of the file: a whole-slide VSI reports ``uint8`` for
+    its RGB ``label`` and ``>u2`` for the fluorescence scan beside it. Reading
+    it once, off whichever scene the reader opened on, halves or doubles the
+    itemsize the chunk planner divides the byte target by.
+    """
     dims_order: list[str] | None = None
     shapes: list[tuple[int, ...]] = []
     spacings: list[list[float]] = []
+    dtypes: list[Any] = []
     for index in range(len(reader.scenes)):
         try:
             reader.set_scene(index)
             order = [d for d in str(reader.dims.order) if d in _PLANNABLE_AXES]
             sizes = tuple(int(getattr(reader.dims, d)) for d in order)
             scale = _physical_scales_for_dims(order, reader)
-        except Exception:  # noqa: BLE001 — see above
+            dtype = np.dtype(reader.dtype)
+        # ADR-0001 trust model; alignment is optional, so any reader that will
+        # not answer these gets left with its own blocking.
+        except Exception:  # noqa: BLE001
             return None
         if dims_order is None:
             dims_order = order
@@ -746,10 +751,11 @@ def _scene_planning_inputs(
             return None
         shapes.append(sizes)
         spacings.append(scale)
+        dtypes.append(dtype)
 
     if dims_order is None:
         return None
-    return dims_order, shapes, spacings, dtype
+    return dims_order, shapes, spacings, dtypes
 
 
 def _align_reader_tiles(
@@ -800,8 +806,8 @@ def _align_reader_tiles(
     planning = _scene_planning_inputs(reader)
     if planning is None:
         return reader, None
-    dims, shapes, spacings, dtype = planning
-    tile = plan_reader_tile_size(shapes, dims, spacings, dtype, geometry)
+    dims, shapes, spacings, dtypes = planning
+    tile = plan_reader_tile_size(shapes, dims, spacings, dtypes, geometry)
     if tile is None:
         return reader, None
 
