@@ -6,6 +6,7 @@ is done as a subclass that exposes ``initialize()`` and ``write_pyramid()``
 publicly; the parent's lazy initialization is otherwise opaque to callers.
 """
 
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
@@ -15,11 +16,14 @@ import xarray as xr
 from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 
 from zarrmony._storage import open_root_group
+from zarrmony.errors import TileAlignmentWarning
 from zarrmony.geometry import (
     DEFAULT_GEOMETRY,
+    SPATIAL_AXES,
     Geometry,
     plan_level_chunk_shapes,
     plan_level_shard_shapes,
+    split_axes,
 )
 from zarrmony.transforms import NGFF_AXIS_TYPE, NGFF_AXIS_UNIT, normalize_axes
 from zarrmony.writers.pyramid import (
@@ -59,6 +63,69 @@ def _write_grid(dataset: Any) -> tuple[int, ...]:
     return tuple(int(s) for s in (dataset.shards or dataset.chunks))
 
 
+def _dominant_block_lengths(src: da.Array) -> tuple[int, ...]:
+    """The block length per axis, taking the first block as representative.
+
+    A dask axis is a tuple of block lengths whose last entry is usually a short
+    remainder; the first is the one the reader was actually asked for and the
+    one every interior boundary sits on.
+    """
+    return tuple(int(lengths[0]) if lengths else 1 for lengths in src.chunks)
+
+
+def _warn_on_split(
+    src: da.Array, write_grid: Sequence[int], dims: Sequence[str]
+) -> None:
+    """Warn when the source's blocks have to be split to fill ``write_grid``.
+
+    Issue #112. ``convert()`` derives an aligned ``tile_size`` for the readers
+    that take one, so reaching here means either a reader that does not, a
+    caller who pinned a mismatched tile size, or a pre-built ``xarr_override``.
+    The warning names the tile that would have avoided it, because the measured
+    cost is not marginal: 1024² blocks into a 512² grid built 831,936 dask tasks
+    against the 369,600 the aligned run needed, and the pathology is invisible
+    from the outside — asking for *larger* reader tiles produces a *larger*
+    graph.
+    """
+    # Restricted to Z/Y/X. The chunk planner pins T and C to ``1``
+    # unconditionally, so a reader handing several channels in one block always
+    # trips the predicate there — that is a reader convention, not a
+    # misconfiguration, and no ``tile_size`` addresses it. Z/Y/X is where the
+    # reader's blocking and the geometry actually have to agree.
+    offenders = [
+        entry
+        for entry in split_axes(
+            _dominant_block_lengths(src), write_grid, src.shape, dims
+        )
+        if entry[0] in SPATIAL_AXES
+    ]
+    if not offenders:
+        return
+    detail = ", ".join(
+        f"{name}: source blocks of {source} into a write grid of {grid}"
+        for name, source, grid in offenders
+    )
+    lateral = [name for name, _, _ in offenders if name in ("Y", "X")]
+    suggested = ",".join(
+        str(int(length))
+        for name, length in zip(dims, write_grid, strict=True)
+        if name in ("Y", "X")
+    )
+    hint = (
+        f" Pass a reader tile that divides it — e.g. "
+        f"`--reader-kwarg tile_size={suggested}`."
+        if lateral and suggested
+        else ""
+    )
+    warnings.warn(
+        f"source blocks do not nest in the planned write grid, so every write "
+        f"splits one ({detail}). This multiplies the dask graph and re-reads "
+        f"each source block once per write it feeds.{hint}",
+        TileAlignmentWarning,
+        stacklevel=3,
+    )
+
+
 class ZarrmonyWriter(OMEZarrWriter):
     """OMEZarrWriter subclass that lets us initialize the on-disk arrays
     separately from writing data, so we can write a pre-computed pyramid.
@@ -68,6 +135,14 @@ class ZarrmonyWriter(OMEZarrWriter):
         """Public alias for the parent's lazy initialization."""
         if not self._initialized:
             self._initialize()
+
+    def _canonical_axes(self) -> tuple[str, ...]:
+        """Axis names in the uppercase form the geometry planners speak.
+
+        NGFF axis names are lowercase on the wire and this writer stores them
+        that way; ``SPATIAL_AXES`` and every planner signature use ``"TCZYX"``.
+        """
+        return tuple(str(name).upper() for name in self.axes.names)
 
     def read_level(self, index: int) -> da.Array:
         """Re-open one already-written level as a dask array over the store.
@@ -135,6 +210,11 @@ class ZarrmonyWriter(OMEZarrWriter):
         for i, dataset in enumerate(self.datasets):
             if i == 0:
                 src = base_array
+                # Only level 0 is worth checking: every level above it is read
+                # back off the store on the write grid by `read_level`, so its
+                # blocks nest by construction. Level 0's blocks come from the
+                # reader and are the only ones that can straddle (#112).
+                _warn_on_split(src, _write_grid(dataset), self._canonical_axes())
             else:
                 prev = self.datasets[i - 1]
                 src = downsample_step(

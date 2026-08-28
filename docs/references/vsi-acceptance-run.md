@@ -61,7 +61,9 @@ So a full four-scene conversion of B is **~256.7 GB raw / ~491,700 objects**, an
 
 ## What to watch during the run
 
-**`dask_tiles` is not optional here.** `bioio-bioformats` returns one dask chunk per plane by default — `chunksize (1, 1, 1, 141267, 168124)`, 47.5 GB. `writers/scene.py`'s `arr.rechunk(tgt_chunks)` has to materialize a chunk to split it, so the conversion will OOM before it writes anything. `--reader-kwarg dask_tiles=true --reader-kwarg tile_size=1024,1024` gives `chunksize (1, 1, 1, 1024, 1024)` and 91,080 partitions on the main scene, verified to return correct tile data.
+**`dask_tiles` is not optional here.** `bioio-bioformats` returns one dask chunk per plane by default — `chunksize (1, 1, 1, 141267, 168124)`, 47.5 GB. `writers/scene.py`'s `arr.rechunk(tgt_chunks)` has to materialize a chunk to split it, so the conversion will OOM before it writes anything. `--reader-kwarg dask_tiles=true` is the whole fix.
+
+**Do not pass `tile_size` with it.** Zarrmony plans the write grid first and reopens the reader asking for tiles that match it (#112), recording the result in `config.reader_tile_size`. An earlier revision of this runbook recommended `tile_size=1024,1024`; that was the worst of the available options and this document is the reason it spread. 1024² source tiles into the planned 512² write grid split on every write: **831,936 dask tasks against the 369,600 an aligned run needs**, plus each source tile re-read once per output chunk it feeds. Larger tiles produce a _larger_ graph, which is why nobody caught it by reasoning about it.
 
 **The kwargs apply to every scene.** There is no scene selector; `dask_tiles` on the 375 × 504 macro image is harmless but the whole four-scene set is converted in one call.
 
@@ -97,7 +99,7 @@ from zarrmony.readers.plugin import get_reader
 
 reader, plugin, score = get_reader(
     f"{SRC}/<slide-B>.vsi",
-    reader_kwargs={"dask_tiles": "true", "tile_size": "1024,1024"},
+    reader_kwargs={"dask_tiles": "true", "tile_size": "512,512"},
 )
 print(plugin.name, score)
 reader.set_scene(2)                       # the 20x main scene
@@ -105,7 +107,9 @@ arr = reader.xarray_dask_data.data
 print(arr.shape, arr.dtype, arr.chunksize, arr.npartitions)
 ```
 
-`chunksize` must be `(1, 1, 1, 1024, 1024)`, not the full plane. If it is the full plane, stop — the run will OOM.
+`chunksize` must be `(1, 1, 1, 512, 512)`, not the full plane. If it is the full plane, stop — the run will OOM.
+
+`tile_size` is pinned **here only**, to prove the kwarg reaches the backend. Leave it off the real run: `convert()` derives the same value from the planned write grid and a hand-pinned one that later disagrees with the geometry is exactly the failure this check is not looking for.
 
 ## Environment
 
@@ -125,15 +129,13 @@ One slide at a time, timed, output to a filesystem with the room computed above:
 time zarrmony convert \
   "$SRC/<slide-B>.vsi" \
   "$OUT/slide-B" \
-  --reader-kwarg dask_tiles=true \
-  --reader-kwarg tile_size=1024,1024
+  --reader-kwarg dask_tiles=true
 ```
 
 `--layout` is left at `auto`: a plain `BioImage` has no `layout_hint`, so it falls back to `"flat"` and writes one `<scene>.ome.zarr` per scene under `$OUT/slide-B`.
 
-Three things for the runner to settle and record:
+Two things for the runner to settle and record:
 
-- **`tile_size`.** 1024 gives 91,080 source partitions against 363,216 level-0 output chunks — a clean 4:1. 512 would be 1:1 with the output chunk _and_ with the `.ets` source tile, but quadruples task-graph overhead. Start at 1024 and record throughput; try 512 on one slide if 1024 looks read-amplified.
 - **Which scenes to keep.** All four convert. `label` and `macro image` are RGB uint8 thumbnails costing 41 MB and 99 objects between them — cheap enough to keep, but decide whether a separate store per thumbnail is the shape downstream wants, and say so on the issue.
 - **Codec.** ~257 GB raw per slide against a 34 GB source. Decide deliberately rather than discovering the default.
 
@@ -192,9 +194,9 @@ Open the main-scene store. What to check:
 
 ## Record on the issue
 
-Per slide: store size on disk and object count against the ~257 GB / ~492k raw estimates, the compression ratio achieved, conversion wall-clock, and the `tile_size` actually used. Plus:
+Per slide: store size on disk and object count against the ~257 GB / ~492k raw estimates, the compression ratio achieved, conversion wall-clock, and the `config.reader_tile_size` the audit record shows.
 
-- Whether level-0 writes were tile-aligned in practice (the 512-chunk / 512-tile coincidence), and whether `tile_size=512` was tried.
 - The endianness answer.
+- Whether any `TileAlignmentWarning` was emitted. It should not be — the derived tile matches the grid by construction — so one means a scene whose geometry the derivation could not plan, and it is worth the issue comment.
 - The scene-keeping decision.
 - **Any Bio-Formats-specific rough edges.** These are the input to what the `bioformats` extra's README section needs to warn about — the reason for running this against real data rather than a fixture.

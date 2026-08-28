@@ -101,6 +101,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reader tiles now nest in the planned write grid instead of being split
+  into it.** Nothing connected the reader's `tile_size` to the geometry the
+  ADR-0010 planner picks, so `write_pyramid` absorbed the difference with a
+  `rechunk` — and on the whole-slide path that rechunk was always a *split*,
+  which is not the same price as a merge. On a 141k × 172k × 4-channel scene,
+  1024² source tiles into the planned 512² write grid built **831,936** dask
+  tasks against the 369,600 an aligned run needs, and re-read each source tile
+  once per output chunk it fed; merging in the other direction costs 1.06–1.25×.
+  Asking for *larger* tiles therefore produced a *larger* graph, which is why
+  this survived review — and why the recommendation in this repo's own README,
+  ADR-0011 and VSI runbook, `--reader-kwarg tile_size=1024,1024`, was the worst
+  of the available options. `convert()` now plans the write grid from metadata
+  alone, before touching a pixel, and reopens the reader asking for tiles that
+  divide it; the grid is `shards or chunks`, so the derived tile follows the
+  write unit under sharding rather than the read unit. Files with several
+  scenes get the element-wise minimum, which is provably split-free and is not
+  dragged down by a `label` thumbnail whose grid already spans it. **Pass
+  `--reader-kwarg dask_tiles=true` alone now**; a pinned `tile_size` is still
+  honoured, and the writer warns — naming the tile that would have worked —
+  whenever source blocks split, whatever the reason. The tile zarrmony asked
+  for is recorded as `config.reader_tile_size`. (#112)
 - **Gigapixel conversions no longer stall in graph construction.** The writer
   built every pyramid level as one lazy dask graph and handed the lot to a
   single `da.compute`, so the coarsest level's graph reached back through every
@@ -142,6 +163,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`audit_schema_version` bumps `12 → 13`.** Additive. `config` gains
+  `reader_tile_size` — the `(Y, X)` tile zarrmony asked the reader for so its
+  blocks would nest in the write grid, or `null` when it left the reader's own
+  blocking alone. Recorded rather than left to be rediscovered because two runs
+  of the same file produce identical stores and differ only in what they cost.
+  Consumers pinned to 12 can widen their pin. (#112)
 - **`audit_schema_version` bumps `11 → 12`.** Additive. Each scene / plate
   field record gains `shard_shapes` — one shard shape per pyramid level,
   positionally aligned with `level_shapes` and `chunk_shapes`, or `null` for
