@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-08-28
+
+Documentation only; no code change, and no reason to upgrade except to read
+the corrected text. 0.15.0 described sharding's benefit in a way that implies
+a measurement that has not been taken.
+
+### Fixed
+
+- **The sharding wall-clock in 0.15.0 was not measured on a sharded store.**
+  The 3 h 02 m figure comes from a whole-slide conversion run at
+  `--chunk-target-bytes 8388608` — 8 MiB *chunks*, no shards, on a pre-#112
+  build. Sharding is expected to reproduce it, because #113 established that
+  the write unit is what the cost scales with, but "expected" is not
+  "measured": **no dataset has been converted with `--shard-target-bytes` or
+  `--shard-shape` on.** What has been exercised is the planner's arithmetic,
+  a 4096² × 2ch synthetic through `ZarrmonyWriter`, and `napari-ome-zarr`
+  read compatibility. The Migration note in 0.15.0 attributed the figure to
+  sharding outright and the Added note read the same way; both now name their
+  provenance. Tracked in #124.
+- **The reference volume's sharded object count in 0.15.0's Migration note was
+  wrong** — "a 256³ shard holding 64 chunks of 64³ … ~47k objects" was the
+  pre-implementation illustration from ADR-0010, which #117 had already
+  corrected everywhere else. 256³ uint16 is 32 MiB, four times the 8 MiB
+  target, so the planner returns `128 × 128 × 256`: 16 chunks per shard, not
+  64. Re-derived against the shipped planner, the reference volume goes from
+  3,194,997 objects to **210,345** (15.2×), not ~47k. The figure for the
+  whole-slide scene — 369,600 level-0 objects to 23,184 — was already correct.
+
 ## [0.15.0] - 2026-08-27
 
 The ADR-0010 output geometry series, start to finish: the policy itself
@@ -118,7 +146,10 @@ one.
   shards give level 0 the 8 MiB write unit that took a projected nine days
   down to 3 h 02 m, the 23,184 objects that run wrote instead of 369,600, and
   the 512 KiB read unit that fills a viewer's residency budget with 121 chunks
-  instead of 4. Shards are planned per level by the same world-cubic rule as
+  instead of 4. **Those two figures were measured with 8 MiB _chunks_, not
+  shards** — no dataset has yet been converted with sharding on, and the
+  transfer rests on #113's finding that cost scales with the write unit
+  (#124). Shards are planned per level by the same world-cubic rule as
   chunks, over whole-chunk multiples, so isotropic data at the defaults gets a
   `128 × 128 × 256` shard holding 16 chunks of 64³; `--shard-target-bytes`
   with no value resolves to 8 MiB. **It is off by default because it changes
@@ -426,18 +457,22 @@ comparing them.
   `--shard-target-bytes` rather than `--chunk-target-bytes`: shards cut the
   object count without enlarging the read unit, which is what a viewer's
   residency budget actually cares about. See the next bullet for the catch.
-- **Sharding answers that object count, and you have to ask for it.** A 256³
-  shard holding 64 chunks of 64³ brings the reference store to ~47k objects
-  with every chunk still individually range-readable; on the reference
-  whole-slide scene, 8 MiB shards over 512 KiB chunks were the difference
-  between a projected nine days and 3 h 02 m. It stays off by default because
-  it changes who can read the store: `lucida-store`'s codec-chain parser
-  accepts only `[bytes]` or `[bytes, compressor]` and rejects
-  `sharding_indexed`, so a sharded store fails to open there with `first
-  storage codec must be 'bytes', got 'sharding_indexed'` — an error that reads
-  as corruption rather than as an unsupported feature. Every zarr-python 3
-  consumer is unaffected. Turn it on with `--shard-target-bytes` when you know
-  your reader supports it (ADR-0010 follow-up, #117).
+- **Sharding answers that object count, and you have to ask for it.** At the
+  8 MiB default an isotropic volume gets a `128 × 128 × 256` shard holding 16
+  chunks of 64³, which brings the reference store from 3,194,997 objects to
+  210,345 with every chunk still individually range-readable; the reference
+  whole-slide scene's level 0 goes from 369,600 to 23,184. Both are the
+  planner's arithmetic. The 8 MiB **write unit** is also what took that scene
+  from a projected nine days to 3 h 02 m — but that run used 8 MiB chunks, and
+  no conversion has yet been measured with sharding on (#124). It stays off by
+  default because it changes who can read the store: `lucida-store`'s
+  codec-chain parser accepts only `[bytes]` or `[bytes, compressor]` and
+  rejects `sharding_indexed`, so a sharded store fails to open there with
+  `first storage codec must be 'bytes', got 'sharding_indexed'` — an error
+  that reads as corruption rather than as an unsupported feature. Every
+  zarr-python 3 consumer is unaffected. Turn it on with
+  `--shard-target-bytes` when you know your reader supports it (ADR-0010
+  follow-up, #117).
 - **The pyramid looks different at its coarsest level, for anyone who was
   seeing a server-generated coarse tier.** A volumetric store now contains a
   real coarse level, so a viewer that previously fell back to generating its own

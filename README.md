@@ -222,7 +222,16 @@ whole chunks into 8 MiB storage objects: that slide scene's level 0 becomes
 512² chunks inside 2048² shards, 369,600 objects down to 23,184, with each
 512 KiB chunk still individually range-readable. Shards are planned by the same
 world-cubic rule as chunks, per level, so an isotropic volume at the defaults
-gets a `128 × 128 × 256` shard holding 16 chunks of 64³.
+gets a `128 × 128 × 256` shard holding 16 chunks of 64³ — 3.2 M objects down to
+210,345 on the whole-brain store.
+
+Those object counts are the planner's arithmetic, and they are exact. The
+**wall-clock** is not yet: the 3 h 02 m above was measured with 8 MiB chunks,
+and no dataset has been converted with sharding on. Sharding is expected to
+reproduce it, since the run wrote the same 8 MiB objects, but if you turn this
+on at scale you are the first — see
+[#124](https://github.com/ferrinm/zarrmony/issues/124), and the store will be
+somewhat larger than the 8 MiB-chunk one because 512 KiB chunks compress worse.
 
 It is **off by default**, because it changes who can read the store. Chunks
 stay individually readable and every zarr-python 3 consumer is unaffected —
