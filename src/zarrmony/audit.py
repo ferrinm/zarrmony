@@ -31,6 +31,15 @@ from zarrmony._constants import NGFF_VERSION
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
+# 13: adds ``config.reader_tile_size`` — the ``(Y, X)`` tile zarrmony asked the
+#    reader for so its blocks would nest in the planned write grid, or ``null``
+#    when it left the reader's own blocking alone (a caller-pinned ``tile_size``,
+#    an untiled backend, or a plugin that does not take one). Whether a run's
+#    source blocks nested in its write grid is not inferable from the store —
+#    the output is identical either way, only the cost differs, by 2.3x in dask
+#    tasks on the reference whole-slide scene — so it is recorded rather than
+#    left to be rediscovered by timing a re-run (#112). Purely additive:
+#    consumers pinned to 12 can widen their pin.
 # 12: adds per-scene / per-field ``shard_shapes`` — one shard shape per pyramid
 #    level, positionally aligned with ``level_shapes`` and ``chunk_shapes``, or
 #    ``null`` for the whole record when sharding is off (the default, so most
@@ -94,7 +103,7 @@ from zarrmony.readers.plugin import ReaderPlugin
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
-AUDIT_SCHEMA_VERSION = 12
+AUDIT_SCHEMA_VERSION = 13
 
 
 def _file_forensics(path: str | Path, *, checksum: bool = False) -> dict[str, Any]:

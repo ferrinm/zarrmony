@@ -157,6 +157,24 @@ class MosaicMergedSiblingWarning(UserWarning):
     """
 
 
+class TileAlignmentWarning(UserWarning):
+    """The reader's blocks do not nest in the write grid, so every write splits one.
+
+    Emitted by the scene writer when level 0's source blocks straddle the
+    planned chunk (or shard) boundaries — the defect in issue #112. ``convert()``
+    derives an aligned ``tile_size`` for readers that accept one, so this fires
+    for a reader that does not, a caller who pinned a mismatched ``tile_size``,
+    or a pre-stitched array handed in directly.
+
+    It is a warning rather than a refusal because the conversion is still
+    correct, and because a caller who cannot change their reader's blocking has
+    no action to take beyond knowing why the run is slow. The cost is real
+    though: on the reference whole-slide scene, 1024² blocks into a 512² grid
+    built 831,936 dask tasks where the aligned run needed 369,600, and each
+    source block is re-read once per write it feeds.
+    """
+
+
 class ChannelColorCollisionWarning(UserWarning):
     """Two or more channels resolved to the same display color.
 

@@ -58,10 +58,10 @@ pip install "zarrmony[bioformats]"
 **Gigapixel inputs need tiling.** `bioio-bioformats` returns **one dask chunk per plane** by default. On a 141k × 168k slide that is a single 47.5 GB chunk, and the writer will try to hold it in memory to rechunk it. Pass:
 
 ```bash
-zarrmony convert slide.vsi out/ \
-  --reader-kwarg dask_tiles=true \
-  --reader-kwarg tile_size=1024,1024
+zarrmony convert slide.vsi out/ --reader-kwarg dask_tiles=true
 ```
+
+Leave `tile_size` off. Zarrmony plans the output geometry first and then asks the reader for tiles that fit it exactly, recording the choice in `config.reader_tile_size`. Pinning your own is supported and sometimes right, but a tile that does not divide the write grid makes every write split a source tile — on the reference slide that is 831,936 dask tasks against 369,600 — so the writer warns and names the tile that would have worked.
 
 ## Usage
 

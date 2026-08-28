@@ -27,6 +27,13 @@ have been at the larger target, and it is *how many objects exist* rather than
 (``shard_target_bytes=None``), so an unsharded conversion is byte-identical to
 a pre-#117 one.
 
+:func:`plan_write_grid` names the one those two collapse to — what a single
+write touches, which is the shard where the policy plans one and the chunk
+where it does not. :func:`plan_reader_tile_size` runs it *backwards*, deriving
+the tile a reader should produce so its blocks nest in the grid they will be
+written on, and :func:`split_axes` is the predicate saying when they do not
+(issue #112).
+
 ``isotropy_tolerance``, ``axis_floor``, ``pyramid_min_size`` and the two
 ``coarse_max_*`` bounds are consumed by the anisotropy-aware pyramid rule
 (:func:`~zarrmony.writers.pyramid.compute_level_shapes`), which lives beside the
@@ -693,6 +700,156 @@ def plan_level_shard_shapes(
     ]
 
 
+def plan_write_grid(
+    level_shape: Sequence[int],
+    dims: Sequence[str],
+    spacings_um: Sequence[float],
+    dtype: Any,
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> tuple[int, ...]:
+    """The block one write to this level covers — the shard, else the chunk.
+
+    The two planners answer different questions and only one of them is "what
+    does a single write touch". Under sharding the chunk stops being a storage
+    object and becomes purely a read unit, so the write unit is the shard; with
+    sharding off the two coincide. Anything reasoning about *units of work* —
+    the writer's rechunk target, the reader tile that should feed it — wants
+    this, not :func:`plan_chunk_shape`.
+
+    An explicit ``geometry.chunk_shape`` bypasses the chunk planner here for the
+    same reason :func:`plan_level_chunk_shapes` honours it: the caller said what
+    they wanted.
+    """
+    chunk = (
+        tuple(int(s) for s in geometry.chunk_shape)
+        if geometry.chunk_shape is not None
+        else plan_chunk_shape(level_shape, dims, spacings_um, dtype, geometry)
+    )
+    if not geometry.sharding_enabled:
+        return chunk
+    return plan_shard_shape(chunk, level_shape, dims, spacings_um, dtype, geometry)
+
+
+def split_axes(
+    source_lengths: Sequence[int],
+    write_grid: Sequence[int],
+    extents: Sequence[int],
+    dims: Sequence[str],
+) -> list[tuple[str, int, int]]:
+    """Axes where blocks of ``source_lengths`` must be *split* to fill ``write_grid``.
+
+    Returns ``(axis_name, source_length, grid_length)`` per offending axis, empty
+    when every write can be assembled from whole source blocks. This is the
+    predicate behind issue #112, and the asymmetry it encodes is the measured
+    one: on the reference whole-slide scene, feeding 1024² blocks to a 512²
+    write grid costs 9.0x the source partition count in dask tasks, while
+    feeding 512² blocks to a 2048² grid costs 1.06x. Merging whole blocks is
+    nearly free; splitting one is not, and it re-reads the source block once per
+    output block on top of that.
+
+    An axis is safe when every write-grid boundary is also a source boundary.
+    Grid boundaries fall at multiples of ``grid``, source boundaries at multiples
+    of ``source``, so the test is ``grid % source == 0`` — *except* where the
+    grid already spans the whole extent. Such an axis holds exactly one block,
+    so it has no interior boundary for a source block to straddle and no
+    ``source`` can split it. That exemption is load-bearing rather than a
+    micro-optimisation: :func:`_axis_candidates` clamps its last candidate to
+    the extent, so a small scene legitimately plans a non-power-of-two length
+    (a 375-row thumbnail plans ``375``) that would otherwise look unsafe against
+    every tile.
+    """
+    if not (len(source_lengths) == len(write_grid) == len(extents) == len(dims)):
+        raise ValueError(
+            f"split_axes needs one entry per axis; got {len(source_lengths)} "
+            f"source lengths, {len(write_grid)} grid lengths, {len(extents)} "
+            f"extents and {len(dims)} axis names"
+        )
+    offenders: list[tuple[str, int, int]] = []
+    for name, source, grid, extent in zip(
+        dims, source_lengths, write_grid, extents, strict=True
+    ):
+        source, grid, extent = int(source), int(grid), int(extent)
+        if source < 1 or grid < 1 or grid >= extent:
+            continue
+        if grid % source:
+            offenders.append((str(name), source, grid))
+    return offenders
+
+
+def plan_reader_tile_size(
+    scene_shapes: Sequence[Sequence[int]],
+    dims: Sequence[str],
+    scene_spacings: Sequence[Sequence[float]],
+    dtype: Any,
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> tuple[int, int] | None:
+    """The ``(Y, X)`` tile a reader should produce so no scene's blocks get split.
+
+    Issue #112. Nothing connected the reader's tile size to the geometry the
+    planner picks, so the writer's rechunk absorbed the mismatch — and on the
+    common whole-slide path that rechunk was always a *split*, the expensive
+    direction. Planning the write grid first and asking the reader for blocks
+    that nest inside it removes the rechunk instead of optimising it.
+
+    ``None`` when the axes carry no Y or X, which is the only case where a tile
+    size means nothing.
+
+    **Why the minimum across scenes, and why it is safe.** ``tile_size`` is a
+    reader-constructor argument — one value for every scene — while the write
+    grid is planned per scene, so a multi-scene file cannot have them all match
+    exactly. Taking the element-wise minimum is provably split-free rather than
+    merely a good guess: every non-single-chunk grid length is a power of two
+    (:func:`_axis_candidates`), so the smallest divides all the others, and the
+    scenes it does *not* divide are exactly the ones whose grid spans their
+    whole extent — which :func:`split_axes` shows cannot be split at all. Scenes
+    larger than the tile then pay a cheap merge. The alternative, taking the
+    dominant scene's grid, is what a reader tuned by hand would do and it splits
+    every smaller scene: a whole-slide file is a gigapixel scene plus a
+    ``label`` and a ``macro`` thumbnail, and those thumbnails are the ones that
+    would pay.
+
+    :param scene_shapes: One level-0 shape per scene, each with one entry per
+        axis in ``dims`` order.
+    :param dims: Axis names shared by every scene (e.g. ``"TCZYX"``).
+    :param scene_spacings: One physical-spacing list per scene, matching
+        ``scene_shapes``.
+    :param dtype: Anything :func:`numpy.dtype` accepts; only ``itemsize`` is used.
+    :param geometry: The policy supplying the chunk and shard targets.
+    """
+    axis_index = {name: i for i, name in enumerate(dims)}
+    if "Y" not in axis_index or "X" not in axis_index:
+        return None
+    if len(scene_shapes) != len(scene_spacings):
+        raise ValueError(
+            f"plan_reader_tile_size needs one spacing list per scene; got "
+            f"{len(scene_spacings)} for {len(scene_shapes)} scenes"
+        )
+    if not scene_shapes:
+        raise ValueError("plan_reader_tile_size needs at least one scene shape")
+
+    best: dict[str, int] = {}
+    fallback: dict[str, int] = {}
+    for shape, spacings in zip(scene_shapes, scene_spacings, strict=True):
+        extents = tuple(int(s) for s in shape)
+        grid = plan_write_grid(extents, dims, spacings, dtype, geometry)
+        for name in ("Y", "X"):
+            axis = axis_index[name]
+            length = int(grid[axis])
+            # A grid spanning the whole axis constrains nothing (one block, no
+            # interior boundary), so it must not drag the minimum down — a
+            # 375-row thumbnail would otherwise pin every scene's tile to 375.
+            # Kept as a fallback for the all-single-chunk case, where any value
+            # is split-free and the largest is the least wasteful.
+            if length >= extents[axis]:
+                fallback[name] = max(fallback.get(name, 0), length)
+            else:
+                best[name] = min(best.get(name, length), length)
+
+    tile_y = best.get("Y", fallback.get("Y", 1))
+    tile_x = best.get("X", fallback.get("X", 1))
+    return (max(1, tile_y), max(1, tile_x))
+
+
 __all__ = [
     "CHUNK_TARGET_WARN_BYTES",
     "DEFAULT_AXIS_FLOOR",
@@ -710,7 +867,10 @@ __all__ = [
     "plan_chunk_shape",
     "plan_level_chunk_shapes",
     "plan_level_shard_shapes",
+    "plan_reader_tile_size",
     "plan_shard_shape",
+    "plan_write_grid",
     "resolve_geometry",
     "spacings_for_level",
+    "split_axes",
 ]

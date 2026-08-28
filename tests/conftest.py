@@ -140,6 +140,21 @@ def _build_lif_tilescan_metadata(scene: "TileScene") -> str:
     )
 
 
+class FakeDimensions:
+    """bioio's ``Dimensions`` surface: ``.order``, ``.shape`` and ``.T``/``.C``/…
+
+    Real ``BioImage.dims`` exposes each axis size as an attribute named for the
+    axis, which is how :func:`zarrmony.api._scene_planning_inputs` reads extents
+    without touching pixels.
+    """
+
+    def __init__(self, order: str, shape: Sequence[int]) -> None:
+        self.order = str(order)
+        self.shape = tuple(int(s) for s in shape)
+        for name, size in zip(self.order, self.shape, strict=True):
+            setattr(self, name, int(size))
+
+
 class FakeReader:
     """Minimal bioio-like reader for testing without real proprietary files.
 
@@ -203,6 +218,16 @@ class FakeReader:
         if isinstance(idx, str):
             idx = self.scenes.index(idx)
         self._current_scene = idx
+
+    @property
+    def dims(self) -> FakeDimensions:
+        """Mirrors bioio's ``Reader.dims`` — axis order plus a size per axis.
+
+        Metadata only, holding no pixels: this is the surface the #112 tile
+        derivation reads, and reading it must not build the dask graph the
+        derivation exists to shape.
+        """
+        return FakeDimensions(self._dims, self._shape)
 
     @property
     def current_scene_index(self) -> int:

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import fsspec
+import numpy as np
 from bioio_ome_zarr.writers import Channel
 from ome_types import OME
 from ome_types.model import Image, Pixels, PixelType
@@ -25,10 +26,12 @@ from zarrmony.errors import (
     MosaicPlacementWarning,
     OutputExistsError,
     PlateSelectionError,
+    ReaderKwargError,
+    TileAlignmentWarning,
     ValidationWarning,
     ZarrmonyError,
 )
-from zarrmony.geometry import Geometry, resolve_geometry
+from zarrmony.geometry import Geometry, plan_reader_tile_size, resolve_geometry
 from zarrmony.metadata._lif_scene import find_scene_xml
 from zarrmony.metadata.acquisition import extract_acquisition
 from zarrmony.metadata.audit_channels import from_lif_extracted, from_ome_channels
@@ -56,7 +59,7 @@ from zarrmony.metadata.ome_extractors import (
     extract_objective_from_ome,
 )
 from zarrmony.naming import resolve_scene_dirnames, sanitize_scene_name
-from zarrmony.readers.default import derive_bioio_distribution
+from zarrmony.readers.default import _coerce_bool, derive_bioio_distribution
 from zarrmony.readers.plugin import ReaderPlugin, get_reader
 from zarrmony.writers.bf2raw import write_bf2raw_wrapper
 from zarrmony.writers.ome_xml import (
@@ -68,7 +71,11 @@ from zarrmony.writers.ome_xml import (
 )
 from zarrmony.writers.per_scene import write_per_scene_metadata
 from zarrmony.writers.plate import summarize_plate_layout, write_plate
-from zarrmony.writers.scene import _dtype_window, write_scene
+from zarrmony.writers.scene import (
+    _dtype_window,
+    _physical_scales_for_dims,
+    write_scene,
+)
 
 Layout = Literal["auto", "per-scene", "bf2raw", "plate"]
 ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
@@ -690,6 +697,128 @@ def _resolve_distribution(reader: Any, plugin: ReaderPlugin) -> str | None:
     )
 
 
+# Backend conventions for "hand me the scene in tiles" and "this big". Both are
+# coerced by the default plugin (``readers/default.py``); no other plugin takes
+# them, which is why alignment is scoped to that plugin by name.
+_TILED_READER_KWARG = "dask_tiles"
+_TILE_SIZE_READER_KWARG = "tile_size"
+_TILE_ALIGNING_PLUGIN = "bioio"
+
+# The axes the geometry planners speak. A reader reporting a samples axis (#107)
+# has it dropped here: S folds into C downstream, and the chunk planner pins C
+# to 1, so it cannot move the Y/X answer this feeds.
+_PLANNABLE_AXES = frozenset("TCZYX")
+
+
+def _scene_planning_inputs(
+    reader: Any,
+) -> tuple[list[str], list[tuple[int, ...]], list[list[float]], Any] | None:
+    """Per-scene ``(dims, shapes, spacings, dtype)`` read from metadata alone.
+
+    ``None`` when the reader does not expose what the planners need, or when its
+    scenes disagree about axis order — either way there is no single tile size
+    to derive and the caller leaves the reader alone.
+
+    Deliberately never touches ``xarray_dask_data``. Building that graph is the
+    expensive thing this alignment exists to stop doing badly, and doing it once
+    to decide how to do it again would cost more than the mismatch. Everything
+    the planners need — extents, spacings, itemsize — is metadata.
+    """
+    try:
+        dtype = np.dtype(reader.dtype)
+    except Exception:  # noqa: BLE001 — ADR-0001 trust model; alignment is optional
+        return None
+
+    dims_order: list[str] | None = None
+    shapes: list[tuple[int, ...]] = []
+    spacings: list[list[float]] = []
+    for index in range(len(reader.scenes)):
+        try:
+            reader.set_scene(index)
+            order = [d for d in str(reader.dims.order) if d in _PLANNABLE_AXES]
+            sizes = tuple(int(getattr(reader.dims, d)) for d in order)
+            scale = _physical_scales_for_dims(order, reader)
+        except Exception:  # noqa: BLE001 — see above
+            return None
+        if dims_order is None:
+            dims_order = order
+        elif order != dims_order:
+            return None
+        shapes.append(sizes)
+        spacings.append(scale)
+
+    if dims_order is None:
+        return None
+    return dims_order, shapes, spacings, dtype
+
+
+def _align_reader_tiles(
+    reader: Any,
+    plugin: ReaderPlugin,
+    input_path: str | Path,
+    reader_kwargs: dict[str, Any] | None,
+    geometry: Geometry,
+) -> tuple[Any, tuple[int, int] | None]:
+    """Reopen ``reader`` asking for tiles that nest in the planned write grid.
+
+    Issue #112. Nothing used to connect the reader's tile size to the geometry
+    the planner picks, so ``write_pyramid`` absorbed the mismatch with a
+    ``rechunk`` — and on the whole-slide path that rechunk was always a *split*,
+    which is the expensive direction by an order of magnitude (see
+    :class:`~zarrmony.errors.TileAlignmentWarning`). Planning the grid first and
+    asking the reader for blocks that fit it removes the rechunk rather than
+    optimising it.
+
+    Returns ``(reader, tile_size)`` — the original reader and ``None`` whenever
+    alignment does not apply, so every caller path stays identical to before:
+
+    - a plugin other than the default one, since ``tile_size`` is its convention;
+    - ``dask_tiles`` off or absent, where the backend is not tiling at all and
+      the kwarg means nothing;
+    - a caller who pinned ``tile_size``, whose choice is respected — the writer
+      still warns if it turns out to split, and that check runs against the real
+      dask blocks rather than a guess about what the backend did with the value;
+    - a reader whose metadata will not support planning, or a reopen that fails.
+
+    The reopen costs a second metadata parse. That is a directory scan or an
+    index read against a conversion measured in hours, and it buys the whole
+    difference between 831,936 dask tasks and 369,600 on the reference scene.
+    """
+    kwargs = dict(reader_kwargs or {})
+    if plugin.name != _TILE_ALIGNING_PLUGIN:
+        return reader, None
+    if _TILE_SIZE_READER_KWARG in kwargs:
+        return reader, None
+    try:
+        tiled = _coerce_bool(_TILED_READER_KWARG, kwargs.get(_TILED_READER_KWARG))
+    except ReaderKwargError:
+        # Let the reader's own coercion report it; this is not our error to own.
+        return reader, None
+    if not tiled:
+        return reader, None
+
+    planning = _scene_planning_inputs(reader)
+    if planning is None:
+        return reader, None
+    dims, shapes, spacings, dtype = planning
+    tile = plan_reader_tile_size(shapes, dims, spacings, dtype, geometry)
+    if tile is None:
+        return reader, None
+
+    aligned = {**kwargs, _TILE_SIZE_READER_KWARG: tile}
+    try:
+        return plugin.open(Path(str(input_path)), **aligned), tile
+    except Exception as exc:  # noqa: BLE001 — ADR-0001 trust model
+        warnings.warn(
+            f"could not reopen {input_path!s} with tile_size={tile} to match the "
+            f"planned write grid ({type(exc).__name__}: {exc}); continuing with "
+            f"the reader's own blocking, which may build a much larger dask graph",
+            TileAlignmentWarning,
+            stacklevel=3,
+        )
+        return reader, None
+
+
 def convert(
     input_path: str | Path,
     output: str | Path,
@@ -834,6 +963,14 @@ def convert(
     _require_plate_selector_if_ambiguous(reader, reader_kwargs)
     if not reader.scenes:
         raise ZarrmonyError(f"reader returned no scenes for {input_path!s}")
+    # ADR-0010 (#112): the write grid is planned from geometry, so the reader
+    # has to be told about it rather than left to pick a tile size the writer
+    # then rechunks away. Runs after the scenes check because the derivation
+    # needs them, and before `_resolve_distribution` so the audit describes the
+    # reader that actually produced the pixels.
+    reader, reader_tile_size = _align_reader_tiles(
+        reader, plugin, input_path, reader_kwargs, resolved_geometry
+    )
     distribution = _resolve_distribution(reader, plugin)
 
     effective_layout = _resolve_layout(layout, reader, plugin)
@@ -882,6 +1019,13 @@ def convert(
     config = {
         "layout": effective_layout,
         "geometry": resolved_geometry.to_audit(),
+        # #112: the tile zarrmony derived for the reader, or ``None`` when it
+        # left the reader's blocking alone (a caller-pinned tile_size, an
+        # untiled backend, a plugin that does not take one). Recorded because
+        # "did this run's source blocks nest in its write grid?" is otherwise
+        # unanswerable from the store, and it is the first thing to check when
+        # a whole-slide conversion is slow.
+        "reader_tile_size": list(reader_tile_size) if reader_tile_size else None,
         "channel_colors": audit_channel_colors,
         "contrast_percentile": contrast_percentile,
         "force": force,
