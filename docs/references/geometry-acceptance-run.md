@@ -128,10 +128,43 @@ lucida dataset health <dataset>
 
 **Check your CLI is current first.** A stale `lucida` fails both commands in ways that look like store problems but are not — `unknown variant 'dataset_open_progress'` from `open` (the server speaks a protocol the client predates; the open itself succeeded) and `unrecognized subcommand 'health'`. The client and server can report the same version string, so nothing advertises the skew. Rebuild with `cargo build -p lucida-cli`, and if `CARGO_TARGET_DIR` is set in your environment the fresh binary is there rather than under the in-repo `./target`, which may hold an older `release/lucida` that runs without complaint.
 
-Then open the dataset in the web viewer and put it under a 3D camera:
+## Measure the fetch budget under a 3D camera
 
-- **The behaviour to eyeball.** The admission window is `max(64, 4 × concurrency) = 64` requests, drained centre-out. Under the old geometry those 64 requests bought 64 whole-brain Z planes — 128 µm of Z across the full 15.9 × 13.4 mm, almost all off-screen. They should now buy roughly a 256³ cube: about 461 × 461 × 512 µm centred on the camera. The reported symptom was "the data budget is maxed out with a few slices instead of the 3D volume in the middle of the viewer"; that is what should be gone.
-- **Expect it to look dimmer.** With a real coarse level present, the coarse tier is zarrmony's mean-pooled level 5 rather than Lucida's max-pooled generated tier. For sparse structures mean-pooling reads dimmer. That is the documented consequence of the default, not a regression — `--downsample-method max` is the escape hatch if a viewer genuinely needs the old appearance.
+The admission window is `max(64, 4 × concurrency) = 64` requests, drained centre-out. Under the old geometry those 64 requests bought whole-brain Z planes, almost all of them off-screen; they should now buy a compact block centred on the camera. The reported symptom was "the data budget is maxed out with a few slices instead of the 3D volume in the middle of the viewer".
+
+This does not need eyeballing, and does not need a browser. Three facts make it a bounding-box check on integers:
+
+- `lucida plan visible-chunks` dumps the selected chunk coordinates — level, x, y, z, t, c — split into `visible` and `prefetch` tiers.
+- `lucida camera` (distinct from `lucida view`, which drives only the 2D slice camera) has `mode {slice,arcball,fly}` and `rotate` / `pan` / `zoom` / `fly-tick`, so the 3D camera is drivable headlessly against the durable viewer profile.
+- Lucida already sorts the chunk list centre-out, by squared Euclidean distance from the camera's `sort_center`, symmetric across all three axes. **So the first 64 entries of the `visible` tier are the admission window** — slice them off the front rather than modelling the budget separately.
+
+```bash
+W=<workspace id holding the store>   # pass it explicitly; the CLI's default is often another workspace
+
+lucida view center --x <cx> --y <cy> --workspace $W --quiet   # volume middle, in voxels
+lucida view z-range <z0> <z1> --workspace $W --quiet
+lucida camera mode arcball --workspace $W --quiet
+lucida camera zoom --delta -1.0 --workspace $W --quiet        # negative moves the camera IN
+
+lucida --json plan visible-chunks --workspace $W | jq -c '
+  [.datasets[].member_plans[].tiers[] | select(.tier=="visible") | .chunks[]][0:64] as $c
+  | {x:[($c|map(.x)|min),($c|map(.x)|max)],
+     y:[($c|map(.y)|min),($c|map(.y)|max)],
+     z:[($c|map(.z)|min),($c|map(.z)|max)]}'
+```
+
+The JSON is flat — `.datasets[]`, not `.result.datasets[]`. Multiply each span by the level-0 chunk edge and the voxel spacing to get micrometres.
+
+**Pass** is a compact block whose spans are a handful of chunks on every axis, sitting in the middle of the full candidate ranges rather than at their edges. **Fail** is an x or y span equal to the whole level-0 chunk grid with a z span of 1–2. If the window came back in raster order instead of centre-out you would see a full-width x run at minimum y and z, so the shape of the result also validates the method.
+
+Two caveats:
+
+- The command prints `Web planner equivalent: false`. It runs `lucida-core`'s `Scene::chunk_plan_for`, not the web planner — no lane priorities, active-set carry-forward, minimap path, or CPU-cache filtering. The centre-out sort and the frustum cull are the core's and those are what this criterion is about, but the browser's actual first 64 may differ in ordering detail. Quote it as the admission window, not as the fetch trace.
+- These commands **mutate** the durable `default` viewer profile. Restore it afterwards.
+
+**Expect it to look dimmer** in the viewer. With a real coarse level present, the coarse tier is zarrmony's mean-pooled level 5 rather than Lucida's max-pooled generated tier. For sparse structures mean-pooling reads dimmer. That is the documented consequence of the default, not a regression — `--downsample-method max` is the escape hatch if a viewer genuinely needs the old appearance.
+
+Note that the sign of this result is largely settled by the chunk shape before any camera moves. A full-width chunk makes a centred cube _unrepresentable_ at any budget: if one chunk spans the whole specimen in x, 64 of them can only ever be planes. The measurement confirms the mechanism end to end; the causal argument rests on the geometry.
 
 ## Record on the issue
 
@@ -141,4 +174,4 @@ The verification script's output covers the measurements. Add, in prose:
 - Peak RSS if you watched it, and whether `DASK_NUM_WORKERS` had to be capped.
 - Store size and object count against the ~283 GB / ~3.2 M estimates.
 - The `lucida dataset health` generated-coarse line.
-- A screenshot under a 3D camera, and one sentence on whether the fetch budget resolved into a centred volume.
+- The 64-chunk admission window's bounding box, in chunks and in micrometres, against the full extent of the volume.
