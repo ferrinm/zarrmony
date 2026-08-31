@@ -42,17 +42,34 @@ this release replaces the claim rather than merely qualifying it.
 - **0.15.0 also predicted a sharded store would be larger, and it is not.**
   "512 KiB chunks compress worse than 8 MiB ones" is sound in principle and
   does not bite at this ratio: the two stores are 88 MB apart on 139 GiB. The
-  prediction is removed from the README and corrected in ADR-0010. Note the
-  scope — that is a 2D scene whose chunk is a 512² plane tile. The volumetric
-  case, whose chunk is a 64³ cube cutting across the axis light-sheet data is
-  most correlated along, is still unmeasured (#126).
+  prediction is removed from the README and corrected in ADR-0010.
+- **The volumetric case is measured too, and it shows the caveat above was
+  aimed at the wrong mechanism.** The reference whole-brain volume has been
+  written both ways at the same `[1,1,64,64,64]` chunk and the same six levels
+  — unsharded under #90, sharded under #126 — which isolates sharding from the
+  chunk target:
+
+  | | no shards | 8 MiB shards | |
+  | --- | --- | --- | --- |
+  | store bytes | 261,959,557,972 | 262,010,912,050 | +0.02 % |
+  | objects | 3,182,337 | 209,220 | 15.2× |
+  | wall-clock | 30 h 04 m 43 s | 10 h 09 m 54 s | 0.34× |
+
+  **Compression runs per chunk, and sharding does not change the chunk**, so
+  the compressed payload is identical by construction and the 51.4 MB delta is
+  the shard index: 16 B per chunk slot plus 4 B per shard predicts 51.96 MB,
+  within 1.2 %. Whether the chunk is a plane tile or a cube never entered into
+  it — that is a question about `chunk_target_bytes`, a separate field. Note
+  also that a volume's shard count is an upper bound rather than an exact
+  prediction, since zarr skips a shard whose chunks are all fill value: 209,211
+  landed against 210,345 planned.
 - **`scripts/verify_geometry.py` turns out to be shard-blind in a way the
   0.15.0 notes understated.** It was known to predict object count from the
   chunk grid. Run against a real sharded store for the first time, the report
   **never mentions sharding at all** — no shard shape in the checks, no shard
   column in the levels table — and every check passes while it prints the
   unsharded object prediction. Use `--no-object-count` and measure the count
-  directly until #124 lands the fix; do not quote the report as evidence of a
+  directly until #129 lands the fix; do not quote the report as evidence of a
   store's geometry without saying in the surrounding text that it is sharded.
 - **The reference volume's sharded object count in 0.15.0's Migration note was
   wrong** — "a 256³ shard holding 64 chunks of 64³ … ~47k objects" was the
