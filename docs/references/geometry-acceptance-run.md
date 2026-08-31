@@ -124,7 +124,9 @@ lucida dataset open "$OUT/volume.ome.zarr"
 lucida dataset health <dataset>
 ```
 
-`plan_generated_coarse_for_image` early-returns `None` for any image whose manifest carries a `coarse_level_index`, so **`Generated coarse: … (levels 0, …)`** is the observable signal that the source coarse tier resolved and the server is not building its own. A non-zero level count means Lucida did not accept level 5 — capture the health output before doing anything else, because that is the interesting failure.
+`plan_generated_coarse_for_image` early-returns `None` for any image whose manifest carries a `coarse_level_index`, so **`Generated coarse: … (levels 0, …)`** is the observable signal that the source coarse tier resolved and the server is not building its own. A non-zero level count means Lucida did not accept level 5 — capture the health output before doing anything else, because that is the interesting failure. `Generated cache: 0 on disk` on the following line corroborates it: nothing was built, not merely nothing pending.
+
+**Check your CLI is current first.** A stale `lucida` fails both commands in ways that look like store problems but are not — `unknown variant 'dataset_open_progress'` from `open` (the server speaks a protocol the client predates; the open itself succeeded) and `unrecognized subcommand 'health'`. The client and server can report the same version string, so nothing advertises the skew. Rebuild with `cargo build -p lucida-cli`, and if `CARGO_TARGET_DIR` is set in your environment the fresh binary is there rather than under the in-repo `./target`, which may hold an older `release/lucida` that runs without complaint.
 
 Then open the dataset in the web viewer and put it under a 3D camera:
 
