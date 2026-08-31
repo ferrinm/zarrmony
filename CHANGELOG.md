@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### HITL validation
+
+**The ADR-0010 acceptance run is complete (#90).** The reference whole-brain
+volume was re-converted from source under the default geometry and both viewer
+criteria now have measurements behind them rather than predictions.
+
+- **Lucida resolves zarrmony's coarse tier and builds nothing of its own.**
+  `lucida dataset health` reports
+  `Generated coarse: healthy (levels 0, ready 0, pending 0, failed 0, unavailable 0)`
+  with `Generated cache: 0 on disk`. `plan_generated_coarse_for_image`
+  early-returns for any image whose manifest carries a `coarse_level_index`, so
+  zero generated levels is the direct signal that the server accepted the
+  mean-pooled level 5 instead of grinding out a max-pooled tier at concurrency 1
+  over the full source. This is the coarse-level stopping rule observed
+  end-to-end for the first time.
+- **The 64-request admission window resolves into a centred block.** Under a 3D
+  camera inside the volume at level 0, the window spans 6 × 6 × 3 chunks —
+  691.2 × 691.2 × 384 µm, 32 MiB — drawn from 188,223 candidates in a
+  13.4 × 15.9 × 7.25 mm volume. Under the old `[1,1,1,1125,7452]` chunk the
+  level-0 grid was 1 × 8 × 3627, so the same 64 requests could only ever take
+  1 × 8 × 8: the whole specimen, eight planes thick, at 1.0 GiB. The reported
+  symptom — "the data budget is maxed out with a few slices instead of the 3D
+  volume in the middle of the viewer" — was unavoidable at any budget under that
+  grid, because a centred cube was not expressible in it.
+
+### Changed
+
+- `docs/references/geometry-acceptance-run.md` replaces "put it under a 3D
+  camera and eyeball it" with a scripted procedure. The criterion is a
+  bounding-box check on integers: `lucida plan visible-chunks` dumps the
+  selected chunk coordinates, `lucida camera` drives the 3D camera headlessly,
+  and lucida-core already sorts the chunk list centre-out from the camera, so
+  the first 64 entries of the `visible` tier are the admission window. Also
+  warns that a stale Lucida CLI fails the coarse-tier gate confusingly — client
+  and server can report the same version string while the client predates
+  `dataset health` — and notes the diagnostic's `Web planner equivalent: false`
+  caveat.
+
 ## [0.15.1] - 2026-08-28
 
 Documentation only; no code change, and no reason to upgrade except to read
