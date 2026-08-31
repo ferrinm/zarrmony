@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### HITL validation
+
+**The ADR-0010 acceptance run is complete (#90).** The reference whole-brain
+volume was re-converted from source under the default geometry and both viewer
+criteria now have measurements behind them rather than predictions.
+
+- **Lucida resolves zarrmony's coarse tier and builds nothing of its own.**
+  `lucida dataset health` reports
+  `Generated coarse: healthy (levels 0, ready 0, pending 0, failed 0, unavailable 0)`
+  with `Generated cache: 0 on disk`. `plan_generated_coarse_for_image`
+  early-returns for any image whose manifest carries a `coarse_level_index`, so
+  zero generated levels is the direct signal that the server accepted the
+  mean-pooled level 5 instead of grinding out a max-pooled tier at concurrency 1
+  over the full source. This is the coarse-level stopping rule observed
+  end-to-end for the first time.
+- **The 64-request admission window resolves into a centred block.** Under a 3D
+  camera inside the volume at level 0, the window spans 6 × 6 × 3 chunks —
+  691.2 × 691.2 × 384 µm, 32 MiB — drawn from 188,223 candidates in a
+  13.4 × 15.9 × 7.25 mm volume. Under the old `[1,1,1,1125,7452]` chunk the
+  level-0 grid was 1 × 8 × 3627, so the same 64 requests could only ever take
+  1 × 8 × 8: the whole specimen, eight planes thick, at 1.0 GiB. The reported
+  symptom — "the data budget is maxed out with a few slices instead of the 3D
+  volume in the middle of the viewer" — was unavoidable at any budget under that
+  grid, because a centred cube was not expressible in it.
+
+### Changed
+
+- `docs/references/geometry-acceptance-run.md` replaces "put it under a 3D
+  camera and eyeball it" with a scripted procedure. The criterion is a
+  bounding-box check on integers: `lucida plan visible-chunks` dumps the
+  selected chunk coordinates, `lucida camera` drives the 3D camera headlessly,
+  and lucida-core already sorts the chunk list centre-out from the camera, so
+  the first 64 entries of the `visible` tier are the admission window. Also
+  warns that a stale Lucida CLI fails the coarse-tier gate confusingly — client
+  and server can report the same version string while the client predates
+  `dataset health` — and notes the diagnostic's `Web planner equivalent: false`
+  caveat.
+
 ## [0.15.1] - 2026-08-28
 
 Documentation only; no code change, and no reason to upgrade except to read
@@ -42,17 +80,34 @@ this release replaces the claim rather than merely qualifying it.
 - **0.15.0 also predicted a sharded store would be larger, and it is not.**
   "512 KiB chunks compress worse than 8 MiB ones" is sound in principle and
   does not bite at this ratio: the two stores are 88 MB apart on 139 GiB. The
-  prediction is removed from the README and corrected in ADR-0010. Note the
-  scope — that is a 2D scene whose chunk is a 512² plane tile. The volumetric
-  case, whose chunk is a 64³ cube cutting across the axis light-sheet data is
-  most correlated along, is still unmeasured (#126).
+  prediction is removed from the README and corrected in ADR-0010.
+- **The volumetric case is measured too, and it shows the caveat above was
+  aimed at the wrong mechanism.** The reference whole-brain volume has been
+  written both ways at the same `[1,1,64,64,64]` chunk and the same six levels
+  — unsharded under #90, sharded under #126 — which isolates sharding from the
+  chunk target:
+
+  | | no shards | 8 MiB shards | |
+  | --- | --- | --- | --- |
+  | store bytes | 261,959,557,972 | 262,010,912,050 | +0.02 % |
+  | objects | 3,182,337 | 209,220 | 15.2× |
+  | wall-clock | 30 h 04 m 43 s | 10 h 09 m 54 s | 0.34× |
+
+  **Compression runs per chunk, and sharding does not change the chunk**, so
+  the compressed payload is identical by construction and the 51.4 MB delta is
+  the shard index: 16 B per chunk slot plus 4 B per shard predicts 51.96 MB,
+  within 1.2 %. Whether the chunk is a plane tile or a cube never entered into
+  it — that is a question about `chunk_target_bytes`, a separate field. Note
+  also that a volume's shard count is an upper bound rather than an exact
+  prediction, since zarr skips a shard whose chunks are all fill value: 209,211
+  landed against 210,345 planned.
 - **`scripts/verify_geometry.py` turns out to be shard-blind in a way the
   0.15.0 notes understated.** It was known to predict object count from the
   chunk grid. Run against a real sharded store for the first time, the report
   **never mentions sharding at all** — no shard shape in the checks, no shard
   column in the levels table — and every check passes while it prints the
   unsharded object prediction. Use `--no-object-count` and measure the count
-  directly until #124 lands the fix; do not quote the report as evidence of a
+  directly until #129 lands the fix; do not quote the report as evidence of a
   store's geometry without saying in the surrounding text that it is sharded.
 - **The reference volume's sharded object count in 0.15.0's Migration note was
   wrong** — "a 256³ shard holding 64 chunks of 64³ … ~47k objects" was the

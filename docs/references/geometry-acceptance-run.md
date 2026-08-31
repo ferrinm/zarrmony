@@ -83,19 +83,31 @@ The reader's `layout_hint` is `flat`, so this writes one store at `$OUT/volume.o
 
 ## Sharding
 
-Optional, off by default, and **not yet measured on a volume** — tracked in #126. Add `--shard-target-bytes` to the convert above; bare, it resolves to 8 MiB. What the planner returns for this volume:
+Optional, off by default, and **now measured on this volume** — see #126, and the table at the end of this section. Add `--shard-target-bytes` to the convert above; bare, it resolves to 8 MiB. What the planner returns for this volume:
 
 - **The chunk does not move.** `(1, 1, 64, 64, 64)` at every level, identical to the unsharded run, so `coarse_level_index` is still 5 and every read-side expectation below carries over unchanged. Sharding changes the write unit and nothing else.
 - **16 chunks per shard, 8.00 MiB exactly, at every level** — `(1, 1, 128, 128, 256)` at levels 0–2, flipping to `(1, 1, 128, 256, 128)` at 3–5 as per-level spacing changes which axis is longest in micrometres. No tail-level raggedness, unlike the 2D arm. **3,194,997 objects down to 210,345**, 15.2×.
 
-Four things differ from the 2D acceptance run, and each is a reason not to assume #124's result transfers:
+Three things differ from the 2D acceptance run, and each is a reason not to assume #124's result transfers wholesale:
 
 - **`TileAlignmentWarning` will fire on Y and X, and the hint is not actionable.** `_align_reader_tiles` early-returns for any plugin that is not the default `bioio` one, since `tile_size` is that plugin's convention — so `config.reader_tile_size` will be `null` in the audit, which is correct behaviour rather than a defect. The adapter hands back one whole Z-plane per dask block, which divides neither the 128 nor the 256 write grid. The suggested `tile_size=128,256` is generated from the write grid without knowing which plugin is loaded, and this plugin does not accept it. The condition is pre-existing, not caused by sharding: unsharded, the same two axes offend against the 64³ grid.
-- **Size the host for the Z gather, not for the pyramid.** Filling one chunk row needs 64 planes; one shard row needs 128, at ~125.6 MiB per plane per channel — roughly 47 GiB of gather before compression buffers. An in-flight run at these settings has been observed above 60 GiB RSS. Use a large-memory node; the earlier unsharded attempt was killed on a smaller one.
+- **Size the host for the Z gather, not for the pyramid.** Filling one chunk row needs 64 planes; one shard row needs 128, at ~125.6 MiB per plane per channel — roughly 47 GiB of gather before compression buffers. Measured peak was **94.2 GiB**, 2.0× that arithmetic, where the 2D arm overshot its own gather by only 1.35×. The multiplier is not stable between the two paths; size against 94.2 GiB, not against the gather. Use a large-memory node.
 - **A speedup here is not purely the write-unit effect.** Sharding also cuts the per-plane split factor from 16,263 chunks to 2,100 shards, 7.7× on top of the 15.2× object reduction. #124's 2D arm isolates the write-unit effect because its reader tiles already matched the grid; this one does not. Record it as such.
-- **Do not assume the store will be the same size.** #124 measured no size cost on a 2D scene, but its inner chunk is a 512² plane tile. Here it is a 64³ cube, which cuts across the axis light-sheet data is most correlated along. If small-chunk compression loss shows up anywhere it is here. Record the number; do not predict its sign.
+- **Object count is an upper bound here, not an exact prediction.** Zarr does not write a shard whose chunks are all fill value, so the run landed at **209,211 shards against the 210,345 planned**, every absent one on a trailing row covering a 3-voxel sliver of a padded axis. A shortfall is not a truncated write; an excess would be the alarming direction.
 
-Downstream, `scripts/verify_geometry.py` is shard-blind — the report never mentions sharding at all and its object count comes from the chunk grid, so pass `--no-object-count` and count with `find` instead (#124). And Lucida cannot open a sharded store at all (#117), so the `lucida dataset health` generated-coarse gate below **cannot run**; use `napari-ome-zarr` and the OME-NGFF validator for the visual check.
+Measured, against the unsharded run of #90 — same source, same default geometry, same `(1, 1, 64, 64, 64)` chunk and same six levels, so this isolates sharding:
+
+|             | no shards       | 8 MiB shards    |             |
+| ----------- | --------------- | --------------- | ----------- |
+| store bytes | 261,959,557,972 | 262,010,912,050 | **+0.02 %** |
+| objects     | 3,182,337       | 209,220         | **15.2×**   |
+| wall-clock  | 30 h 04 m 43 s  | 10 h 09 m 54 s  | **0.34×**   |
+| peak RSS    | 117.2 GiB       | 94.20 GiB       | −20 %       |
+| CPU         | 117 %           | 168 %           | +44 %       |
+
+The size question that earlier editions of this section told you not to predict has an answer, and a reason: **compression runs per chunk and sharding does not change the chunk**, so the payload is identical by construction and the 51.4 MB delta is the shard index — 16 B per chunk slot plus 4 B per shard. Plane tile versus cube never entered into it. See ADR-0010's #126 follow-up.
+
+Downstream, `scripts/verify_geometry.py` is shard-blind — the report never mentions sharding at all and its object count comes from the chunk grid, so pass `--no-object-count` and count with `find` instead (#129). And Lucida cannot open a sharded store at all (#117), so the `lucida dataset health` generated-coarse gate below **cannot run** against a sharded store; use `napari-ome-zarr` and the OME-NGFF validator for the visual check, and note that napari pins 3D display to the coarsest level regardless of zoom, so the pyramid check is only meaningful in 2D.
 
 ## Verify the store
 
@@ -112,12 +124,47 @@ lucida dataset open "$OUT/volume.ome.zarr"
 lucida dataset health <dataset>
 ```
 
-`plan_generated_coarse_for_image` early-returns `None` for any image whose manifest carries a `coarse_level_index`, so **`Generated coarse: … (levels 0, …)`** is the observable signal that the source coarse tier resolved and the server is not building its own. A non-zero level count means Lucida did not accept level 5 — capture the health output before doing anything else, because that is the interesting failure.
+`plan_generated_coarse_for_image` early-returns `None` for any image whose manifest carries a `coarse_level_index`, so **`Generated coarse: … (levels 0, …)`** is the observable signal that the source coarse tier resolved and the server is not building its own. A non-zero level count means Lucida did not accept level 5 — capture the health output before doing anything else, because that is the interesting failure. `Generated cache: 0 on disk` on the following line corroborates it: nothing was built, not merely nothing pending.
 
-Then open the dataset in the web viewer and put it under a 3D camera:
+**Check your CLI is current first.** A stale `lucida` fails both commands in ways that look like store problems but are not — `unknown variant 'dataset_open_progress'` from `open` (the server speaks a protocol the client predates; the open itself succeeded) and `unrecognized subcommand 'health'`. The client and server can report the same version string, so nothing advertises the skew. Rebuild with `cargo build -p lucida-cli`, and if `CARGO_TARGET_DIR` is set in your environment the fresh binary is there rather than under the in-repo `./target`, which may hold an older `release/lucida` that runs without complaint.
 
-- **The behaviour to eyeball.** The admission window is `max(64, 4 × concurrency) = 64` requests, drained centre-out. Under the old geometry those 64 requests bought 64 whole-brain Z planes — 128 µm of Z across the full 15.9 × 13.4 mm, almost all off-screen. They should now buy roughly a 256³ cube: about 461 × 461 × 512 µm centred on the camera. The reported symptom was "the data budget is maxed out with a few slices instead of the 3D volume in the middle of the viewer"; that is what should be gone.
-- **Expect it to look dimmer.** With a real coarse level present, the coarse tier is zarrmony's mean-pooled level 5 rather than Lucida's max-pooled generated tier. For sparse structures mean-pooling reads dimmer. That is the documented consequence of the default, not a regression — `--downsample-method max` is the escape hatch if a viewer genuinely needs the old appearance.
+## Measure the fetch budget under a 3D camera
+
+The admission window is `max(64, 4 × concurrency) = 64` requests, drained centre-out. Under the old geometry those 64 requests bought whole-brain Z planes, almost all of them off-screen; they should now buy a compact block centred on the camera. The reported symptom was "the data budget is maxed out with a few slices instead of the 3D volume in the middle of the viewer".
+
+This does not need eyeballing, and does not need a browser. Three facts make it a bounding-box check on integers:
+
+- `lucida plan visible-chunks` dumps the selected chunk coordinates — level, x, y, z, t, c — split into `visible` and `prefetch` tiers.
+- `lucida camera` (distinct from `lucida view`, which drives only the 2D slice camera) has `mode {slice,arcball,fly}` and `rotate` / `pan` / `zoom` / `fly-tick`, so the 3D camera is drivable headlessly against the durable viewer profile.
+- Lucida already sorts the chunk list centre-out, by squared Euclidean distance from the camera's `sort_center`, symmetric across all three axes. **So the first 64 entries of the `visible` tier are the admission window** — slice them off the front rather than modelling the budget separately.
+
+```bash
+W=<workspace id holding the store>   # pass it explicitly; the CLI's default is often another workspace
+
+lucida view center --x <cx> --y <cy> --workspace $W --quiet   # volume middle, in voxels
+lucida view z-range <z0> <z1> --workspace $W --quiet
+lucida camera mode arcball --workspace $W --quiet
+lucida camera zoom --delta -1.0 --workspace $W --quiet        # negative moves the camera IN
+
+lucida --json plan visible-chunks --workspace $W | jq -c '
+  [.datasets[].member_plans[].tiers[] | select(.tier=="visible") | .chunks[]][0:64] as $c
+  | {x:[($c|map(.x)|min),($c|map(.x)|max)],
+     y:[($c|map(.y)|min),($c|map(.y)|max)],
+     z:[($c|map(.z)|min),($c|map(.z)|max)]}'
+```
+
+The JSON is flat — `.datasets[]`, not `.result.datasets[]`. Multiply each span by the level-0 chunk edge and the voxel spacing to get micrometres.
+
+**Pass** is a compact block whose spans are a handful of chunks on every axis, sitting in the middle of the full candidate ranges rather than at their edges. **Fail** is an x or y span equal to the whole level-0 chunk grid with a z span of 1–2. If the window came back in raster order instead of centre-out you would see a full-width x run at minimum y and z, so the shape of the result also validates the method.
+
+Two caveats:
+
+- The command prints `Web planner equivalent: false`. It runs `lucida-core`'s `Scene::chunk_plan_for`, not the web planner — no lane priorities, active-set carry-forward, minimap path, or CPU-cache filtering. The centre-out sort and the frustum cull are the core's and those are what this criterion is about, but the browser's actual first 64 may differ in ordering detail. Quote it as the admission window, not as the fetch trace.
+- These commands **mutate** the durable `default` viewer profile. Restore it afterwards.
+
+**Expect it to look dimmer** in the viewer. With a real coarse level present, the coarse tier is zarrmony's mean-pooled level 5 rather than Lucida's max-pooled generated tier. For sparse structures mean-pooling reads dimmer. That is the documented consequence of the default, not a regression — `--downsample-method max` is the escape hatch if a viewer genuinely needs the old appearance.
+
+Note that the sign of this result is largely settled by the chunk shape before any camera moves. A full-width chunk makes a centred cube _unrepresentable_ at any budget: if one chunk spans the whole specimen in x, 64 of them can only ever be planes. The measurement confirms the mechanism end to end; the causal argument rests on the geometry.
 
 ## Record on the issue
 
@@ -127,4 +174,4 @@ The verification script's output covers the measurements. Add, in prose:
 - Peak RSS if you watched it, and whether `DASK_NUM_WORKERS` had to be capped.
 - Store size and object count against the ~283 GB / ~3.2 M estimates.
 - The `lucida dataset health` generated-coarse line.
-- A screenshot under a 3D camera, and one sentence on whether the fetch budget resolved into a centred volume.
+- The 64-chunk admission window's bounding box, in chunks and in micrometres, against the full extent of the volume.

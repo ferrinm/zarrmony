@@ -225,9 +225,11 @@ world-cubic rule as chunks, per level, so an isotropic volume at the defaults
 gets a `128 × 128 × 256` shard holding 16 chunks of 64³ — 3.2 M objects down to
 210,345 on the whole-brain store.
 
-Those object counts are the planner's arithmetic, and they are exact. The
-**wall-clock is now measured too.** That same whole-slide scene, re-converted at
-512²-in-2048²:
+Those object counts are the planner's arithmetic. They are exact on the slide
+and an upper bound on the volume, since zarr skips a shard whose chunks are all
+fill value: the whole-brain store landed at 209,211 shards, 1,134 under its
+grid, all of them an empty sliver of a padded axis. The **wall-clock is now
+measured too.** That same whole-slide scene, re-converted at 512²-in-2048²:
 
 |            | 8 MiB chunks, no shards | 512² in 2048² shards   |
 | ---------- | ----------------------- | ---------------------- |
@@ -243,12 +245,28 @@ the +19 % CPU is compression overhead — 493,484 blocks of 512 KiB instead of
 31,156 of 8 MiB — which parallelises rather than showing up as elapsed time.
 
 Earlier text here warned that the store would be larger, since small chunks
-compress worse. It is not: 88 MB apart on a 139 GiB store. zstd on 512 KiB of
-16-bit microscopy still finds essentially all the redundancy that 8 MiB does.
-That is measured on a 2D scene; the volumetric case uses cubic chunks that cut
-across the correlated axis and has not been measured yet
-([#126](https://github.com/ferrinm/zarrmony/issues/126)). Full run details in
-[#124](https://github.com/ferrinm/zarrmony/issues/124).
+compress worse. It is not, and the reason is worth stating because it also says
+the warning was aimed at the wrong thing. **Compression runs per chunk, and
+sharding does not change the chunk** — it only packs chunks that already exist
+into one object. So the compressed payload of a sharded store is the payload of
+the unsharded one, and the only cost is the shard index: 16 bytes per chunk,
+plus 4 bytes per shard.
+
+Both halves are measured. Shrinking the chunk 16× on the slide scene above cost
+nothing — 88 MB on a 139 GiB store, and in the cheaper direction. And the
+whole-brain volume has now been written both ways at the same `64³` chunk, which
+isolates sharding by itself:
+
+|             | no shards       | 128 × 128 × 256 shards | delta       |
+| ----------- | --------------- | ---------------------- | ----------- |
+| store bytes | 261,959,557,972 | 262,010,912,050        | **+0.02 %** |
+| objects     | 3,182,337       | 209,220                | **15.2×**   |
+
+The 51.4 MB difference is the index and nothing else: 3,194,997 chunk slots ×
+16 B plus 209,211 shards × 4 B predicts 51.96 MB, within 1.2 % of what landed on
+disk. Full run details in
+[#124](https://github.com/ferrinm/zarrmony/issues/124) (slide) and
+[#126](https://github.com/ferrinm/zarrmony/issues/126) (volume).
 
 It is **off by default**, because it changes who can read the store. Chunks
 stay individually readable and every zarr-python 3 consumer is unaffected —
