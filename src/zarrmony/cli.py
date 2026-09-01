@@ -1,8 +1,10 @@
 """Command-line interface for zarrmony.
 
-Two subcommands:
+Three subcommands:
 
 - ``zarrmony convert INPUT OUTPUT`` — convert a bioimage file to OME-Zarr v0.5.
+- ``zarrmony rechunk SOURCE OUTPUT`` — migrate an existing OME-Zarr store to the
+  current geometry policy without going back to the original file.
 - ``zarrmony inspect INPUT`` — print a scene summary without converting.
 """
 
@@ -16,13 +18,18 @@ import click
 
 from zarrmony import __version__
 from zarrmony import api as zm_api
+from zarrmony._rechunk import DEFAULT_WORKING_SET_FRACTION, INHERIT
 from zarrmony._storage import format_bytes, size_on_disk
 from zarrmony.errors import (
     InputAccessError,
     OutputExistsError,
     PlateSelectionError,
     ReaderKwargError,
+    RechunkSourceError,
+    RechunkStateError,
+    RechunkVerificationError,
     UnsupportedFormatError,
+    WorkingSetTooLargeError,
 )
 from zarrmony.geometry import (
     CHUNK_TARGET_WARN_BYTES,
@@ -606,6 +613,276 @@ def convert_cmd(
     input_human = format_bytes(size_on_disk(input_path))
     input_line = _partial_size_line(input_human, _audit_input_files(result))
     click.echo(f"Input:  {input_line}", err=True)
+    click.echo(f"Output: {format_bytes(output_bytes)}", err=True)
+
+
+@app.command(name="rechunk")
+@click.argument("source", metavar="SOURCE", type=str)
+@click.argument("output", metavar="OUTPUT", type=str)
+@click.option(
+    "--pyramid-min-size",
+    type=int,
+    default=None,
+    show_default=f"{DEFAULT_PYRAMID_MIN_SIZE} (from the default geometry policy)",
+    help="See `zarrmony convert --help`. Sets the geometry to migrate *to*.",
+)
+@click.option(
+    "--isotropy-tolerance",
+    type=float,
+    default=None,
+    show_default=f"{DEFAULT_ISOTROPY_TOLERANCE} (from the default geometry policy)",
+    help="See `zarrmony convert --help`. Sets the geometry to migrate *to*.",
+)
+@click.option(
+    "--coarse-max-bytes",
+    type=int,
+    default=None,
+    show_default=(
+        f"{DEFAULT_COARSE_MAX_BYTES} "
+        f"({DEFAULT_COARSE_MAX_BYTES // (1024 * 1024)} MiB, from the default "
+        f"geometry policy)"
+    ),
+    help="See `zarrmony convert --help`. Sets the geometry to migrate *to*.",
+)
+@click.option(
+    "--coarse-max-long-axis",
+    type=int,
+    default=None,
+    show_default=f"{DEFAULT_COARSE_MAX_LONG_AXIS} (from the default geometry policy)",
+    help="See `zarrmony convert --help`. Sets the geometry to migrate *to*.",
+)
+@click.option(
+    "--chunk-target-bytes",
+    type=int,
+    default=None,
+    show_default=(
+        f"{DEFAULT_CHUNK_TARGET_BYTES} "
+        f"({DEFAULT_CHUNK_TARGET_BYTES // 1024} KiB, from the default geometry policy)"
+    ),
+    help="See `zarrmony convert --help`. Sets the geometry to migrate *to*.",
+)
+@click.option(
+    "--chunk-shape",
+    callback=_parse_chunk_shape,
+    default=None,
+    metavar="T,C,Z,Y,X",
+    help="See `zarrmony convert --help`. Sets the geometry to migrate *to*.",
+)
+@click.option(
+    "--shard-target-bytes",
+    type=int,
+    is_flag=False,
+    flag_value=str(DEFAULT_SHARD_TARGET_BYTES),
+    default=None,
+    show_default="off (chunks are written as individual objects)",
+    help="See `zarrmony convert --help`. Sets the geometry to migrate *to*.",
+)
+@click.option(
+    "--shard-shape",
+    callback=_parse_chunk_shape,
+    default=None,
+    metavar="T,C,Z,Y,X",
+    help="See `zarrmony convert --help`. Sets the geometry to migrate *to*.",
+)
+@click.option(
+    "--downsample-method",
+    type=click.Choice(["mean", "max"]),
+    default=None,
+    show_default="inherited from the source store's own record",
+    help=(
+        "Pooling kernel for every pyramid level above 0. Unlike the other "
+        "geometry flags this defaults to whatever the source was written with, "
+        "not to the current policy: 'max' is chosen for sparse labels that "
+        "mean-pooling dissolves, and silently reverting that choice during a "
+        "geometry migration would change what the pyramid means. A source with "
+        "no record of its kernel falls back to the policy default. Pass the "
+        "flag to change it deliberately."
+    ),
+)
+@click.option(
+    "--verify",
+    type=click.Choice(["none", "sample", "full"]),
+    default="sample",
+    show_default=True,
+    help=(
+        "Check the written level 0 against the source before the store is "
+        "finished. 'sample' (default) reads one chunk back out of every written "
+        "tile at a deterministic pseudo-random offset; 'full' reads all of "
+        "level 0 back, roughly doubling the read cost; 'none' skips it. A "
+        "mismatch fails the run and leaves the target marked unfinished. The "
+        "mode and the number of blocks checked are recorded in the output."
+    ),
+)
+@click.option(
+    "--max-working-set-bytes",
+    type=int,
+    default=None,
+    show_default="half of detected physical RAM",
+    help=(
+        "Cap on the largest block held in memory at once. The migration reads "
+        "each source block exactly once by working in tiles that are a whole "
+        "multiple of both the source's blocks and the target's; when the two "
+        "grids share little, that tile can be large, and this is the number "
+        "that turns an eventual out-of-memory kill into an up-front refusal "
+        "naming the level and the size."
+    ),
+)
+@click.option(
+    "--working-set-fraction",
+    type=float,
+    default=DEFAULT_WORKING_SET_FRACTION,
+    show_default=True,
+    help=(
+        "Fraction of detected physical RAM to allow as the working set when "
+        "--max-working-set-bytes is not given. Ignored if it is."
+    ),
+)
+@click.option(
+    "--resume/--no-resume",
+    default=True,
+    show_default=True,
+    help=(
+        "Continue an interrupted OUTPUT instead of refusing it. Progress is "
+        "tracked per image and level, so a re-run picks up at the first tile "
+        "that had not finished rather than redoing the ones that had. "
+        "--no-resume refuses a target holding unfinished work; --force "
+        "discards it and starts over."
+    ),
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Overwrite OUTPUT if it already exists, finished or not.",
+)
+@click.option(
+    "--validate/--no-validate",
+    default=True,
+    show_default=True,
+    help=(
+        "Run OME-NGFF v0.5 validation on the written store as a final step. "
+        "Requires the `zarrmony[validate]` extra; if not installed, the "
+        "validator is skipped with a warning."
+    ),
+)
+@click.option(
+    "--contrast-percentile",
+    type=float,
+    default=None,
+    show_default="inherited from the source store's own record",
+    help=(
+        "Percentile for the recomputed omero display window. The window has to "
+        "be recomputed because the coarsest level it is measured from is a "
+        "different level after the migration, but the percentile itself is "
+        "inherited so a store converted with contrast off keeps its dtype-range "
+        "window. Pass -1 (or --no-contrast) to force it off."
+    ),
+)
+@click.option(
+    "--no-contrast",
+    "no_contrast",
+    is_flag=True,
+    help="Skip percentile-based contrast; leave window.start/end at the dtype range.",
+)
+def rechunk_cmd(
+    source: str,
+    output: str,
+    pyramid_min_size: int | None,
+    isotropy_tolerance: float | None,
+    coarse_max_bytes: int | None,
+    coarse_max_long_axis: int | None,
+    chunk_target_bytes: int | None,
+    chunk_shape: tuple[int, ...] | None,
+    shard_target_bytes: int | None,
+    shard_shape: tuple[int, ...] | None,
+    downsample_method: str | None,
+    verify: str,
+    max_working_set_bytes: int | None,
+    working_set_fraction: float,
+    resume: bool,
+    force: bool,
+    validate: bool,
+    contrast_percentile: float | None,
+    no_contrast: bool,
+) -> None:
+    """Rewrite SOURCE, an existing OME-Zarr store, to OUTPUT at the current geometry.
+
+    SOURCE may be a single ``.ome.zarr`` image, a ``bioformats2raw`` bundle, an
+    HCS plate, or a plain directory of sibling ``.ome.zarr`` stores — the shape
+    is read off the store itself. A directory fans out and each child is its own
+    unit of work, so re-running the same command after an interruption finishes
+    the job rather than redoing it, and children already at the target geometry
+    are skipped untouched.
+
+    SOURCE is opened read-only. Level-0 voxels are copied through unchanged;
+    every level above it is pooled from the level below exactly as a fresh
+    conversion would pool it. There is no in-place mode: the new pyramid can
+    have a different number of levels, so there is no instant at which such a
+    store would be both readable and correct.
+    """
+    resolved_contrast: Any
+    if no_contrast or (contrast_percentile is not None and contrast_percentile < 0):
+        resolved_contrast = None
+    elif contrast_percentile is None:
+        resolved_contrast = INHERIT
+    else:
+        resolved_contrast = contrast_percentile
+
+    # --downsample-method is handed to rechunk() separately rather than folded
+    # into the Geometry here: inside the Geometry it is indistinguishable from
+    # the policy default, and the whole point is that an unset kernel inherits
+    # from the source while every other unset field takes the current policy.
+    geometry = _build_geometry(
+        chunk_target_bytes=chunk_target_bytes,
+        isotropy_tolerance=isotropy_tolerance,
+        pyramid_min_size=pyramid_min_size,
+        coarse_max_bytes=coarse_max_bytes,
+        coarse_max_long_axis=coarse_max_long_axis,
+        downsample_method=None,
+        chunk_shape=chunk_shape,
+        shard_target_bytes=shard_target_bytes,
+        shard_shape=shard_shape,
+    )
+
+    try:
+        result = zm_api.rechunk(
+            source,
+            output,
+            geometry=geometry,
+            downsample_method=downsample_method,  # type: ignore[arg-type]
+            contrast_percentile=resolved_contrast,
+            force=force,
+            resume=resume,
+            verify=verify,  # type: ignore[arg-type]
+            validate=validate,
+            max_working_set_bytes=max_working_set_bytes,
+            working_set_fraction=working_set_fraction,
+            progress=lambda message: click.echo(message, err=True),
+        )
+    except (
+        OutputExistsError,
+        RechunkSourceError,
+        RechunkStateError,
+        RechunkVerificationError,
+        WorkingSetTooLargeError,
+    ) as e:
+        raise click.ClickException(str(e)) from e
+
+    written = [s for s in result["stores"] if not s["skipped"]]
+    skipped = [s for s in result["stores"] if s["skipped"]]
+    noun = "store" if len(written) == 1 else "stores"
+    click.echo(
+        f"Wrote {len(written)} {noun} to {output} ({result['layout']})", err=True
+    )
+    if skipped:
+        noun = "store" if len(skipped) == 1 else "stores"
+        click.echo(
+            f"Skipped {len(skipped)} {noun} already at the target geometry", err=True
+        )
+    if not written:
+        return
+    source_bytes = sum(size_on_disk(s["source"]) for s in written)
+    output_bytes = sum(size_on_disk(s["output"]) for s in written)
+    click.echo(f"Source: {format_bytes(source_bytes)}", err=True)
     click.echo(f"Output: {format_bytes(output_bytes)}", err=True)
 
 

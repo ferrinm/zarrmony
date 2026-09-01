@@ -225,6 +225,24 @@ class ZarrmonyWriter(OMEZarrWriter):
         if not self._initialized:
             self._initialize()
 
+    def attach(self) -> None:
+        """Bind to an already-created store instead of re-creating its arrays.
+
+        ``_initialize`` opens the root with ``mode="w"``, which is correct for a
+        fresh conversion and destructive for a resumed one: it empties the group
+        and silently discards every level already on disk. A resuming caller uses
+        this instead — the same writer object, the same ``datasets`` list, no
+        writes of any kind. The arrays must already exist and be numbered
+        ``0..num_levels-1``, which is exactly what a prior ``initialize()`` left.
+        """
+        if self._initialized:
+            return
+        root = open_root_group(self.store, mode="a")
+        self.root = root
+        self.datasets = [root[str(level)] for level in range(self.num_levels)]
+        self._initialized = True
+        self._metadata_written = True
+
     def _canonical_axes(self) -> tuple[str, ...]:
         """Axis names in the uppercase form the geometry planners speak.
 

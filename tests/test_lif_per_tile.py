@@ -223,7 +223,7 @@ def test_per_tile_audit_records_per_tile_and_tile_stores(
 
     # All three tile audits carry per_tile=true + the full tile_stores list.
     for tile_audit in result["stores"]:
-        assert tile_audit["audit_schema_version"] == 14
+        assert tile_audit["audit_schema_version"] == 15
         m = tile_audit["mosaic"]
         assert m["per_tile"] is True
         assert m["tile_count"] == 3
@@ -256,7 +256,7 @@ def test_per_tile_audit_round_trips_to_on_disk_attrs(
     with open(out / "Position_1" / "tile_X00Y00.ome.zarr" / "zarr.json") as f:
         root = json.load(f)
     audit = root["attributes"]["zarrmony"]
-    assert audit["audit_schema_version"] == AUDIT_SCHEMA_VERSION == 14
+    assert audit["audit_schema_version"] == AUDIT_SCHEMA_VERSION == 15
     assert audit["mosaic"]["per_tile"] is True
     assert audit["mosaic"]["tile_index"] == 0
     assert len(audit["mosaic"]["tile_stores"]) == 3

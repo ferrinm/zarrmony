@@ -1,4 +1,11 @@
-"""Top-level convert() and inspect() — orchestrate readers, writers, audit."""
+"""Top-level convert() and inspect() — orchestrate readers, writers, audit.
+
+``rechunk`` is re-exported here alongside them so the three entry points read
+from one place, but it lives in ``_rechunk`` because it shares almost nothing
+with this module's machinery: it reads an OME-Zarr store's own metadata instead
+of opening a reader plugin, and it owns resume state and copy fidelity that
+``convert`` has no use for (ADR-0012).
+"""
 
 from __future__ import annotations
 
@@ -9,7 +16,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-import fsspec
 import numpy as np
 from bioio_ome_zarr.writers import Channel
 from ome_types import OME
@@ -17,7 +23,8 @@ from ome_types.model import Image, Pixels, PixelType
 
 from zarrmony import _validate
 from zarrmony._inputs import reader_used_files, summarize_used_files
-from zarrmony._storage import format_bytes, size_on_disk
+from zarrmony._rechunk import rechunk as rechunk  # re-exported entry point
+from zarrmony._storage import format_bytes, prepare_output_path, size_on_disk
 from zarrmony.audit import build_audit_record, write_audit_record
 from zarrmony.errors import (
     ExtractorWarning,
@@ -25,11 +32,9 @@ from zarrmony.errors import (
     LayoutMismatchError,
     MosaicMergedSiblingWarning,
     MosaicPlacementWarning,
-    OutputExistsError,
     PlateSelectionError,
     ReaderKwargError,
     TileAlignmentWarning,
-    ValidationWarning,
     ZarrmonyError,
 )
 from zarrmony.geometry import Geometry, plan_reader_tile_size, resolve_geometry
@@ -186,19 +191,12 @@ def _resolve_layout(
 
 
 def _check_output(output: str | Path, *, force: bool) -> None:
-    """Refuse-or-clobber a single output path (file, dir, or store)."""
-    s = str(output)
-    fs, path = fsspec.core.url_to_fs(s)
-    if not fs.exists(path):
-        return
-    if not force:
-        raise OutputExistsError(
-            f"output already exists: {s} (pass force=True to overwrite)"
-        )
-    if fs.isdir(path):
-        fs.rm(path, recursive=True)
-    else:
-        fs.rm(path)
+    """Refuse-or-clobber a single output path (file, dir, or store).
+
+    Lives in ``_storage`` so ``rechunk`` enforces ``force`` by the same rule
+    rather than by a second implementation of it (ADR-0012).
+    """
+    prepare_output_path(output, force=force)
 
 
 def _serialize_source_metadata(reader_metadata: Any) -> str | None:
@@ -659,29 +657,10 @@ def _run_validation(
 ) -> list[dict[str, Any]]:
     """Validate ``store_path`` if requested and the validator is installed.
 
-    Returns the list of findings (empty on success). Each finding is also
-    surfaced as a :class:`ValidationWarning` so users see it on stderr; the
-    caller threads the list into the audit record's ``validation_warnings``.
+    Lives in ``_validate`` so ``rechunk`` validates its output by the same rule
+    and emits the same warning text (ADR-0012).
     """
-    if not validate:
-        return []
-    if not _validate.is_available():
-        warnings.warn(
-            "validate=True but the ome-zarr-models extra is not installed; "
-            "skipping post-conversion OME-NGFF validation. "
-            "Install with `pip install zarrmony[validate]` to enable.",
-            ValidationWarning,
-            stacklevel=3,
-        )
-        return []
-    findings = _validate.validate_store(store_path, layout)
-    for f in findings:
-        warnings.warn(
-            f"OME-NGFF validation: {f['kind']} at {f.get('path', store_path)}: {f['error']}",
-            ValidationWarning,
-            stacklevel=3,
-        )
-    return findings
+    return _validate.run_validation(store_path, layout, validate)
 
 
 def _resolve_distribution(reader: Any, plugin: ReaderPlugin) -> str | None:

@@ -91,6 +91,37 @@ zarrmony convert mosaic.lif output_dir/ --lif-mosaic per-tile
 zarrmony inspect input.czi
 ```
 
+Migrating an existing store to the current geometry, without going back to the
+vendor file:
+
+```bash
+# Reads SOURCE read-only and writes a new store at OUTPUT. SOURCE may be a
+# single .ome.zarr, a bioformats2raw bundle, an HCS plate, or a directory of
+# sibling .ome.zarr stores (what --layout per-scene produces) — the shape is
+# read off the store itself, so there is no --layout flag.
+zarrmony rechunk old_store.ome.zarr new_store.ome.zarr
+
+# Fan out over a whole per-scene output tree. Stores already at the target
+# geometry are skipped, so re-running after an interruption finishes the job.
+zarrmony rechunk old_dir/ new_dir/
+
+# Interrupted runs resume at the first unfinished tile. --force starts over.
+zarrmony rechunk old_dir/ new_dir/          # picks up where it stopped
+zarrmony rechunk old_dir/ new_dir/ --force  # discards and restarts
+```
+
+Level-0 voxels are copied through byte-for-byte and every level above is pooled
+exactly as a fresh conversion would pool it, so a rechunked store is
+indistinguishable from a re-conversion. `--verify sample` (the default) reads a
+chunk back out of every written tile and checks it against the source;
+`--verify full` checks all of level 0. Each source block is read exactly once,
+which needs a working block whose size depends on how the two chunk grids fit
+together — `--max-working-set-bytes` caps it (default: half of detected
+physical RAM) and the command refuses up front rather than running out of
+memory hours in. `--downsample-method` is inherited from the source rather than
+reset to the current default; see
+[docs/adr/0012-rechunk-command.md](docs/adr/0012-rechunk-command.md).
+
 ### Library
 
 ```python
@@ -106,6 +137,15 @@ audit = convert("input.lif", "output.ome.zarr", layout="bf2raw")
 
 # HCS plate: writes one OME-NGFF plate store at OUTPUT.
 audit = convert("phenix-acquisition/", "output.ome.zarr", layout="plate")
+```
+
+```python
+from zarrmony import rechunk
+
+# Migrate an existing store to the current geometry policy. Returns
+# {"source": ..., "output": ..., "layout": ..., "stores": [...]}, one entry per
+# migrated (or skipped) store.
+result = rechunk("old_store.ome.zarr", "new_store.ome.zarr")
 ```
 
 ## Output geometry

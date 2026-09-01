@@ -81,6 +81,61 @@ class PlateSelectionError(ZarrmonyError):
     """
 
 
+class RechunkSourceError(ZarrmonyError):
+    """``rechunk``'s source is not an OME-Zarr store it can migrate.
+
+    Raised before anything is written when the source root carries no
+    ``attrs.ome`` naming one of the three layouts (``multiscales``,
+    ``bioformats2raw.layout``, ``plate``), when a directory holds no
+    ``*.ome.zarr`` children to fan out over, or when a discovered image's
+    multiscales block is missing the axes or level-0 scale the geometry planners
+    need. ``rechunk`` reads the store's own metadata rather than opening it
+    through a reader plugin (ADR-0012), so the layout is a fact about the store
+    and there is no ``--layout`` override to force it.
+    """
+
+
+class RechunkStateError(ZarrmonyError):
+    """A resumable ``rechunk`` target was written against a different plan.
+
+    Raised when a target store carries in-progress ``rechunk`` state whose
+    fingerprint — source identity plus the resolved per-level shapes, chunk
+    shapes and shard shapes — disagrees with the plan the current invocation
+    resolved. Resuming would interleave two geometries into one store, so the
+    message names the field that differs and the run stops. Pass ``force=True``
+    to discard the partial target and start over.
+    """
+
+
+class WorkingSetTooLargeError(ZarrmonyError):
+    """The read-once tile ``rechunk`` would hold does not fit the memory budget.
+
+    The unit that reads each source chunk exactly once is the element-wise LCM
+    of the source's chunk shape and the planned write grid, so a source of
+    full-width single-plane slabs makes it a whole Z-band of the volume — tens
+    of gibibytes on a light-sheet acquisition. Raised at plan time, before
+    anything is written, because the alternative is discovering it as an OOM
+    hours in.
+
+    Three things move it: raise the budget (``max_working_set_bytes``, or the
+    fraction of physical RAM it defaults to), plan a target geometry whose write
+    grid is shorter on the axis the source spans whole (usually Z), or run on a
+    larger-memory host.
+    """
+
+
+class RechunkVerificationError(ZarrmonyError):
+    """Level-0 voxels read back from the target do not match the source.
+
+    Raised by ``rechunk``'s post-pass verification, which reads one chunk out of
+    every written tile (``verify="sample"``) or the whole of level 0
+    (``verify="full"``) and compares it against the source at the same global
+    offset. A mismatch means placement, not compression: both stores hold the
+    same bytes per chunk, so the failure this catches is a tile landing at the
+    wrong offset. The target is left on disk for inspection.
+    """
+
+
 class LayoutDowngradeWarning(UserWarning):
     """Plate-shaped metadata is being dropped from the output.
 

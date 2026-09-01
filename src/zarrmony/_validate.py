@@ -19,12 +19,14 @@ Coverage caveats (inherited from ``ome-zarr-models``):
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any, Literal
 
 import zarr
 
 from zarrmony._storage import open_root_group
+from zarrmony.errors import ValidationWarning
 
 ResolvedLayout = Literal["per-scene", "bf2raw", "plate"]
 
@@ -101,3 +103,40 @@ def validate_store(
             findings.extend(_validate_group_as(sub, "image"))
         return findings
     raise ValueError(f"unknown layout: {layout!r}")
+
+
+def run_validation(
+    store_path: str | Path,
+    layout: ResolvedLayout,
+    validate: bool,
+) -> list[dict[str, Any]]:
+    """Validate ``store_path`` if requested and the validator is installed.
+
+    Returns the list of findings (empty on success). Each finding is also
+    surfaced as a :class:`~zarrmony.errors.ValidationWarning` so users see it on
+    stderr; the caller threads the list into the audit record's
+    ``validation_warnings``.
+
+    Shared by ``convert`` and ``rechunk``: both produce stores of the same three
+    layouts, and a store's spec compliance does not depend on which command
+    wrote it.
+    """
+    if not validate:
+        return []
+    if not is_available():
+        warnings.warn(
+            "validate=True but the ome-zarr-models extra is not installed; "
+            "skipping OME-NGFF validation of the written store. "
+            "Install with `pip install zarrmony[validate]` to enable.",
+            ValidationWarning,
+            stacklevel=3,
+        )
+        return []
+    findings = validate_store(store_path, layout)
+    for f in findings:
+        warnings.warn(
+            f"OME-NGFF validation: {f['kind']} at {f.get('path', store_path)}: {f['error']}",
+            ValidationWarning,
+            stacklevel=3,
+        )
+    return findings
