@@ -34,6 +34,22 @@ from zarrmony._inputs import file_digest, summarize_used_files
 from zarrmony._storage import format_bytes, open_root_group, size_on_disk
 from zarrmony.readers.plugin import ReaderPlugin
 
+# 15: adds top-level ``rechunks`` — an append-only list, one entry per
+#    ``zarrmony rechunk`` pass that has rewritten this store's geometry, absent
+#    entirely on a store that was only ever converted. Its presence is the
+#    discriminator: ``"rechunks" in attrs.zarrmony`` distinguishes a migrated
+#    store from a converted one, which nothing else in the record does, because
+#    ``input`` and ``reader_plugin`` deliberately keep describing the vendor file
+#    and the plugin that produced the pixels — level 0 is bit-identical to what
+#    that plugin wrote, so re-pointing them at the intermediate store would
+#    replace a true provenance chain with a shorter one (ADR-0012). What a
+#    rechunk *does* overwrite is stated there: ``config.geometry``, per-image
+#    ``level_shapes`` / ``chunk_shapes`` / ``shard_shapes`` /
+#    ``coarse_level_index`` / ``contrast``, ``version``, and
+#    ``config.reader_tile_size``, which becomes ``null`` because no reader was
+#    asked for a tile. Each entry carries the source store it was read from and
+#    that store's geometry, so the chain back to the vendor file is walkable.
+#    Purely additive: consumers pinned to 14 can widen their pin. (#91)
 # 14: adds ``input.files`` and ``input.size_is_partial`` — what the reader says
 #    it actually read, when it can say. ``input.size_bytes`` and ``input.sha256``
 #    keep their meaning (the path the user named), which for a multi-file vendor
@@ -117,7 +133,7 @@ from zarrmony.readers.plugin import ReaderPlugin
 #    LIF objective-lens extractor. Missing fields are omitted; scenes with no
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
-AUDIT_SCHEMA_VERSION = 14
+AUDIT_SCHEMA_VERSION = 15
 # Not bumped for #128, which changed how ``size_human`` *renders* (``334.8 GB``
 # for a 1024-based figure became ``334.8 GiB``) without adding, removing or
 # retyping a key. The version pins the record's shape so a consumer knows which

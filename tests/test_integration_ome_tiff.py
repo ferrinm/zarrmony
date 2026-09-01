@@ -43,7 +43,7 @@ def test_per_scene_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
     assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
     assert audit["reader_plugin"]["source"] == "builtin"
     assert audit["reader_plugin"]["match_score"] == 0
-    assert audit["audit_schema_version"] == 14
+    assert audit["audit_schema_version"] == 15
     assert audit["input"]["size_bytes"] > 0
     assert audit["input"]["size_human"]
     assert audit["output"] == {"ome_ngff_version": "0.5"}
@@ -191,7 +191,7 @@ def test_bf2raw_single_scene_ome_tiff_round_trip(tmp_path: Path) -> None:
 
     assert audit["reader_plugin"]["name"] == "bioio"
     assert audit["reader_plugin"]["distribution"] == "bioio-ome-tiff"
-    assert audit["audit_schema_version"] == 14
+    assert audit["audit_schema_version"] == 15
     assert audit["output"] == {"ome_ngff_version": "0.5"}
     assert len(audit["per_scene"]) == 1
     # ADR-0008 / #61 channels block populates on bf2raw layout too.

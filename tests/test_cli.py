@@ -486,6 +486,7 @@ def test_emitted_text_cites_nothing_the_reader_cannot_act_on(
         warned.output,
         runner.invoke(app, ["--help"]).output,
         runner.invoke(app, ["convert", "--help"]).output,
+        runner.invoke(app, ["rechunk", "--help"]).output,
         runner.invoke(app, ["inspect", "--help"]).output,
     ]
     for text in emitted:
@@ -1473,3 +1474,284 @@ def test_inspect_reader_kwarg_forwards_to_api(
     )
     assert result.exit_code == 0, result.output
     assert captured["reader_kwargs"] == {"metadata_path": "/writable/metadata.json"}
+
+
+# ---------- rechunk ----------
+
+
+def _old_store(tmp_path: Path, patched_reader, name: str = "s") -> Path:
+    """A store written at a deliberately stale geometry: 16x16 chunks."""
+    patched_reader(FakeReader(scenes=[name], dims="TCYX", shape=(1, 1, 128, 128)))
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "old"),
+            "--pyramid-min-size",
+            "32",
+            "--chunk-shape",
+            "1,1,16,16",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return tmp_path / "old" / f"{name}.ome.zarr"
+
+
+def test_rechunk_migrates_a_store_and_reports_both_sizes(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    source = _old_store(tmp_path, patched_reader)
+
+    result = runner.invoke(
+        app, ["rechunk", str(source), str(tmp_path / "new"), "--pyramid-min-size", "32"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Wrote 1 store to" in result.output
+    assert "Source:" in result.output and "Output:" in result.output
+    written = zarr.open_group(str(tmp_path / "new"), mode="r")
+    assert written["0"].chunks != (1, 1, 16, 16)
+    assert "rechunks" in written.attrs["zarrmony"]
+
+
+def test_rechunk_fans_out_over_a_directory_of_sibling_stores(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    patched_reader(FakeReader(scenes=["a", "b"], dims="TCYX", shape=(1, 1, 128, 128)))
+    assert (
+        runner.invoke(
+            app,
+            [
+                "convert",
+                "/tmp/x.lif",
+                str(tmp_path / "old"),
+                "--pyramid-min-size",
+                "32",
+                "--chunk-shape",
+                "1,1,128,128",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "rechunk",
+            str(tmp_path / "old"),
+            str(tmp_path / "new"),
+            "--pyramid-min-size",
+            "32",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Wrote 2 stores to" in result.output
+    for name in ("a", "b"):
+        assert (tmp_path / "new" / f"{name}.ome.zarr" / "zarr.json").exists()
+
+
+def test_rechunk_reports_a_store_already_at_the_target_geometry(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    patched_reader(FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 128, 128)))
+    assert (
+        runner.invoke(
+            app,
+            [
+                "convert",
+                "/tmp/x.lif",
+                str(tmp_path / "cur"),
+                "--pyramid-min-size",
+                "32",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "rechunk",
+            str(tmp_path / "cur" / "s.ome.zarr"),
+            str(tmp_path / "new"),
+            "--pyramid-min-size",
+            "32",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Wrote 0 stores to" in result.output
+    assert "Skipped 1 store already at the target geometry" in result.output
+    assert not (tmp_path / "new").exists()
+
+
+def test_rechunk_existing_output_without_force_fails_friendly(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    source = _old_store(tmp_path, patched_reader)
+    args = ["rechunk", str(source), str(tmp_path / "new"), "--pyramid-min-size", "32"]
+    assert runner.invoke(app, args).exit_code == 0
+
+    second = runner.invoke(app, args)
+    assert second.exit_code != 0
+    assert "already exists" in second.output
+    assert "force" in second.output.lower()
+
+    assert runner.invoke(app, [*args, "--force"]).exit_code == 0
+
+
+def test_rechunk_verify_none_records_that_nothing_was_checked(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    source = _old_store(tmp_path, patched_reader)
+
+    result = runner.invoke(
+        app,
+        [
+            "rechunk",
+            str(source),
+            str(tmp_path / "new"),
+            "--pyramid-min-size",
+            "32",
+            "--verify",
+            "none",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    record = zarr.open_group(str(tmp_path / "new"), mode="r").attrs["zarrmony"]
+    assert record["rechunks"][-1]["verification"] == {
+        "mode": "none",
+        "blocks_checked": 0,
+        "passed": None,
+    }
+
+
+def test_rechunk_downsample_method_is_inherited_not_reset(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    """An unset --downsample-method keeps the source's kernel, not the policy's."""
+    patched_reader(FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 128, 128)))
+    assert (
+        runner.invoke(
+            app,
+            [
+                "convert",
+                "/tmp/x.lif",
+                str(tmp_path / "old"),
+                "--pyramid-min-size",
+                "32",
+                "--chunk-shape",
+                "1,1,128,128",
+                "--downsample-method",
+                "max",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "rechunk",
+            str(tmp_path / "old" / "s.ome.zarr"),
+            str(tmp_path / "new"),
+            "--pyramid-min-size",
+            "32",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    record = zarr.open_group(str(tmp_path / "new"), mode="r").attrs["zarrmony"]
+    assert record["config"]["geometry"]["downsample_method"] == "max"
+    assert record["rechunks"][-1]["downsample_method_inherited"] is True
+
+
+def test_rechunk_downsample_method_flag_overrides_the_source(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    patched_reader(FakeReader(scenes=["s"], dims="TCYX", shape=(1, 1, 128, 128)))
+    assert (
+        runner.invoke(
+            app,
+            [
+                "convert",
+                "/tmp/x.lif",
+                str(tmp_path / "old"),
+                "--pyramid-min-size",
+                "32",
+                "--chunk-shape",
+                "1,1,128,128",
+                "--downsample-method",
+                "max",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "rechunk",
+            str(tmp_path / "old" / "s.ome.zarr"),
+            str(tmp_path / "new"),
+            "--pyramid-min-size",
+            "32",
+            "--downsample-method",
+            "mean",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    record = zarr.open_group(str(tmp_path / "new"), mode="r").attrs["zarrmony"]
+    assert record["config"]["geometry"]["downsample_method"] == "mean"
+    assert record["rechunks"][-1]["downsample_method_inherited"] is False
+
+
+def test_rechunk_max_working_set_bytes_refuses_up_front(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    source = _old_store(tmp_path, patched_reader)
+
+    result = runner.invoke(
+        app,
+        [
+            "rechunk",
+            str(source),
+            str(tmp_path / "new"),
+            "--pyramid-min-size",
+            "32",
+            "--max-working-set-bytes",
+            "16",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "16 B" in result.output or "working set" in result.output.lower()
+    assert not (tmp_path / "new").exists()
+
+
+def test_rechunk_no_contrast_leaves_the_dtype_window(
+    tmp_path: Path, runner: CliRunner, patched_reader
+) -> None:
+    source = _old_store(tmp_path, patched_reader)
+
+    result = runner.invoke(
+        app,
+        [
+            "rechunk",
+            str(source),
+            str(tmp_path / "new"),
+            "--pyramid-min-size",
+            "32",
+            "--no-contrast",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    record = zarr.open_group(str(tmp_path / "new"), mode="r").attrs["zarrmony"]
+    assert record["config"]["contrast_percentile"] is None
+    assert record["rechunks"][-1]["contrast"] is None

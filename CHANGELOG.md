@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`zarrmony rechunk SOURCE OUTPUT` — migrate an existing OME-Zarr store to the
+  current geometry policy without going back to the vendor file.** ADR-0010
+  changed the output geometry and left existing stores where they were, on the
+  reasoning that they could be re-converted from source; that answer does not
+  hold for a store whose source file is gone, sits on a read-only share, or
+  takes six days to read again. `rechunk` reads the store instead. Level-0
+  voxels are copied through byte-for-byte and every level above is pooled by the
+  same code a fresh conversion uses, so the result is byte-identical to a
+  re-conversion at every level — asserted in the test suite over a matrix of
+  shapes, dtypes and chunkings, and checked at runtime by `--verify`
+  (`sample` by default: one chunk read back per written tile, at a deterministic
+  offset; `full` re-reads all of level 0; `none` skips it, and whichever ran is
+  recorded in the store). `SOURCE` is opened read-only and never modified.
+  Design in `docs/adr/0012-rechunk-command.md`. (#91)
+- **The layout is read off the store, so there is no `--layout` flag.** A single
+  `.ome.zarr` image, a `bioformats2raw` bundle and an HCS plate are told apart by
+  their own `attrs.ome`; a plain directory of sibling `*.ome.zarr` stores — what
+  `convert --layout per-scene` writes, and therefore the shape most existing
+  output trees are in — fans out, one independent unit of work per child.
+  Children already at the target geometry are skipped without writing anything,
+  which makes re-running the same command idempotent.
+- **Each source block is read exactly once, and the memory that costs is
+  budgeted up front.** The pass works in tiles that are the element-wise LCM of
+  the source's write grid and the target's; on the old default geometry —
+  full-width single-plane slabs into 64³ chunks — that is Z bands of 64 at full
+  width, exactly what ADR-0010 predicted. Where the two grids share little the
+  tile is larger, so `--max-working-set-bytes` caps it (default: half of
+  detected physical RAM, `--working-set-fraction` to change the share) and the
+  command **refuses before writing anything**, naming the image, the level and
+  the size, rather than being killed hours in. The tile loop is driven
+  explicitly and never hands a level to `dask.rechunk`, for the reason #111
+  found.
+- **An interrupted run resumes at the first unfinished tile.** Progress is a
+  high-water mark per image and level over a deterministic tile order,
+  checkpointed on a timer and at every level boundary. Because a tile is a whole
+  multiple of the write grid, a crash can only tear objects the mark has not
+  claimed, and re-running rewrites those whole. `--no-resume` refuses an
+  unfinished target; `--force` discards it and starts over; resuming against a
+  different target geometry is refused with the field that differs named.
+- **A partially written target is not an OME-Zarr.** The writer stamps
+  `attrs.ome` up front; `rechunk` withholds it until the arrays are written and
+  verified, so an interrupted store cannot be opened as an image by any reader —
+  a structural property rather than a naming convention.
+- **`--downsample-method` is inherited from the source, not reset to the current
+  default.** It is the one `Geometry` field that describes pixels rather than
+  storage shape: a store converted with `max` was converted that way because
+  mean-pooling dissolves its sparse labels, and rebuilding its pyramid with
+  `mean` during a chunk-size change would be a silent data change. The other
+  nine fields take current policy defaults. Pass the flag to override.
+  `--contrast-percentile` inherits for the same kind of reason — a store
+  converted with contrast off keeps its dtype-range window — but the display
+  *window* is recomputed, because it is measured off the coarsest pyramid level
+  and that is a different level after the migration.
+
+### Changed
+
+- **`audit_schema_version` 14 → 15.** A rechunked store's audit record is the
+  source's, amended in place at `attrs.zarrmony` so ADR-0008's ingest keeps
+  reading the same keys at the same paths. `input`, `reader_plugin`, the
+  original conversion timestamps, `metadata_warnings` and each image's
+  acquisition/objective/channel blocks are untouched, because they are all still
+  true. `config.geometry`, the per-image shape keys, `contrast` and `version` are
+  overwritten; `config.reader_tile_size` becomes `null`, since no reader was
+  asked for a tile. A new append-only `rechunks` list records each migration —
+  both zarrmony versions, timestamps, whether the run resumed, the source's path
+  and pre-migration shapes, the working-set plan, the contrast decision and the
+  verification result. **`"rechunks" in attrs.zarrmony` is the discriminator**
+  between a rechunked store and a converted one. The bump is a real record-shape
+  change: a consumer reading `config.geometry` as "the geometry this data was
+  converted at" is now wrong for these stores.
+- **`ZarrmonyWriter` gains `attach()` alongside `initialize()`, and they are not
+  interchangeable.** `initialize()` creates the pyramid arrays; the underlying
+  writer opens the root group in `"w"` mode, so calling it on a store that
+  already has data **empties the group**. `attach()` binds to the existing arrays
+  and writes nothing. Resume uses `attach()`. Recorded because any future caller
+  that reconstructs a writer over an existing store faces the same hazard.
+- **`run_validation` moved from `api.py` to `_validate.py` and
+  `prepare_output_path` to `_storage.py`**, both now shared by `convert` and
+  `rechunk`. No behaviour change; a store's spec compliance does not depend on
+  which command wrote it.
+
 ## [0.17.0] - 2026-08-31
 
 Two things zarrmony measures correctly and reported wrongly. Every byte count

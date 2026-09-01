@@ -378,6 +378,60 @@ def downsample_step(
     return da.coarsen(kernel, arr, factors, trim_excess=True).astype(arr.dtype)
 
 
+def pool_factors(
+    prev_shape: Sequence[int], next_shape: Sequence[int]
+) -> tuple[int, ...]:
+    """Per-axis coarsen factor between two consecutive level shapes.
+
+    The same ``prev // next`` :func:`downsample_step` derives internally, exposed
+    as a value so a caller pooling one *tile* at a time can apply the pyramid's
+    global factors rather than re-deriving them from the tile it happens to hold.
+    That distinction is load-bearing at an edge: a factor-2 axis whose level
+    extents are ``3 -> 1`` gives ``3 // 1 == 3`` when read off the block, which
+    would pool three rows where the pyramid pools two and trims one.
+    """
+    prev = tuple(int(s) for s in prev_shape)
+    nxt = tuple(int(s) for s in next_shape)
+    if len(prev) != len(nxt):
+        raise ValueError(
+            f"level shapes must have the same number of axes; got {prev} then {nxt}"
+        )
+    return tuple(max(1, p // n) for p, n in zip(prev, nxt, strict=True))
+
+
+def downsample_block(
+    block: np.ndarray,
+    factors: Sequence[int],
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> np.ndarray:
+    """Pool one in-memory block by explicit per-axis factors.
+
+    The tile-wise counterpart of :func:`downsample_step`, for a caller that
+    walks a level in pieces (``zarrmony rechunk``) instead of handing dask one
+    array per level. It routes through ``dask.array.coarsen`` over the same
+    :data:`_DOWNSAMPLE_KERNELS` entry, on a single-block dask array, rather than
+    reimplementing the reduction — so a level pooled tile-by-tile is
+    bit-identical to the same level pooled whole, which is what lets a rechunked
+    store's upper levels equal a re-conversion's (ADR-0012).
+
+    ``trim_excess`` matches: a block whose extent is not a whole multiple of its
+    factor loses the remainder, exactly as :func:`compute_level_shapes` predicted
+    with its floor division.
+    """
+    active = {
+        axis: int(f)
+        for axis, f in enumerate(factors)
+        if int(f) > 1 and block.shape[axis] >= int(f)
+    }
+    if not active:
+        return block
+    kernel = _DOWNSAMPLE_KERNELS[geometry.downsample_method]
+    lazy = da.from_array(block, chunks=block.shape)
+    return np.asarray(
+        da.coarsen(kernel, lazy, active, trim_excess=True).astype(block.dtype)
+    )
+
+
 def build_pyramid(
     arr: da.Array,
     level_shapes: Sequence[Sequence[int]],

@@ -11,9 +11,33 @@ import fsspec
 import zarr
 import zarr.storage
 
+from zarrmony.errors import OutputExistsError
+
 
 def _is_remote_uri(s: str) -> bool:
     return "://" in s and not s.startswith("file://")
+
+
+def prepare_output_path(output: str | Path, *, force: bool) -> None:
+    """Refuse-or-clobber a single output path (file, dir, or store).
+
+    Shared by ``convert`` and ``rechunk`` so ``--force`` means exactly one thing
+    across both: overwrite this path if it is already there, and otherwise leave
+    it alone. Both commands check per store rather than per run, so existing
+    siblings under a shared output directory survive.
+    """
+    s = str(output)
+    fs, path = fsspec.core.url_to_fs(s)
+    if not fs.exists(path):
+        return
+    if not force:
+        raise OutputExistsError(
+            f"output already exists: {s} (pass force=True to overwrite)"
+        )
+    if fs.isdir(path):
+        fs.rm(path, recursive=True)
+    else:
+        fs.rm(path)
 
 
 def open_root_group(store_path: str | Path, mode: str = "a") -> zarr.Group:
