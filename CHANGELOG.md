@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-31
+
+The planner already knew how many objects a conversion would write; now it
+says so. Everything in this release is about what zarrmony tells the person
+running it — one new warning before a six-day run starts, and a pass over the
+existing text to remove everything in it that only a reader of this repository
+could act on.
+
 ### Added
 
 - **A conversion that will write a very large number of objects now says so
