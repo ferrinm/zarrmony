@@ -7,22 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-31
+
+ADR-0010 changed the output geometry and left existing stores where they were,
+on the reasoning that they could be re-converted from source. That answer does
+not hold for a store whose source file is gone, sits on a read-only share, or
+takes six days to read again. `zarrmony rechunk SOURCE OUTPUT` reads the store
+instead — copying level 0 through byte-for-byte and pooling every level above it
+with the same code a fresh conversion uses, so the result is indistinguishable
+from a re-conversion at every level. Minor rather than patch: a new command, a
+new public `rechunk()` export and an audit schema bump, with no API break and no
+default moved. Design is recorded in `docs/adr/0012-rechunk-command.md`.
+
 ### Added
 
 - **`zarrmony rechunk SOURCE OUTPUT` — migrate an existing OME-Zarr store to the
-  current geometry policy without going back to the vendor file.** ADR-0010
-  changed the output geometry and left existing stores where they were, on the
-  reasoning that they could be re-converted from source; that answer does not
-  hold for a store whose source file is gone, sits on a read-only share, or
-  takes six days to read again. `rechunk` reads the store instead. Level-0
-  voxels are copied through byte-for-byte and every level above is pooled by the
-  same code a fresh conversion uses, so the result is byte-identical to a
-  re-conversion at every level — asserted in the test suite over a matrix of
-  shapes, dtypes and chunkings, and checked at runtime by `--verify`
-  (`sample` by default: one chunk read back per written tile, at a deterministic
-  offset; `full` re-reads all of level 0; `none` skips it, and whichever ran is
-  recorded in the store). `SOURCE` is opened read-only and never modified.
-  Design in `docs/adr/0012-rechunk-command.md`. (#91)
+  current geometry policy without going back to the vendor file.** A sibling of
+  `convert`, not a mode of it: it reads the source's zarr metadata directly
+  rather than through a reader plugin, and reuses `ZarrmonyWriter` so the
+  target's codec chain, fill value, dimension names and `sharding_indexed`
+  configuration are what a re-conversion would have written rather than an
+  approximation of it. Byte-identity is asserted in the test suite over a matrix
+  of shapes, dtypes and chunkings, and checked at runtime by `--verify` —
+  `sample` by default (one chunk read back per written tile, at an offset seeded
+  off the plan so a failure reproduces), `full` re-reads all of level 0, `none`
+  skips it, and whichever ran is recorded in the store. `SOURCE` is opened
+  read-only and never modified; there is no in-place mode, because the new
+  pyramid can have a different number of levels and there is no instant at which
+  such a store would be both readable and correct. Also exported as
+  `zarrmony.rechunk()`. (#91)
 - **The layout is read off the store, so there is no `--layout` flag.** A single
   `.ome.zarr` image, a `bioformats2raw` bundle and an HCS plate are told apart by
   their own `attrs.ome`; a plain directory of sibling `*.ome.zarr` stores — what
