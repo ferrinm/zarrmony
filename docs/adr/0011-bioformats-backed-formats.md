@@ -13,7 +13,7 @@ But VSI is covered by Bio-Formats' `CellSensReader`, and `bioio-bioformats` alre
 ```
 winning plugin: bioio  score 0  source builtin
 distribution:   bioio-bioformats
-scenes: ('label', 'overview', '20x_DAPI_N, FITC, TRITC, Cy5_01', 'macro image')
+scenes: ('label', 'overview', '<main-scene>', 'macro image')
 ```
 
 `derive_bioio_distribution()` resolves the `distribution` field correctly, so the audit record still names the backend that produced the store and the provenance boundary stays recoverable — the property ADR-0003 relies on. Nothing is missing except the packaging.

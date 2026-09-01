@@ -24,6 +24,7 @@ not undo the disclosure. Get it right the first time.
 | an absolute path to a lab share     | `/mnt/readonly/<dataset>` or `$SRC`       |
 | a sidecar named after a sample      | `metadata_<dataset>.json`                 |
 | a sample, accession or trial number | `<dataset>`, or `slide A` / `B` / `C`     |
+| a scanner scene name                | `<main-scene>`                            |
 | a collaborator or lab name          | "the internal share", "an external group" |
 
 Keep the technical facts — array shapes, dtypes, voxel spacings, channel
@@ -31,6 +32,14 @@ _filter_ names (`DAPI`, `FITC`, `Cy5`), instrument models, timings. Those are
 what make an issue useful to work from, and none of them identify a study on
 their own. It is the combination of sample identity and biological target that
 has to stay out.
+
+Scene names are the edge case that catches people, because they look like
+technical facts. A slide scanner names its main scene after the magnification,
+the full filter panel and an acquisition index, and that string is a stable
+handle for one acquisition even though every token in it is individually
+harmless. Write `<main-scene>` and say in the document that the literal value
+is tracked internally; reproduce the scanner's fixed scene names (`label`,
+`overview`, `macro image`) verbatim.
 
 Where a runbook genuinely needs a real path to be executable, take it from an
 environment variable set by the person running it, and say in the document
@@ -46,9 +55,12 @@ uv run pre-commit install
 ```
 
 The patterns committed to the repo are deliberately **structural** — the shape
-of an internal mount (`/Volumes/<share>-ro`), a cluster path, a trial number.
-They never name a lab, collaborator or study, because a blocklist naming those
-would publish them itself.
+of an internal mount (`/Volumes/<share>-ro`), a cluster path, a trial number, a
+magnification-prefixed scene name. They never name a lab, collaborator or
+study, because a blocklist naming those would publish them itself.
+`tests/test_check_no_internal_paths.py` pins both halves of each rule; the
+negative cases matter more than the positive ones, because a pattern that fires
+on ordinary prose gets suppressed until it stops protecting anything.
 
 Site-specific names go in `.internal-patterns` at the repo root, which is
 gitignored. One regex per line, matched case-insensitively, `#` for comments:

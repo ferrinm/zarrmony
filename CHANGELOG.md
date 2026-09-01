@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The VSI runbook and ADR-0011 no longer print the reference slide's main scene
+  name; it is `<main-scene>`, with a note that the literal value is tracked
+  internally. Scene names read as technical facts, which is what made this one
+  survive review — a slide scanner builds them from the magnification, the
+  filter panel and an acquisition index, so the string is a stable handle for
+  one acquisition even though no token in it is sensitive alone. The three
+  scanner-generated scene names around it are unchanged.
+- `scripts/check_no_internal_paths.py` gained a rule for that shape (a
+  magnification prefix followed by three or more joined tokens) and, for the
+  first time, tests — `tests/test_check_no_internal_paths.py` pins every rule's
+  negative cases as well as its positive ones, since a pattern that fires on
+  ordinary prose gets suppressed until it stops protecting anything.
+  CONTRIBUTING.md documents the scene-name case explicitly.
+
 ## [0.15.1] - 2026-08-31
 
 Documentation only; no code change, and no reason to upgrade except to read

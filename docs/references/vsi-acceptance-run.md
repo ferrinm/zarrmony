@@ -14,16 +14,18 @@ Each dataset is a 4.5 MB `.vsi` TIFF-like index (`II*\0` plus Olympus `IS` priva
 
 Four scenes per slide:
 
-| scene                                 | Y × X               |     C | dtype     | µm/px     |
-| ------------------------------------- | ------------------- | ----: | --------- | --------- |
-| `label`                               | 18232 × 1675 RGB    |     1 | uint8     | 2.738     |
-| `overview`                            | 30683 × 40960       |     1 | `>u2`     | 1.625     |
-| **`20x_DAPI_N, FITC, TRITC, Cy5_01`** | **141267 × 168124** | **4** | **`>u2`** | **0.325** |
-| `macro image`                         | 375 × 504 RGB       |     1 | uint8     | —         |
+| scene              | Y × X               |     C | dtype     | µm/px     |
+| ------------------ | ------------------- | ----: | --------- | --------- |
+| `label`            | 18232 × 1675 RGB    |     1 | uint8     | 2.738     |
+| `overview`         | 30683 × 40960       |     1 | `>u2`     | 1.625     |
+| **`<main-scene>`** | **141267 × 168124** | **4** | **`>u2`** | **0.325** |
+| `macro image`      | 375 × 504 RGB       |     1 | uint8     | —         |
 
 Main scene: 20×, Z=1, T=1, channels `DAPI_N / FITC / TRITC / Cy5`, 10 source pyramid levels. The dtype is **big-endian**. `X`/`Y` extents differ slightly per slide — A is 140757 × 171855, B is 141267 × 168124, C is 140752 × 171215 (Y × X) — so every number below that depends on extent is quoted for B.
 
-Scene names sanitize to these store directory names in per-scene layout: `label`, `overview`, `20x_DAPI_N_FITC_TRITC_Cy5_01`, `macro_image`.
+Scene names sanitize to these store directory names in per-scene layout: `label`, `overview`, `<main_scene>`, `macro_image`.
+
+`<main-scene>` is a placeholder throughout. The scanner names that scene after the magnification and the filter panel, which identifies the acquisition, so the literal string is tracked internally rather than in this public repo — substitute what `zarrmony inspect` reports for your slide. The other three names are scanner-generated constants and are reproduced verbatim.
 
 ## Pre-flight (already done)
 
@@ -165,7 +167,7 @@ Three things change downstream, and all three have bitten:
 
 ```bash
 python scripts/verify_geometry.py \
-  "$OUT/slide-B/20x_DAPI_N_FITC_TRITC_Cy5_01.ome.zarr" \
+  "$OUT/slide-B/<main-scene>.ome.zarr" \
   --expect-coarse-level 7
 ```
 
@@ -177,7 +179,7 @@ Then the things the geometry verifier does not cover:
 import json, os, zarr
 from ome_types import from_xml
 
-store = f"{OUT}/slide-B/20x_DAPI_N_FITC_TRITC_Cy5_01.ome.zarr"
+store = f"{OUT}/slide-B/<main-scene>.ome.zarr"
 attrs = dict(zarr.open_group(store, mode="r").attrs)
 
 # Channel names and pixel size survived into the multiscales metadata.

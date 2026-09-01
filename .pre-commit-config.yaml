@@ -19,6 +19,7 @@ repos:
         entry: python scripts/check_no_internal_paths.py
         language: system
         pass_filenames: true
-        # The checker and the convention doc both name the patterns they
-        # exist to catch, so they would flag themselves.
-        exclude: ^(scripts/check_no_internal_paths\.py|CONTRIBUTING\.md)$
+        # The checker, its tests and the convention doc all name the patterns
+        # they exist to catch, so they would flag themselves. The test file's
+        # fixtures are synthetic placeholders, not redacted real names.
+        exclude: ^(scripts/check_no_internal_paths\.py|tests/test_check_no_internal_paths\.py|CONTRIBUTING\.md)$
