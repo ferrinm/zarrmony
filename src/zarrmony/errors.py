@@ -175,6 +175,33 @@ class TileAlignmentWarning(UserWarning):
     """
 
 
+class ObjectCountWarning(UserWarning):
+    """This scene's pyramid will be written as a very large number of objects.
+
+    Emitted by the scene writer at plan time — after every level's shape and
+    chunk shape are resolved, before the arrays exist — when sharding is off
+    and the projected object count for one scene's whole pyramid exceeds
+    :data:`~zarrmony.geometry.STORAGE_OBJECT_WARN_COUNT`. The planner has known
+    that number all along: it is the write grid summed over the pyramid
+    (:func:`~zarrmony.geometry.count_storage_objects`), and it used to go
+    unsaid until the user noticed the run was not finishing. On a gigapixel 2D
+    scene at the 512 KiB default it is ~493,000 objects and about six days
+    (ADR-0010, issue #113).
+
+    The action is ``--shard-target-bytes`` (``Geometry.shard_target_bytes``),
+    which packs the same chunks into larger objects without changing the read
+    unit — and which the message names together with its catch, because a
+    sharded store needs ``sharding_indexed`` support to open and ``lucida-store``
+    has none today. A warning that skipped the catch would trade a slow
+    conversion for a store the user's viewer cannot open at all.
+
+    A warning rather than a refusal: the run is correct, the count may be
+    exactly what the user wants, and the trade between object count and reader
+    compatibility is theirs to make. Silence it through the ordinary
+    ``warnings`` filters; there is no suppression flag.
+    """
+
+
 class ChannelColorCollisionWarning(UserWarning):
     """Two or more channels resolved to the same display color.
 

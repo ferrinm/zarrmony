@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A conversion that will write a very large number of objects now says so
+  before it starts.** The planner resolves every level's shape and chunk shape
+  before a byte moves, so the object count is arithmetic rather than a
+  measurement — and it used to go unsaid until the run failed to finish. With
+  sharding off, a scene whose whole pyramid plans more than
+  `STORAGE_OBJECT_WARN_COUNT` (100,000) objects raises `ObjectCountWarning` at
+  plan time, before the arrays exist. The message carries the projected count,
+  which scene it is about, the ~6 days the reference whole-slide scene took at
+  493,484 objects (#113), `--shard-target-bytes` with the count it would give
+  instead — and that a sharded store needs `sharding_indexed` support to open,
+  which `lucida-store` does not have. Without that last clause the warning
+  would trade a slow conversion for a store the user's viewer cannot open.
+  Nothing is refused, no default moves, and the ordinary `warnings` filters are
+  the override — there is no suppression flag. Quiet when sharding is on, since
+  then the object count _is_ the shard count. (#122)
+- `zarrmony.geometry.count_storage_objects(level_shapes, write_grids)` — the
+  arithmetic on its own, taking one write grid per level so it returns the
+  shard count on a sharded store and the chunk count on an unsharded one. It
+  exists as a shared helper because `scripts/verify_geometry.py` predicts the
+  count off the chunk grid and so misreports every sharded store (#124, tracked
+  on #129); both callers can now reach the same figure. The result is an upper
+  bound — zarr writes no all-fill object — so assert `objects <= count`.
+
 ### Changed
 
 - The VSI runbook and ADR-0011 no longer print the reference slide's main scene
