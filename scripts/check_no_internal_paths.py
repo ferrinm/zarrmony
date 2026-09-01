@@ -7,7 +7,8 @@ experimental design (what is being stained, in what model, for whom) even when
 the surrounding text is purely technical.
 
 Run as a pre-commit hook over staged files. Use placeholders instead:
-``/mnt/readonly/<dataset>``, ``$SRC``, ``metadata_<dataset>.json``.
+``/mnt/readonly/<dataset>``, ``$SRC``, ``metadata_<dataset>.json``,
+``<main-scene>``.
 
 Add a trailing ``# allow-internal-path`` comment on a line that is a genuine
 false positive. Keep those rare — the point is that the reviewer has to look.
@@ -42,6 +43,18 @@ RULES: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"Trial[#_ ]?\d{3,}\b", re.IGNORECASE),
         "trial number identifying a specific experiment",
     ),
+    (
+        # Slide-scanner scene names: a magnification bolted straight onto the
+        # filter panel and an acquisition index, `20x_A_B_C_01`. Structural,
+        # not a blocklist — what it keys on is the `<mag>x_` prefix followed by
+        # three or more joined tokens. Prose does not have that shape: "imaged
+        # at 20x" has no underscore, and `20x_DAPI` is only two tokens, so the
+        # `{2,}` keeps the rule off anything short enough to be a variable name.
+        re.compile(
+            r"\b\d{1,3}x_[A-Za-z0-9]+(?:[\s,_-]+[A-Za-z0-9]+){2,}", re.IGNORECASE
+        ),
+        "slide-scanner scene name; use <main-scene>",
+    ),
 ]
 
 # Site-specific names (lab, collaborator, instrument share) belong in an
@@ -72,10 +85,12 @@ def load_rules() -> list[tuple[re.Pattern[str], str]]:
 
 
 # What this cannot catch: a bare dataset name carrying a sample ID and a marker
-# panel (`<line>_<marker>-<marker>_<marker>`) with no path or trial number
-# around it. There is no safe general pattern for that — a biology-term
-# blocklist is unbounded and would fire on legitimate channel names. Add such
-# names to the local pattern file; CONTRIBUTING.md and review cover the rest.
+# panel (`<line>_<marker>-<marker>_<marker>`) with no path, trial number or
+# magnification around it. There is no safe general pattern for that — a
+# biology-term blocklist is unbounded and would fire on legitimate channel
+# names. The scene-name rule above only reaches the subset that a slide scanner
+# prefixes with a magnification, which is a shape rather than a vocabulary. Add
+# the rest to the local pattern file; CONTRIBUTING.md and review cover it.
 
 # File suffixes worth scanning. Everything else (lockfiles, images, binaries)
 # is skipped — uv.lock in particular is huge and full of hashes.
