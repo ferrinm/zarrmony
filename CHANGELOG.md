@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Text the CLI prints no longer cites ADRs, issue numbers or a downstream
+  project.** The sharding and `--chunk-target-bytes` warnings, and the `--help`
+  text for eight flags, carried references only a reader of this repository
+  could use — and named `lucida-store` as the consumer that cannot open a
+  sharded store, which dates the message the day that consumer gains the
+  feature. The measured facts stay (121 resident chunks at 512 KiB against 4 at
+  8 MiB; a consumer that parses the codec chain itself refuses a sharded
+  store); the citations move to the docstring beside the code and to the ADR.
+  `tests/test_cli.py` pins it, as `tests/test_object_count_warning.py` does for
+  the warning added above.
 - The VSI runbook and ADR-0011 no longer print the reference slide's main scene
   name; it is `<main-scene>`, with a note that the literal value is tracked
   internally. Scene names read as technical facts, which is what made this one

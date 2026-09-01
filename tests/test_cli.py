@@ -446,7 +446,52 @@ def test_convert_sharding_warns_about_codec_chain_consumers(
     assert result.exit_code == 0, result.output
     assert "Warning" in result.output
     assert "sharding_indexed" in result.output
-    assert "Lucida" in result.output
+    assert "parses the codec chain" in result.output
+
+
+def test_emitted_text_cites_nothing_the_reader_cannot_act_on(
+    tmp_path: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Help and warning text carries no ADR, no issue number, no sibling project.
+
+    Everything the CLI prints is read at a terminal by someone converting a
+    file, and none of those three are things that reader can act on: an ADR
+    number is repo-reader context in the wrong place, and naming a downstream
+    consumer dates the message the day that consumer gains the feature. The
+    reasoning stays in the docstring beside the code and in the ADR, where a
+    reader of this repository will find it. Same rule the scene writer's
+    ObjectCountWarning is held to.
+    """
+    monkeypatch.setattr(
+        api_module,
+        "convert",
+        lambda **kwargs: {"layout": "per-scene", "stores": []},
+    )
+    warned = runner.invoke(
+        app,
+        [
+            "convert",
+            "/tmp/x.lif",
+            str(tmp_path / "out"),
+            "--chunk-target-bytes",
+            str(8 * 1024 * 1024),
+            "--shard-target-bytes",
+        ],
+    )
+    assert warned.exit_code == 0, warned.output
+    assert "Warning" in warned.output  # both warnings fired, so both are checked
+    emitted = [
+        warned.output,
+        runner.invoke(app, ["--help"]).output,
+        runner.invoke(app, ["convert", "--help"]).output,
+        runner.invoke(app, ["inspect", "--help"]).output,
+    ]
+    for text in emitted:
+        lowered = text.lower()
+        for citation in ("adr-", "issue #", "lucida"):
+            assert citation not in lowered, f"{citation!r} in: {text}"
 
 
 def test_convert_shard_shape_and_shard_target_bytes_are_exclusive(
