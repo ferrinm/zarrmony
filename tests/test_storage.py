@@ -50,14 +50,26 @@ def test_size_on_disk_fsspec_memory_uri() -> None:
         (1, "1 B"),
         (512, "512 B"),
         (1023, "1023 B"),
-        (1024, "1.0 KB"),
-        (1536, "1.5 KB"),
-        (1024 * 1024, "1.0 MB"),
-        (int(2.3 * 1024 * 1024), "2.3 MB"),
-        (1024**3, "1.0 GB"),
-        (int(2.3 * 1024**3), "2.3 GB"),
-        (1024**4, "1.0 TB"),
+        (1024, "1.0 KiB"),
+        (1536, "1.5 KiB"),
+        (1024 * 1024, "1.0 MiB"),
+        (int(2.3 * 1024 * 1024), "2.3 MiB"),
+        (1024**3, "1.0 GiB"),
+        (int(2.3 * 1024**3), "2.3 GiB"),
+        (1024**4, "1.0 TiB"),
+        # The observed case from issue #128: 359.4 GB decimal, and the binary
+        # arithmetic this function does has to say GiB or it reads as a 7.4%
+        # smaller store than the byte count beside it.
+        (359_438_211_506, "334.8 GiB"),
     ],
 )
 def test_format_bytes(n: int, expected: str) -> None:
     assert format_bytes(n) == expected
+
+
+@pytest.mark.parametrize("n", [1024, 1024**2, 1024**3, 1024**4, 1024**5, 1024**6])
+def test_format_bytes_labels_every_unit_binary(n: int) -> None:
+    # The suffix is the unit the division actually used. A decimal suffix on a
+    # 1024-based figure is the one combination neither `ls -lh` nor Finder
+    # produces, and it is persisted in the audit's `size_human`.
+    assert format_bytes(n).endswith("iB")

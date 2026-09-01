@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The acceptance verifier can see a shard.** `scripts/verify_geometry.py`
+  collected each level's `chunks` and never its `shards`, so on a sharded store
+  it predicted the object count off the read grid while `count_objects` walked
+  the write grid — 493,484 predicted against 31,634 on disk for the store
+  measured in #124, a 15.84× disagreement the report did not explain. It now
+  predicts through `count_storage_objects` on the shard grid where there is
+  one, labels the figure `Shard objects`, and prints the chunk grid beside it
+  as the read unit it has become. The levels table gains `shard` and `shards`
+  columns, so a pyramid whose shard shape changes partway down (the reference
+  volume flips its long axis from X to Y at level 3) no longer reads as
+  uniform. A new `shard shapes` check compares what is on disk against what the
+  store's own recorded policy plans, and fails when they disagree in either
+  direction — including a store that is sharded while its audit says it is not.
+  An unsharded store's report is unchanged apart from the new check below.
+  (#129)
+- **The verifier compares object counts as `objects <= grid`, not equality, and
+  says how far short.** Zarr writes no object that is entirely fill value, so a
+  level with a padded trailing axis legitimately comes in under its own grid —
+  #126's volume was 1,134 shards short of 210,345, every absent one on a
+  3-voxel sliver. A shortfall passes and is quantified so a reader can tell
+  "all-fill objects skipped" from "the geometry is wrong"; an excess fails.
+  Counting is now classified against the level arrays' own names, because a
+  store also holds one `zarr.json` per level plus the group's, and
+  `OME/METADATA.ome.xml` with the source metadata beside it — six files on the
+  smallest possible store, none of them pixels, and enough to put a correct
+  store over its grid. `tests/test_verify_geometry.py` covers the script, which
+  had no tests. (#129)
+
+- **Every byte count zarrmony prints or records now carries the unit it was
+  actually computed in.** `format_bytes` divides by 1024 and used to label the
+  result `KB`/`MB`/`GB`/`TB`; it now says `KiB`/`MiB`/`GiB`/`TiB`. The
+  arithmetic has not moved — the same 359,438,211,506-byte input reads
+  `334.8 GiB` where it read `334.8 GB`, which was understating it by 7.4%
+  against its own label and matched neither `ls -lh` (binary, bare `G`) nor
+  Finder (decimal since macOS 10.6). This is the rendering of `size_human` in
+  the audit record, the `Input:` / `Output:` / `Size:` lines of `convert` and
+  `inspect`, and the store sizes `scripts/verify_geometry.py` prints into an
+  acceptance report — so anyone diffing two audits across this change will see
+  every size string move, with the `size_bytes` beside it unchanged. It also
+  makes those figures comparable against `--chunk-target-bytes` and
+  `--shard-target-bytes`, whose help text and ADRs were already written in
+  KiB/MiB. `audit_schema_version` stays at 14: no key was added, removed or
+  retyped, and the reason is recorded beside the constant. (#128)
+
 ## [0.16.0] - 2026-08-31
 
 The planner already knew how many objects a conversion would write; now it

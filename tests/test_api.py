@@ -428,7 +428,7 @@ def test_inspect_returns_size_bytes_for_file_input(
 
     info = inspect(str(src))
     assert info["size_bytes"] == 2048
-    assert info["size_human"] == "2.0 KB"
+    assert info["size_human"] == "2.0 KiB"
 
 
 def test_inspect_returns_recursive_size_bytes_for_directory_input(

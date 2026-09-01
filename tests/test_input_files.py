@@ -175,7 +175,7 @@ def test_the_summary_counts_and_totals_the_whole_set(tmp_path: Path) -> None:
 
     assert block["count"] == 3
     assert block["size_bytes"] == 64 + 1000 + 1000
-    assert block["size_human"] == "2.0 KB"
+    assert block["size_human"] == "2.0 KiB"
     assert block["paths"] == members
     assert block["listing_truncated"] is False
 
@@ -406,7 +406,7 @@ def test_the_cli_input_line_names_the_set(tmp_path: Path, patched_reader) -> Non
     )
 
     assert res.exit_code == 0, res.output
-    assert "Input:  8.1 KB across 3 files (the named path alone is 64 B)" in res.output
+    assert "Input:  8.1 KiB across 3 files (the named path alone is 64 B)" in res.output
 
 
 def test_the_cli_input_line_is_unchanged_for_a_single_file(
@@ -429,7 +429,7 @@ def test_the_cli_input_line_is_unchanged_for_a_single_file(
     )
 
     assert res.exit_code == 0, res.output
-    assert "Input:  2.0 KB\n" in res.output
+    assert "Input:  2.0 KiB\n" in res.output
 
 
 def test_the_cli_inspect_size_line_names_the_set(
@@ -449,4 +449,4 @@ def test_the_cli_inspect_size_line_names_the_set(
     res = CliRunner().invoke(app, ["inspect", str(index)])
 
     assert res.exit_code == 0, res.output
-    assert "Size:   8.1 KB across 3 files (the named path alone is 64 B)" in res.output
+    assert "Size:   8.1 KiB across 3 files (the named path alone is 64 B)" in res.output
