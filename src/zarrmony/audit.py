@@ -118,6 +118,12 @@ from zarrmony.readers.plugin import ReaderPlugin
 #    objective info omit the ``objective`` key entirely. Purely additive:
 #    consumers pinned to 6 can widen their pin. (#52)
 AUDIT_SCHEMA_VERSION = 14
+# Not bumped for #128, which changed how ``size_human`` *renders* (``334.8 GB``
+# for a 1024-based figure became ``334.8 GiB``) without adding, removing or
+# retyping a key. The version pins the record's shape so a consumer knows which
+# keys it can read; a consumer parsing the human string rather than the
+# ``size_bytes`` beside it was already reading the wrong field. Precedent: #87
+# rendered a value differently and did not bump, #117 changed the shape and did.
 
 
 def _file_forensics(

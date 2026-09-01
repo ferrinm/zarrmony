@@ -154,7 +154,7 @@ def test_convert_prints_input_and_output_size_lines_per_scene(
     input_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Input:"))
     output_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Output:"))
     assert wrote_idx < input_idx < output_idx
-    assert "4.0 KB" in lines[input_idx]
+    assert "4.0 KiB" in lines[input_idx]
 
 
 def test_convert_chunk_shape_invalid_format(
@@ -1168,7 +1168,7 @@ def test_inspect_text_output_prints_size_line(
     plugin_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Plugin:"))
     size_idx = next(i for i, ln in enumerate(lines) if ln.startswith("Size:"))
     assert input_idx < size_idx < plugin_idx
-    assert "2.0 KB" in lines[size_idx]
+    assert "2.0 KiB" in lines[size_idx]
 
 
 def test_inspect_json_output_includes_size_bytes(

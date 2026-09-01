@@ -55,14 +55,19 @@ def size_on_disk(path: str | Path) -> int:
 
 
 def format_bytes(n: int) -> str:
-    """Render a byte count using powers of 1024 (e.g. ``2.3 MB``).
+    """Render a byte count using powers of 1024 (e.g. ``2.3 MiB``).
 
-    Below 1 KB renders as an integer count of bytes; above that, one decimal
-    place. The unit suffixes match what ``ls -lh`` and Finder show.
+    Below 1 KiB renders as an integer count of bytes; above that, one decimal
+    place. The suffixes are binary because the arithmetic is: labelling a
+    1024-based figure ``GB`` understates it by 7.4% against its own unit, and
+    every other size in this project — the chunk and shard byte targets, their
+    ``--help`` text, the geometry ADRs — is written in KiB/MiB/GiB (issue #128).
+    ``ls -lh`` reports the same numbers with a bare ``G``; Finder has used
+    powers of 1000 since macOS 10.6 and will disagree.
     """
     if n < 1024:
         return f"{int(n)} B"
-    units = ("KB", "MB", "GB", "TB", "PB", "EB")
+    units = ("KiB", "MiB", "GiB", "TiB", "PiB", "EiB")
     size = float(n) / 1024.0
     for unit in units:
         if size < 1024.0 or unit == units[-1]:

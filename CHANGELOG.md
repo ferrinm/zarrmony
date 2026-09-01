@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every byte count zarrmony prints or records now carries the unit it was
+  actually computed in.** `format_bytes` divides by 1024 and used to label the
+  result `KB`/`MB`/`GB`/`TB`; it now says `KiB`/`MiB`/`GiB`/`TiB`. The
+  arithmetic has not moved — the same 359,438,211,506-byte input reads
+  `334.8 GiB` where it read `334.8 GB`, which was understating it by 7.4%
+  against its own label and matched neither `ls -lh` (binary, bare `G`) nor
+  Finder (decimal since macOS 10.6). This is the rendering of `size_human` in
+  the audit record, the `Input:` / `Output:` / `Size:` lines of `convert` and
+  `inspect`, and the store sizes `scripts/verify_geometry.py` prints into an
+  acceptance report — so anyone diffing two audits across this change will see
+  every size string move, with the `size_bytes` beside it unchanged. It also
+  makes those figures comparable against `--chunk-target-bytes` and
+  `--shard-target-bytes`, whose help text and ADRs were already written in
+  KiB/MiB. `audit_schema_version` stays at 14: no key was added, removed or
+  retyped, and the reason is recorded beside the constant. (#128)
+
 ## [0.16.0] - 2026-08-31
 
 The planner already knew how many objects a conversion would write; now it
