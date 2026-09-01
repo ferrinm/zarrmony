@@ -216,6 +216,14 @@ about six days for its pyramid, against 3 h 02 m for the same scene written in
 cost is graph size rather than bytes — which is why sharding fixes it and a
 bigger chunk only trades it for a worse viewer.
 
+You do not have to work this out per scene. The planner knows every level's
+grid before it writes anything, so it knows the count: an unsharded scene whose
+pyramid plans more than 100,000 objects emits an `ObjectCountWarning` at plan
+time naming the count, `--shard-target-bytes`, the count sharding would give
+instead, and the reader catch below. Nothing is refused — the run is correct
+and the count may be what you want — and the ordinary `warnings` filters
+silence it.
+
 Sharding answers this without giving up read granularity, because the shard is
 the write unit and the chunk is the read unit. `--shard-target-bytes` packs
 whole chunks into 8 MiB storage objects: that slide scene's level 0 becomes

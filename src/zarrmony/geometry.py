@@ -32,7 +32,9 @@ write touches, which is the shard where the policy plans one and the chunk
 where it does not. :func:`plan_reader_tile_size` runs it *backwards*, deriving
 the tile a reader should produce so its blocks nest in the grid they will be
 written on, and :func:`split_axes` is the predicate saying when they do not
-(issue #112).
+(issue #112). :func:`count_storage_objects` totals that grid over a pyramid,
+which is how many objects the run will write — known in full before a byte
+moves, and warned about above :data:`STORAGE_OBJECT_WARN_COUNT` (issue #122).
 
 ``isotropy_tolerance``, ``axis_floor``, ``pyramid_min_size`` and the two
 ``coarse_max_*`` bounds are consumed by the anisotropy-aware pyramid rule
@@ -83,6 +85,17 @@ DEFAULT_CHUNK_TARGET_BYTES = 512 * 1024
 # square floor is what makes the fall-off abrupt rather than gradual. See
 # ADR-0010, "Follow-up (issue #113)".
 CHUNK_TARGET_WARN_BYTES = 2 * 1024 * 1024
+# One scene's whole pyramid may plan this many storage objects before the
+# planner says so out loud (:class:`~zarrmony.errors.ObjectCountWarning`). The
+# value sits between the two counts that were actually measured: the sharded
+# whole-slide acceptance run wrote 31,156 objects in 3 h 04 m and was fine,
+# while the same scene unsharded plans 493,484 and runs for about six days
+# (ADR-0010, "Follow-up (issue #113)" and "Follow-up (issue #124)"). 100,000 is
+# ~3x above the count that was comfortable and ~5x below the one that was not,
+# so it separates them without sitting on either. Not a ``Geometry`` field: the
+# ``warnings`` filters are already the override, and a knob that changes no
+# output does not belong in the audit record.
+STORAGE_OBJECT_WARN_COUNT = 100_000
 # What ``--shard-target-bytes`` resolves to when asked for without a value. NOT
 # a field default: ``Geometry.shard_target_bytes`` defaults to ``None`` and
 # sharding is off unless a caller says otherwise (ADR-0010, issue #117). 8 MiB
@@ -730,6 +743,59 @@ def plan_write_grid(
     return plan_shard_shape(chunk, level_shape, dims, spacings_um, dtype, geometry)
 
 
+def count_storage_objects(
+    level_shapes: Sequence[Sequence[int]],
+    write_grids: Sequence[Sequence[int]],
+) -> int:
+    """How many storage objects a pyramid of these levels on these grids holds.
+
+    Per level, the product over axes of ``ceil(extent / grid_length)``, summed
+    over the pyramid. The grid is whatever *one storage object* is for that
+    level — the shard where the policy plans one and the chunk where it does
+    not, which is exactly what :func:`plan_write_grid` returns and what the
+    scene writer's ``dataset.shards or dataset.chunks`` reads back. Hand it
+    shard shapes and it returns the shard count; hand it chunk shapes and it
+    returns the chunk count. Getting that choice wrong is not a rounding error:
+    on the reference whole-slide scene the two answers are 493,484 and 31,156.
+
+    Chunk/shard objects only. Each level also carries one ``zarr.json``, which
+    is a per-level constant rather than part of the figure this predicts.
+
+    The result is an **upper bound**, not an identity. zarr writes no object
+    whose contents are entirely fill value, so a level with a padded trailing
+    row can come in short — 209,211 shards against a 210,345-shard grid on the
+    reference volume (ADR-0010, "Follow-up (issue #126)"). Assert ``objects <=
+    count_storage_objects(...)``, never equality.
+
+    Pure arithmetic on data the planner already has, kept free of any warning
+    or threshold logic the way :func:`split_axes` is kept free of the
+    ``warnings.warn`` call that consumes it. Shared with
+    ``scripts/verify_geometry.py`` (issue #124), which has to reach the same
+    number the planner did.
+
+    :param level_shapes: One extent tuple per pyramid level, in level order.
+    :param write_grids: One grid per level, positionally aligned with
+        ``level_shapes`` and with the same axis order.
+    """
+    if len(level_shapes) != len(write_grids):
+        raise ValueError(
+            f"count_storage_objects needs one write grid per level; got "
+            f"{len(write_grids)} grids for {len(level_shapes)} levels"
+        )
+    total = 0
+    for shape, grid in zip(level_shapes, write_grids, strict=True):
+        if len(shape) != len(grid):
+            raise ValueError(
+                f"count_storage_objects needs one grid length per axis; got "
+                f"{len(grid)} grid lengths for a level of {len(shape)} axes"
+            )
+        total += math.prod(
+            math.ceil(int(extent) / max(1, int(length)))
+            for extent, length in zip(shape, grid, strict=True)
+        )
+    return total
+
+
 def split_axes(
     source_lengths: Sequence[int],
     write_grid: Sequence[int],
@@ -875,8 +941,10 @@ __all__ = [
     "DEFAULT_PYRAMID_MIN_SIZE",
     "DEFAULT_SHARD_TARGET_BYTES",
     "SPATIAL_AXES",
+    "STORAGE_OBJECT_WARN_COUNT",
     "DownsampleMethod",
     "Geometry",
+    "count_storage_objects",
     "plan_chunk_shape",
     "plan_level_chunk_shapes",
     "plan_level_shard_shapes",

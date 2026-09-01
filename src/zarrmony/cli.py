@@ -161,8 +161,7 @@ def _build_geometry(
             "every zarr-python 3 consumer — napari-ome-zarr, dask, plain "
             "__getitem__ — is unaffected, but a consumer that parses the codec "
             "chain itself sees 'sharding_indexed' where it expects 'bytes' and "
-            "refuses the store. Lucida cannot read a sharded store today "
-            "(ADR-0010, issue #117).",
+            "refuses the store.",
             err=True,
         )
     if chunk_target_bytes is not None and chunk_target_bytes > CHUNK_TARGET_WARN_BYTES:
@@ -170,9 +169,9 @@ def _build_geometry(
             f"Warning: --chunk-target-bytes {chunk_target_bytes} is above "
             f"{CHUNK_TARGET_WARN_BYTES} ({CHUNK_TARGET_WARN_BYTES // 1024} KiB). "
             "Large chunks cut object count, but a viewer that budgets its "
-            "resident tiles in bytes then holds far fewer of them at once — "
-            "Lucida's 2D slice atlas drops from 121 resident chunks at the "
-            "512 KiB default to 4 at 8 MiB. If object count is what you are "
+            "resident tiles in bytes then holds far fewer of them at once — a "
+            "2D slice atlas with a fixed byte budget holds 121 resident chunks "
+            "at the 512 KiB default and 4 at 8 MiB. If object count is what you are "
             "after, --shard-target-bytes cuts it without touching the read "
             "unit. Prefer a large chunk only for archival stores read in big "
             "sequential sweeps.",
@@ -256,7 +255,7 @@ def _parse_reader_kwargs(
     "--pyramid-min-size",
     type=int,
     default=None,
-    show_default=f"{DEFAULT_PYRAMID_MIN_SIZE} (from the ADR-0010 geometry policy)",
+    show_default=f"{DEFAULT_PYRAMID_MIN_SIZE} (from the default geometry policy)",
     help=(
         "Stop pyramid generation when the smaller of Y/X falls below this. "
         "Z never decides depth — a 3-plane stack would otherwise get no "
@@ -269,7 +268,7 @@ def _parse_reader_kwargs(
     "--isotropy-tolerance",
     type=float,
     default=None,
-    show_default=f"{DEFAULT_ISOTROPY_TOLERANCE} (from the ADR-0010 geometry policy)",
+    show_default=f"{DEFAULT_ISOTROPY_TOLERANCE} (from the default geometry policy)",
     help=(
         "How close to the finest axis's voxel spacing an axis must be to be "
         "halved at a pyramid level. Levels therefore move toward isotropy and "
@@ -284,7 +283,7 @@ def _parse_reader_kwargs(
     default=None,
     show_default=(
         f"{DEFAULT_COARSE_MAX_BYTES} "
-        f"({DEFAULT_COARSE_MAX_BYTES // (1024 * 1024)} MiB, from the ADR-0010 "
+        f"({DEFAULT_COARSE_MAX_BYTES // (1024 * 1024)} MiB, from the default "
         f"geometry policy)"
     ),
     help=(
@@ -300,9 +299,7 @@ def _parse_reader_kwargs(
     "--coarse-max-long-axis",
     type=int,
     default=None,
-    show_default=(
-        f"{DEFAULT_COARSE_MAX_LONG_AXIS} (from the ADR-0010 geometry policy)"
-    ),
+    show_default=f"{DEFAULT_COARSE_MAX_LONG_AXIS} (from the default geometry policy)",
     help=(
         "Longest lateral (Y/X) extent, in voxels, a coarse level may have. "
         "The second of the two coarse-level bounds; both must hold before the "
@@ -313,7 +310,7 @@ def _parse_reader_kwargs(
     "--downsample-method",
     type=click.Choice(["mean", "max"]),
     default=None,
-    show_default=f"{DEFAULT_DOWNSAMPLE_METHOD} (from the ADR-0010 geometry policy)",
+    show_default=f"{DEFAULT_DOWNSAMPLE_METHOD} (from the default geometry policy)",
     help=(
         "Pooling kernel for every pyramid level above 0. 'mean' (default) is "
         "right for intensity imagery and is what the OME-Zarr ecosystem "
@@ -332,7 +329,7 @@ def _parse_reader_kwargs(
     default=None,
     show_default=(
         f"{DEFAULT_CHUNK_TARGET_BYTES} "
-        f"({DEFAULT_CHUNK_TARGET_BYTES // 1024} KiB, from the ADR-0010 geometry policy)"
+        f"({DEFAULT_CHUNK_TARGET_BYTES // 1024} KiB, from the default geometry policy)"
     ),
     help=(
         "Raw (uncompressed) byte target for one chunk. The planner picks the "
@@ -341,7 +338,7 @@ def _parse_reader_kwargs(
         "sequential sweeps; lower it for latency-sensitive interactive "
         "viewing. Raising it warns: a viewer budgeting resident tiles in "
         "bytes holds far fewer large ones, and object count is better cut "
-        "with --shard-target-bytes (ADR-0010, issue #113)."
+        "with --shard-target-bytes."
     ),
 )
 @click.option(
@@ -369,8 +366,7 @@ def _parse_reader_kwargs(
         "count and speeds up writes without coarsening reads: the chunk stays "
         "the unit a viewer fetches and budgets by, and is range-read out of "
         "the shard. Off by default because a consumer that parses the codec "
-        "chain rather than using a zarr library cannot open a sharded store — "
-        "Lucida cannot today (ADR-0010, issue #117)."
+        "chain rather than using a zarr library cannot open a sharded store."
     ),
 )
 @click.option(
@@ -427,8 +423,7 @@ def _parse_reader_kwargs(
         "computed off the coarsest pyramid level and written into "
         "omero.channels[i].window.start/end. Read back off the store after "
         "the pyramid is written, so it costs no raw-pixel read. Pass -1 (or "
-        "use --no-contrast) to disable and keep the dtype-range placeholder "
-        "from issue #50."
+        "use --no-contrast) to disable and keep the dtype-range placeholder."
     ),
 )
 @click.option(
@@ -465,7 +460,7 @@ def _parse_reader_kwargs(
         "opts back into bioio-lif's 1-pixel-overlap M-scan-order stitcher "
         "(the pre-v0.7.0 default); the cascade will pick this automatically "
         "when a scene has no <Tile> layout metadata. Other readers ignore this "
-        "flag. See ADR-0005."
+        "flag."
     ),
 )
 @click.option(
@@ -500,8 +495,8 @@ def _parse_reader_kwargs(
         "LIF-specific. Name of the plate template to convert on a multi-plate "
         "LIF (see `zarrmony inspect` for the available names). Required when "
         "the LIF holds ≥2 plate templates — one convert call produces one "
-        "plate.zarr per ADR-0009, so run convert once per plate. Optional on "
-        "single-plate LIFs; if passed, the NAME must match the plate's name. "
+        "plate.zarr, so run convert once per plate. Optional on single-plate "
+        "LIFs; if passed, the NAME must match the plate's name. "
         "Threads through to the LIF reader as `plate=` — equivalent to "
         "'--reader-kwarg plate=NAME'; passing both is an error."
     ),

@@ -8,6 +8,7 @@ publicly; the parent's lazy initialization is otherwise opaque to callers.
 
 import warnings
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 import dask.array as da
@@ -16,11 +17,14 @@ import xarray as xr
 from bioio_ome_zarr.writers import Channel, OMEZarrWriter
 
 from zarrmony._storage import open_root_group
-from zarrmony.errors import TileAlignmentWarning
+from zarrmony.errors import ObjectCountWarning, TileAlignmentWarning
 from zarrmony.geometry import (
     DEFAULT_GEOMETRY,
+    DEFAULT_SHARD_TARGET_BYTES,
     SPATIAL_AXES,
+    STORAGE_OBJECT_WARN_COUNT,
     Geometry,
+    count_storage_objects,
     plan_level_chunk_shapes,
     plan_level_shard_shapes,
     split_axes,
@@ -122,6 +126,91 @@ def _warn_on_split(
         f"splits one ({detail}). This multiplies the dask graph and re-reads "
         f"each source block once per write it feeds.{hint}",
         TileAlignmentWarning,
+        stacklevel=3,
+    )
+
+
+def _warn_on_object_count(
+    level_shapes: Sequence[Sequence[int]],
+    chunk_shapes: Sequence[Sequence[int]],
+    dims: Sequence[str],
+    base_spacings: Sequence[float],
+    dtype: Any,
+    geometry: Geometry,
+    scene_index: int,
+    scene_name: str,
+) -> None:
+    """Warn when this scene's unsharded pyramid plans a very large object count.
+
+    Issue #122. Every input is known here — the level shapes and each level's
+    chunk shape — so the exact number of objects the run will write is
+    arithmetic (:func:`~zarrmony.geometry.count_storage_objects`), not a
+    measurement. Saying it at plan time is the whole point: the alternative is
+    the user finding out from a run that does not finish.
+
+    Called only with sharding off, where the chunk *is* the storage object. With
+    sharding on the object count is the shard count and the user has already
+    made the trade, so there is nothing to tell them.
+
+    The message names ``--shard-target-bytes`` together with the count it would
+    give, which means planning that grid here purely to report it — a few
+    hundred candidate combinations per level, against a run measured in days.
+    The catch travels with the offer: a sharded store needs ``sharding_indexed``
+    support to open.
+
+    What the message does *not* carry is issue numbers, ADR numbers or the name
+    of any downstream project. It is read at a terminal by someone converting a
+    file, and none of those are things they can act on; the reasoning behind the
+    threshold and the trade lives in :class:`~zarrmony.errors.ObjectCountWarning`
+    and in ADR-0010, where a reader of this repository will find it.
+    """
+    objects = count_storage_objects(level_shapes, chunk_shapes)
+    if objects <= STORAGE_OBJECT_WARN_COUNT:
+        return
+
+    # Never below the chunk target, which ``Geometry`` rejects — a caller who
+    # already raised ``chunk_target_bytes`` past 8 MiB gets the shard target
+    # they would actually have to pass.
+    shard_target = max(DEFAULT_SHARD_TARGET_BYTES, geometry.chunk_target_bytes)
+    planned = plan_level_shard_shapes(
+        chunk_shapes,
+        level_shapes,
+        dims,
+        base_spacings,
+        dtype,
+        replace(geometry, shard_target_bytes=shard_target),
+    )
+    # ``None`` means sharding is off, which the copy above rules out. Falling
+    # back to the chunk grid rather than special-casing that keeps one code
+    # path: the count then shows no reduction and the message says so.
+    shard_shapes = planned if planned is not None else [tuple(c) for c in chunk_shapes]
+    shard_objects = count_storage_objects(level_shapes, shard_shapes)
+
+    if shard_objects < objects:
+        remedy = (
+            f"Passing --shard-target-bytes {shard_target} packs the same chunks "
+            f"into {tuple(shard_shapes[0])} shards ({shard_objects:,} objects) "
+            f"with no change to the read unit a viewer sees, but the resulting "
+            f"store requires sharding_indexed reader support to open — a "
+            f"consumer that parses the codec chain itself will refuse it."
+        )
+    else:
+        # Only reachable at a chunk target of 8 MiB or more, where a shard
+        # holds one chunk and packing them cuts nothing. Offering the flag here
+        # would be advice that does not work.
+        remedy = (
+            f"--shard-target-bytes cannot cut this: at chunk_target_bytes="
+            f"{geometry.chunk_target_bytes} a shard already holds a single "
+            f"chunk. Lower the chunk target first, or accept the count."
+        )
+
+    warnings.warn(
+        f"this conversion will write {objects:,} storage objects for scene "
+        f"{scene_index} ({scene_name!r}, {len(level_shapes)} levels, level-0 "
+        f"chunk {tuple(chunk_shapes[0])}). A store this size is slow to write "
+        f"— a gigapixel scene at ~493,000 objects measured roughly six days "
+        f"for its pyramid — and slow to list. {remedy}",
+        ObjectCountWarning,
         stacklevel=3,
     )
 
@@ -459,7 +548,12 @@ def write_scene(
     case the chunk is also the storage object. ``coarse_level_index`` names
     which of those levels is the coarse one (``None`` if none reaches the
     bounds), so the guarantee is checkable in the audit rather than in a
-    viewport. ``downsample_method`` then
+    viewport. Those same shapes fix how many storage objects the run will
+    write, so an unsharded pyramid above
+    :data:`~zarrmony.geometry.STORAGE_OBJECT_WARN_COUNT` objects raises
+    :class:`~zarrmony.errors.ObjectCountWarning` here — before the arrays
+    exist, since that is the last moment the answer is still useful (#122).
+    ``downsample_method`` then
     decides how the pixels of every level above 0 are pooled — mean by default,
     ``"max"`` for sparse labels — uniformly across the pyramid.
 
@@ -552,6 +646,22 @@ def write_scene(
     shard_shapes = plan_level_shard_shapes(
         chunk_shapes, level_shapes, dims, physical_pixel_size, canonical.dtype, geometry
     )
+
+    # ADR-0010 (#122): the pyramid's object count is now fully determined and
+    # nothing has been created yet, so this is the last moment where saying it
+    # still saves the user a run. ``shard_shapes is None`` is exactly "sharding
+    # off", which is also what makes the chunk the storage object to count.
+    if shard_shapes is None:
+        _warn_on_object_count(
+            level_shapes,
+            chunk_shapes,
+            dims,
+            physical_pixel_size,
+            canonical.dtype,
+            geometry,
+            scene_index,
+            scene_name,
+        )
 
     writer = ZarrmonyWriter(
         store=store_path,
