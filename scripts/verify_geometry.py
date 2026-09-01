@@ -28,7 +28,13 @@ Three questions, none of which the conversion itself answers:
    coarse tier in the viewer.
 
 3. **How big did it get?** Bytes on disk and object count, which is what the
-   ADR's estimates get compared against.
+   ADR's estimates get compared against. On a sharded store the object is the
+   *shard*, so the prediction runs on the shard grid and the chunk grid is
+   reported beside it as the read unit it now is — the two differ by 15.84× on
+   the store measured in #124, and a prediction off the chunk grid is simply
+   not comparable to what is on disk (#129). The comparison is ``objects <=
+   grid``, never equality: zarr writes no object that is entirely fill value,
+   so a padded trailing row legitimately comes in short (#126).
 
 Usage::
 
@@ -50,9 +56,10 @@ import argparse
 import math
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -62,7 +69,13 @@ from zarrmony._storage import (
     open_root_group,
     size_on_disk,
 )
-from zarrmony.geometry import DEFAULT_GEOMETRY, Geometry, plan_level_chunk_shapes
+from zarrmony.geometry import (
+    DEFAULT_GEOMETRY,
+    Geometry,
+    count_storage_objects,
+    plan_level_chunk_shapes,
+    plan_level_shard_shapes,
+)
 from zarrmony.writers.pyramid import coarse_level_index, compute_level_shapes
 
 # Lucida's ``SourceCoarseConfig`` defaults, in full (lucida-store/src/coarse.rs).
@@ -126,8 +139,13 @@ def _geometry_from_audit(audit: dict[str, Any]) -> tuple[Geometry, str]:
         return DEFAULT_GEOMETRY, "default policy (store predates config.geometry)"
     fields = {f for f in Geometry.__dataclass_fields__}
     updates = {k: v for k, v in recorded.items() if k in fields}
-    if updates.get("chunk_shape") is not None:
-        updates["chunk_shape"] = tuple(int(s) for s in updates["chunk_shape"])
+    # Both are tuple-typed on ``Geometry`` and both come back from JSON as
+    # lists. ``Geometry.__post_init__`` normalises them too, so this is belt
+    # and braces — but it keeps the coercion at the boundary where the JSON is,
+    # and it applies to both fields rather than only the one that had it.
+    for field in ("chunk_shape", "shard_shape"):
+        if updates.get(field) is not None:
+            updates[field] = tuple(int(s) for s in updates[field])
     return replace(DEFAULT_GEOMETRY, **updates), "attrs.zarrmony.config.geometry"
 
 
@@ -215,22 +233,64 @@ def _lucida_coarse_level(
     return max(fitting) if fitting else None
 
 
-def count_objects(path: str) -> int:
-    """Number of stored objects under ``path`` (chunks plus metadata files).
+class ObjectCounts(NamedTuple):
+    """Files under a store, split by what they are.
+
+    ``pixels`` is the only figure comparable against a level grid: it counts
+    the chunk or shard objects under the level arrays and nothing else. The
+    other two are why the split exists — a multiscale group carries one
+    ``zarr.json`` per level plus one for itself, and a zarrmony store also
+    holds ``OME/METADATA.ome.xml`` and the source metadata beside it. Six
+    files on the smallest possible store, none of them pixels, all of them
+    enough to put a correct store over its own grid.
+    """
+
+    pixels: int
+    metadata: int
+    other: int
+
+    @property
+    def total(self) -> int:
+        return self.pixels + self.metadata + self.other
+
+
+def count_objects(path: str, level_paths: Sequence[str]) -> ObjectCounts:
+    """Files under ``path``, classified against the level arrays' own names.
 
     Walks the tree, which on a multi-million-object store is minutes rather
     than seconds — hence ``--no-object-count`` for a quick re-check. The
-    predicted chunk count from the level grids is reported either way.
+    predicted object count from the level grids is reported either way.
+
+    A file counts as pixels when it sits under one of ``level_paths`` and is
+    not that array's ``zarr.json``. Classifying by the level names rather than
+    by "everything that is not ``zarr.json``" keeps the sidecars out: the OME
+    XML is a file in the store like any other, and folding it into the pixel
+    figure would report a correct store as holding more objects than its
+    geometry accounts for.
     """
+    roots = {str(level).split("/", 1)[0] for level in level_paths}
+
+    def classify(relative: str, name: str) -> str:
+        if name == "zarr.json":
+            return "metadata"
+        return "pixels" if relative.split("/", 1)[0] in roots else "other"
+
+    tally = {"pixels": 0, "metadata": 0, "other": 0}
     if _is_remote_uri(path):
         import fsspec
 
         fs, fpath = fsspec.core.url_to_fs(path)
-        return len(fs.find(fpath))
-    total = 0
-    for _root, _dirs, files in os.walk(path):
-        total += len(files)
-    return total
+        prefix = fpath.rstrip("/") + "/"
+        for found in fs.find(fpath):
+            relative = found[len(prefix) :] if found.startswith(prefix) else found
+            tally[classify(relative, relative.rsplit("/", 1)[-1])] += 1
+    else:
+        for root, _dirs, files in os.walk(path):
+            relative = os.path.relpath(root, path).replace(os.sep, "/")
+            relative = "" if relative == "." else relative
+            for name in files:
+                tally[classify(f"{relative}/{name}".lstrip("/"), name)] += 1
+    return ObjectCounts(tally["pixels"], tally["metadata"], tally["other"])
 
 
 def verify(
@@ -257,12 +317,27 @@ def verify(
     scale0 = _level0_scale(multiscales)
     shapes: list[tuple[int, ...]] = []
     chunk_shapes: list[tuple[int, ...]] = []
+    shard_shapes: list[tuple[int, ...] | None] = []
     for path in _level_paths(multiscales):
         array = group[path]
         shapes.append(tuple(int(s) for s in array.shape))
+        # ``.chunks`` on a sharded array is the *inner* unit — what a viewer
+        # range-reads — and stays the chunk here. ``.shards`` is the storage
+        # object, ``None`` when the array is unsharded.
         chunk_shapes.append(tuple(int(c) for c in array.chunks))
+        shards = getattr(array, "shards", None)
+        shard_shapes.append(tuple(int(s) for s in shards) if shards else None)
     dtype = np.dtype(group[_level_paths(multiscales)[0]].dtype)
     itemsize = dtype.itemsize
+    sharded = any(shard is not None for shard in shard_shapes)
+    # What one storage object covers, per level: the shard where there is one,
+    # else the chunk. Everything counting objects has to go through this, or it
+    # counts the read grid and disagrees with the disk by the shard factor.
+    write_grids = [
+        chunk if shard is None else shard
+        for chunk, shard in zip(chunk_shapes, shard_shapes, strict=True)
+    ]
+    unit, units = ("shard", "shards") if sharded else ("chunk", "chunks")
 
     geometry, geometry_source = _geometry_from_audit(audit)
     predicted_shapes = [
@@ -274,6 +349,9 @@ def verify(
             predicted_shapes, dims, scale0, dtype, geometry
         )
     ]
+    planned_shards = plan_level_shard_shapes(
+        predicted_chunks, predicted_shapes, dims, scale0, dtype, geometry
+    )
 
     checks: list[Check] = []
 
@@ -300,6 +378,33 @@ def verify(
             ),
         )
     )
+
+    # Only when a shard is in play at all — on an unsharded store written by an
+    # unsharded policy there is nothing to say, and saying it would add a line
+    # to every report that predates #117.
+    if sharded or planned_shards is not None:
+        planned: list[tuple[int, ...] | None] = (
+            [None] * len(shapes) if planned_shards is None else list(planned_shards)
+        )
+        matches = shard_shapes == planned
+        if matches:
+            level0 = shard_shapes[0]
+            assert level0 is not None  # implied by matching a non-None plan
+            detail = (
+                f"every level matches the plan; level 0 is {level0} "
+                f"({math.prod(level0) * itemsize / 2**20:.1f} MiB raw, "
+                f"{math.prod(_grid_shape(level0, chunk_shapes[0]))} chunks per shard)"
+            )
+        elif planned_shards is None:
+            detail = (
+                f"on disk {shard_shapes}, but the recorded policy plans no shards — "
+                f"the store was written by a policy other than the one it records"
+            )
+        elif not sharded:
+            detail = f"policy plans {planned}, but no level on disk is sharded"
+        else:
+            detail = f"on disk {shard_shapes}, policy plans {planned}"
+        checks.append(Check("shard shapes", matches, detail))
 
     # Recomputed from the store rather than read from the audit, then compared
     # against the audit: the point of #86 is that the guarantee is checkable in
@@ -373,12 +478,36 @@ def verify(
 
     # ---- measurements ----
     total_bytes = size_on_disk(store_path)
-    predicted_chunk_objects = sum(
-        math.prod(_grid_shape(shape, chunks))
-        for shape, chunks in zip(shapes, chunk_shapes, strict=True)
-    )
+    predicted_objects = count_storage_objects(shapes, write_grids)
+    predicted_chunk_objects = count_storage_objects(shapes, chunk_shapes)
     raw_bytes = sum(math.prod(shape) for shape in shapes) * itemsize
-    counted = count_objects(store_path) if do_count else None
+    counted = count_objects(store_path, _level_paths(multiscales)) if do_count else None
+
+    if counted is not None:
+        on_disk = counted.pixels
+        # ``<=``, never ``==``. zarr writes no object whose contents are
+        # entirely fill value, so a level with a padded trailing row comes in
+        # short of its own grid — 209,211 shards against 210,345 on the
+        # reference volume (#126), all 1,134 absent ones on a 3-voxel sliver.
+        # An excess is the failure: it means objects exist that the geometry
+        # does not account for.
+        within = on_disk <= predicted_objects
+        missing = predicted_objects - on_disk
+        if not within:
+            detail = (
+                f"{on_disk:,} {units} on disk against a {predicted_objects:,}-"
+                f"{unit} grid — {-missing:,} more than the geometry accounts for"
+            )
+        elif missing:
+            detail = (
+                f"{on_disk:,} of {predicted_objects:,} — {missing:,} absent "
+                f"({missing / predicted_objects:.2%}), which is what an all-fill "
+                f"{unit} looks like: zarr writes no object that is entirely fill "
+                f"value, so a padded trailing row costs nothing"
+            )
+        else:
+            detail = f"{on_disk:,} {units}, exactly the grid — nothing all-fill"
+        checks.append(Check(f"{units} on disk within the grid", within, detail))
 
     plugin = audit.get("reader_plugin") or {}
     reader = plugin.get("distribution") or plugin.get("name") or "?"
@@ -398,16 +527,41 @@ def verify(
     report.append("")
     report.append("### Levels")
     report.append("")
-    report.append("| level | shape | chunk | chunks | MiB per (t,c) | coarse |")
-    report.append("| ----- | ----- | ----- | ------ | ------------- | ------ |")
+    if sharded:
+        # The shard is the write unit and the object-count unit, and it can
+        # change partway down a pyramid — the reference volume flips its long
+        # axis from X to Y at level 3 (#126). A table without it reads as
+        # uniform.
+        report.append(
+            "| level | shape | chunk | shard | chunks | shards | "
+            "MiB per (t,c) | coarse |"
+        )
+        report.append(
+            "| ----- | ----- | ----- | ----- | ------ | ------ | "
+            "------------- | ------ |"
+        )
+    else:
+        report.append("| level | shape | chunk | chunks | MiB per (t,c) | coarse |")
+        report.append("| ----- | ----- | ----- | ------ | ------------- | ------ |")
     for i, (shape, chunks) in enumerate(zip(shapes, chunk_shapes, strict=True)):
         per_tc = math.prod(_spatial(shape, dims)) * itemsize / 2**20
         fails = _lucida_level_fits(shape, chunks, dims, itemsize)
-        report.append(
-            f"| {i} | `{shape}` | `{chunks}` | "
-            f"{math.prod(_grid_shape(shape, chunks)):,} | {per_tc:,.1f} | "
-            f"{'yes' if not fails else '; '.join(fails)} |"
-        )
+        coarse = "yes" if not fails else "; ".join(fails)
+        if sharded:
+            shard = shard_shapes[i]
+            report.append(
+                f"| {i} | `{shape}` | `{chunks}` | "
+                f"{'—' if shard is None else f'`{shard}`'} | "
+                f"{math.prod(_grid_shape(shape, chunks)):,} | "
+                f"{'—' if shard is None else f'{math.prod(_grid_shape(shape, shard)):,}'} | "
+                f"{per_tc:,.1f} | {coarse} |"
+            )
+        else:
+            report.append(
+                f"| {i} | `{shape}` | `{chunks}` | "
+                f"{math.prod(_grid_shape(shape, chunks)):,} | {per_tc:,.1f} | "
+                f"{coarse} |"
+            )
     report.append("")
     report.append("### Measurements")
     report.append("")
@@ -415,10 +569,16 @@ def verify(
         f"- Store size: **{format_bytes(total_bytes)}** ({total_bytes:,} bytes)"
     )
     report.append(
-        f"- Chunk objects (from the level grids): **{predicted_chunk_objects:,}**"
+        f"- {unit.capitalize()} objects (from the level grids): "
+        f"**{predicted_objects:,}**"
     )
+    if sharded:
+        report.append(
+            f"- Chunks inside them (the read grid, not objects): "
+            f"**{predicted_chunk_objects:,}**"
+        )
     if counted is not None:
-        report.append(f"- Objects on disk (chunks + metadata): **{counted:,}**")
+        report.append(f"- Objects on disk ({units} + metadata): **{counted.total:,}**")
     report.append(
         f"- Raw (uncompressed) pyramid: {format_bytes(raw_bytes)} — "
         f"compression {raw_bytes / total_bytes:.2f}x"
