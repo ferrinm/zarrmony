@@ -45,10 +45,13 @@ bioformats = ["bioio-bioformats>=2"]
 # toolchain on every run for a backend no in-tree test exercises.
 all = ["zarrmony[gcs,s3,ome-tiff,validate]"]
 dev = [
-    "black~=25.12.0",
+    # Black and Ruff are pinned to the same compatible-release ranges the
+    # downstream deployment mirror's CI installs, so that a formatter version
+    # skew can never show up as a spurious diff between the two repos.
+    "black~=26.3.1",
     "pytest>=8",
     "pytest-cov>=5",
-    "ruff>=0.14",
+    "ruff~=0.15.10",
     "pre-commit>=4",
     "bioio-ome-tiff",
     "ome-zarr-models>=1.0",
@@ -77,7 +80,18 @@ where = ["src"]
 
 [tool.setuptools_scm]
 
+[tool.black]
+# Black's output can vary with the target version it infers, and it infers that
+# from the interpreter it runs under. Fixing it here keeps formatting identical
+# no matter which Python invokes black — ours runs 3.13, the downstream
+# deployment mirror's runs 3.14, and an unpinned target makes them disagree.
+target-version = ["py311"]
+# Black's default, stated because ruff's line-length below is 100 and reading
+# that as the formatter's width is the mistake this line exists to prevent.
+line-length = 88
+
 [tool.ruff]
+# Lint-only. The formatter is black, at the width above; never `ruff format`.
 line-length = 100
 target-version = "py311"
 

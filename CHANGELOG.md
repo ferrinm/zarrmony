@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The formatter and linter now track the versions a downstream deployment
+  mirror's CI installs: black `~=26.3.1`, ruff `~=0.15.10`, prettier `3.8.2`.**
+  A mirror that reformats what it copies stops being diffable against this repo,
+  and the cheapest way to prevent that is for both sides to run the same tools.
+  Neither bump changed a single line of this repo — 93 files unchanged under
+  black, no new ruff findings — so this is a pin, not a reformat.
+- **`[tool.black]` is now declared explicitly, with `target-version = ["py311"]`
+  and `line-length = 88`.** Black infers its target version from the interpreter
+  it runs under, and its output can vary with that inference, so an unpinned
+  target lets two CI jobs on different Pythons disagree about correct
+  formatting. The line length is black's own default and is stated only because
+  `[tool.ruff] line-length` is 100 directly below it, which reads as the
+  formatter's width and is not.
+
+### Removed
+
+- **`INTERNAL_FORK.md`.** It described a fork that was never created, by a
+  procedure that is not the one now in use, and named the downstream repository
+  and its reviewers in a public file. Deployment mirrors document their own
+  relationship to this repo, on their own side.
+
 ## [0.18.0] - 2026-08-31
 
 ADR-0010 changed the output geometry and left existing stores where they were,
