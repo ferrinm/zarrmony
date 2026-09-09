@@ -30,6 +30,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and its reviewers in a public file. Deployment mirrors document their own
   relationship to this repo, on their own side.
 
+### Fixed
+
+- **`--reader-kwarg dask_tiles=true` no longer dies partway through level 0 with
+  `File not open - call open() first`.** A reader that hands back a
+  resource-backed dask array builds its graph inside its own open context and
+  closes the file on the way out, on the understanding that the array reopens
+  the resource around `.compute()`. The writer never calls `.compute()` —
+  `da.store` and `da.to_zarr` run `dask.compute` on the graph directly — so that
+  guard never fired and the tasks read through a closed handle, surviving only
+  on a per-task reopen that snapshots the handle's state before taking the
+  reader's lock and so lets one worker close it under another. Tiling is what
+  made that reachable, by putting more than one read in flight; the untiled path
+  reads one plane per block and never raced. Each level's write now holds the
+  source's resource open for its duration, so every worker sees a handle that
+  was already open and none of them closes it. Duck-typed on the
+  resource-backing protocol rather than on any reader's identity, so an ordinary
+  dask array is written exactly as before. Measured on a whole-slide Aperio SVS
+  scene, the failing run died about 2.3 GB into a ~20 GB level having issued 27
+  opens and 25 closes from worker threads; holding the handle also took an
+  isolated 256-tile read from 40.0 s to 29.4 s, since the closes were paying for
+  a full re-parse of the file each time.
+
 ## [0.18.0] - 2026-08-31
 
 ADR-0010 changed the output geometry and left existing stores where they were,

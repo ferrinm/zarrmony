@@ -8,6 +8,7 @@ publicly; the parent's lazy initialization is otherwise opaque to callers.
 
 import warnings
 from collections.abc import Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from typing import Any
 
@@ -65,6 +66,45 @@ def _write_grid(dataset: Any) -> tuple[int, ...]:
     at the default targets, measurably slower even on a toy array.
     """
     return tuple(int(s) for s in (dataset.shards or dataset.chunks))
+
+
+def _hold_open(src: da.Array) -> AbstractContextManager:
+    """Keep a resource-backed source open for the whole of one level's write.
+
+    Issue #139. A reader that hands back a resource-backed dask array — the
+    Bio-Formats path does — builds its graph inside the reader's own open
+    context and *closes the file on the way out*, on the understanding that the
+    array reopens the resource around ``.compute()``. This writer never calls
+    ``.compute()``: ``da.store`` / ``da.to_zarr`` run ``dask.compute`` on the
+    graph directly, so that reopen guard never fires and we compute a
+    resource-backed graph with the resource closed.
+
+    What kept that working at all is a per-task reopen inside the reader, and
+    it is a TOCTOU: each task snapshots "was this closed?" before taking the
+    reader's lock, so under the threaded scheduler the worker that snapshotted
+    "closed" closes the handle on its way out while a worker that snapshotted
+    "open" is still queued behind the lock — which then reads through a nulled
+    handle. Measured on a whole-slide Aperio SVS scene, that killed level 0
+    about 2.3 GB in, having issued 27 opens and 25 closes from worker threads;
+    the format matters only in that its reader cannot be suspended, so a close
+    destroys the handle rather than parking it.
+
+    Entering the context here means the resource is already open when the first
+    task runs, every worker snapshots "open", none of them closes it, and the
+    race is unreachable. It is also worth about 25% on the read side — an
+    isolated 256-tile read measured 29.4 s holding the handle against 40.0 s
+    letting it churn, all of it repeated re-parsing of the file's directory.
+
+    Duck-typed on the resource-backing protocol (``closed`` plus the context
+    manager methods) rather than on any reader's identity, the same way
+    :func:`_ensure_ndarray_blocks` is gated on what the blocks can do. Anything
+    else — an ordinary dask array, an already-open resource — gets a
+    ``nullcontext`` and is written exactly as before.
+    """
+    ctx = getattr(src, "_context", None)
+    if ctx is None or not hasattr(ctx, "closed"):
+        return nullcontext()
+    return ctx if ctx.closed else nullcontext()
 
 
 def _dominant_block_lengths(src: da.Array) -> tuple[int, ...]:
@@ -330,17 +370,23 @@ class ZarrmonyWriter(OMEZarrWriter):
             tgt_chunks = _write_grid(dataset)
             if src.chunks != tgt_chunks:
                 src = src.rechunk(tgt_chunks)
-            if self.zarr_format == 2:
-                da.to_zarr(src, dataset)
-            else:
-                # ``lock=True`` is load-bearing under sharding, not tidiness.
-                # On an unsharded array a block maps 1:1 to an object and two
-                # writers never touch the same key. A shard is one object per
-                # many blocks, so where a rechunk leaves a partial shard at an
-                # edge, concurrent writers to it read-modify-write the same key
-                # and lose each other's updates. Do not drop this without
-                # re-reading :func:`_write_grid`.
-                da.store(src, dataset, lock=True)
+            # These two calls are the only places this writer computes from the
+            # reader's own graph, and both go straight to ``dask.compute`` — so
+            # a resource-backed source has to be held open around them or its
+            # file handle is closed under the worker threads (#139).
+            with _hold_open(src):
+                if self.zarr_format == 2:
+                    da.to_zarr(src, dataset)
+                else:
+                    # ``lock=True`` is load-bearing under sharding, not
+                    # tidiness. On an unsharded array a block maps 1:1 to an
+                    # object and two writers never touch the same key. A shard
+                    # is one object per many blocks, so where a rechunk leaves a
+                    # partial shard at an edge, concurrent writers to it
+                    # read-modify-write the same key and lose each other's
+                    # updates. Do not drop this without re-reading
+                    # :func:`_write_grid`.
+                    da.store(src, dataset, lock=True)
 
 
 def _physical_scales_for_dims(dims: Sequence[str], reader: Any) -> list[float]:
