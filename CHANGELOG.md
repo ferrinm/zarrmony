@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-09-09
+
+`--reader-kwarg dask_tiles=true` is the recommended path for a whole-slide
+input, and on a large one it could die partway through level 0 with
+`File not open - call open() first`. The store it left behind is the part worth
+knowing about: every level's metadata is written up front, so a truncated
+conversion opens in a viewer as a complete-looking pyramid whose pixels are
+mostly absent. Anyone who converted a slide with `dask_tiles` and did not watch
+the run finish should check the output rather than trust it. Patch rather than
+minor: no API moved and no default changed — the fix is confined to how the
+writer brackets the two calls that compute from the reader's graph, and an
+ordinary dask source is written exactly as before.
+
 ### Changed
 
 - **The formatter and linter now track the versions a downstream deployment
@@ -50,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scene, the failing run died about 2.3 GB into a ~20 GB level having issued 27
   opens and 25 closes from worker threads; holding the handle also took an
   isolated 256-tile read from 40.0 s to 29.4 s, since the closes were paying for
-  a full re-parse of the file each time.
+  a full re-parse of the file each time. (#139)
 
 ## [0.18.0] - 2026-08-31
 
