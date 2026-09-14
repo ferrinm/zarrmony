@@ -12,7 +12,15 @@ dependencies = [
     # Transitive via bioio, but declared because readers/default.py imports
     # UnsupportedFileFormatError from it directly — bioio does not re-export it.
     "bioio-base>=3.3.0",
-    "bioio-czi>=2.6.1",
+    # bioio-czi hard-depends on aicspylibczi, which zarrmony never calls — the
+    # CZI plugin uses the default pylibczirw backend, and only bioio_czi's own
+    # module-scope import pulls aicspylibczi in. aicspylibczi publishes exactly
+    # one Linux wheel family, manylinux x86_64, so every other Linux machine
+    # source-builds it and needs cmake. Excluded by marker on those machines;
+    # the `czi` extra opts back in. The marker names the one Linux arch that
+    # works rather than the arches that do not, so a Graviton host, an armv7
+    # board and an s390x LPAR are all covered without listing them.
+    "bioio-czi>=2.6.1; sys_platform != 'linux' or platform_machine == 'x86_64'",
     "bioio-lif>=1.4.2",
     "bioio-nd2>=1.7.0",
     "bioio-ome-zarr>=3.3.0",
@@ -35,6 +43,12 @@ gcs = ["gcsfs"]
 s3 = ["s3fs"]
 ome-tiff = ["bioio-ome-tiff"]
 validate = ["ome-zarr-models>=1.0"]
+# CZI is a core dependency on every platform the marker above covers. This
+# extra restores it on the Linux arches it excludes, where installing it means
+# a C++ source build the user is choosing on purpose. It is a no-op elsewhere.
+# Unlike `bioformats`, it carries no licensing constraint, so it is in `all` —
+# which is why `all` also needs cmake on those arches.
+czi = ["bioio-czi>=2.6.1"]
 # Bio-Formats-backed vendor formats (Olympus cellSens VSI, Zeiss ZVI,
 # Hamamatsu NDPI, ...). Deliberately opt-in — see ADR-0011.
 bioformats = ["bioio-bioformats>=2"]
@@ -43,7 +57,7 @@ bioformats = ["bioio-bioformats>=2"]
 # a GPL environment the *user* assembles for themselves (ADR-0011). It is out
 # of `dev` for the same reason plus a practical one — CI would resolve a JVM
 # toolchain on every run for a backend no in-tree test exercises.
-all = ["zarrmony[gcs,s3,ome-tiff,validate]"]
+all = ["zarrmony[gcs,s3,ome-tiff,validate,czi]"]
 dev = [
     # Black and Ruff are pinned to the same compatible-release ranges the
     # downstream deployment mirror's CI installs, so that a formatter version
@@ -55,6 +69,11 @@ dev = [
     "pre-commit>=4",
     "bioio-ome-tiff",
     "ome-zarr-models>=1.0",
+    # bioio-czi is deliberately absent. The core marker above already installs
+    # it on every CI runner (x86-64 Linux, both macOS arches), so listing it
+    # here would add nothing there. It would only change the one environment
+    # the marker exists to protect — an arm64 dev box or self-hosted runner,
+    # where it would re-impose the aicspylibczi source build on `uv sync`.
 ]
 notebook = [
     "jupyter>=1.1.1",

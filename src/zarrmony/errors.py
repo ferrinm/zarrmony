@@ -32,10 +32,19 @@ class ReaderKwargError(ZarrmonyError):
 
 
 class UnsupportedFormatError(ZarrmonyError):
-    """The default ``bioio`` plugin found no installed backend for the input.
+    """No installed backend can read the input.
 
-    Wraps ``bioio``'s ``UnsupportedFileFormatError`` (chained as ``__cause__``)
-    to add the zarrmony-level hint that a Bio-Formats-covered vendor format
+    The CZI plugin raises it when ``bioio_czi`` will not import, chaining that
+    ``ImportError`` as ``__cause__``. Where the backend is absent it names the
+    ``czi`` extra; where the backend is installed but unloadable it quotes what
+    the import said. That extra exists because ``bioio-czi`` is out of the
+    default dependency set on Linux machines that are not x86-64, where its own
+    ``aicspylibczi`` dependency has no wheel — see ``readers/czi.py`` and issue
+    #142.
+
+    The default ``bioio`` plugin raises it for an input no installed backend
+    claims. There it wraps ``bioio``'s ``UnsupportedFileFormatError`` (also
+    chained as ``__cause__``) to add the hint that a Bio-Formats-covered format
     may only need ``pip install "zarrmony[bioformats]"`` (ADR-0011). The hint
     is suppressed when ``bioio-bioformats`` is already installed, since then
     it is not the missing piece; in that case the message instead reports

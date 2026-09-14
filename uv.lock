@@ -5187,7 +5187,7 @@ source = { editable = "." }
 dependencies = [
     { name = "bioio" },
     { name = "bioio-base" },
-    { name = "bioio-czi" },
+    { name = "bioio-czi", marker = "platform_machine == 'x86_64' or sys_platform != 'linux'" },
     { name = "bioio-lif" },
     { name = "bioio-nd2" },
     { name = "bioio-ome-zarr" },
@@ -5202,6 +5202,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "bioio-czi" },
     { name = "bioio-ome-tiff" },
     { name = "gcsfs" },
     { name = "ome-zarr-models" },
@@ -5209,6 +5210,9 @@ all = [
 ]
 bioformats = [
     { name = "bioio-bioformats" },
+]
+czi = [
+    { name = "bioio-czi" },
 ]
 dev = [
     { name = "bioio-ome-tiff" },
@@ -5243,7 +5247,8 @@ requires-dist = [
     { name = "bioio", specifier = ">=3.3.0" },
     { name = "bioio-base", specifier = ">=3.3.0" },
     { name = "bioio-bioformats", marker = "extra == 'bioformats'", specifier = ">=2" },
-    { name = "bioio-czi", specifier = ">=2.6.1" },
+    { name = "bioio-czi", marker = "platform_machine == 'x86_64' or sys_platform != 'linux'", specifier = ">=2.6.1" },
+    { name = "bioio-czi", marker = "extra == 'czi'", specifier = ">=2.6.1" },
     { name = "bioio-lif", specifier = ">=1.4.2" },
     { name = "bioio-nd2", specifier = ">=1.7.0" },
     { name = "bioio-ome-tiff", marker = "extra == 'dev'" },
@@ -5269,9 +5274,9 @@ requires-dist = [
     { name = "tabulate", marker = "extra == 'notebook'", specifier = ">=0.9" },
     { name = "xarray", specifier = ">=2025.9.0" },
     { name = "zarr", specifier = ">=3.1,<3.2" },
-    { name = "zarrmony", extras = ["gcs", "ome-tiff", "s3", "validate"], marker = "extra == 'all'" },
+    { name = "zarrmony", extras = ["czi", "gcs", "ome-tiff", "s3", "validate"], marker = "extra == 'all'" },
 ]
-provides-extras = ["gcs", "s3", "ome-tiff", "validate", "bioformats", "all", "dev", "notebook"]
+provides-extras = ["gcs", "s3", "ome-tiff", "validate", "czi", "bioformats", "all", "dev", "notebook"]
 
 [[package]]
 name = "zict"

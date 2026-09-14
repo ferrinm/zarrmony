@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pip install zarrmony` now succeeds on Linux arm64.** It failed there, and
+  the traceback named a package zarrmony never calls: `aicspylibczi`, a hard
+  dependency of `bioio-czi` that ships exactly one Linux wheel family,
+  manylinux x86-64. Pip fell back to a C++ source build, which needs `cmake`,
+  so the install died on any slim base image and recompiled an extension on
+  every install elsewhere. The CZI plugin uses the default `pylibczirw`
+  backend; `aicspylibczi` arrives only because `bioio-czi` imports it at module
+  scope. `bioio-czi` now carries an environment marker that drops it from the
+  default dependency set on Linux machines that are not x86-64, and the new
+  `czi` extra opts it back in. Every other platform resolves exactly as before.
+  This affects AWS Graviton, Ampere, arm64 CI runners, arm64 Kubernetes nodes,
+  and any `linux/arm64` container image. Apple Silicon is unaffected natively —
+  `aicspylibczi` does ship a macOS arm64 wheel — so it only appears there
+  inside a Linux arm64 container.
+
+### Changed
+
+- **The CZI plugin imports `bioio_czi` lazily, inside its open function.** A
+  module-scope import made `import zarrmony` fail outright wherever the backend
+  is absent. The plugin still registers on every platform, with the same name,
+  the same match score of 100 on a `.czi` suffix, and the same distribution
+  value, so the registered plugin list does not change and a `.czi` input never
+  falls through to the `bioio` catch-all. That catch-all would advise the
+  `bioformats` extra, which is the wrong advice for a CZI file. Open a `.czi`
+  with the backend absent and the plugin raises `UnsupportedFormatError` naming
+  the `czi` extra, the install command, and the toolchain the source build
+  needs, with the original import failure chained as the cause. A compiled
+  backend fails two ways and only one of them is a plain absence, so the plugin
+  catches `ImportError` rather than only `ModuleNotFoundError`: an
+  installed-but-unloadable backend — an ABI mismatch against the runtime's
+  `libstdc++`, a half-finished source build — gets a zarrmony error quoting
+  what the import said, not a raw traceback.
+- **The `all` extra now includes `czi`.** Unlike `bioformats`, it carries no
+  licensing constraint, so there is no reason to hold it out. On Linux arm64
+  this means `pip install "zarrmony[all]"` still wants `cmake` and a C++
+  compiler, and the README extras table says so. Plain `pip install zarrmony`
+  does not. The `dev` extra deliberately does **not** list `bioio-czi`: the
+  core marker already installs it on every CI runner, so a `dev` entry would
+  change only the one environment the marker exists to protect.
+
+### Added
+
+- **A CI job that installs the package on Linux arm64 and imports it.** It runs
+  on `ubuntu-24.04-arm`, installs with plain `pip`, asserts that `bioio-czi` did
+  not resolve, imports zarrmony, runs the CLI, and confirms that a `.czi` input
+  produces the `czi`-extra message. It is an install gate, not a second test
+  run: if the marker regresses, pip tries to build `aicspylibczi` and the job
+  fails.
+
 ## [0.18.1] - 2026-09-09
 
 `--reader-kwarg dask_tiles=true` is the recommended path for a whole-slide
