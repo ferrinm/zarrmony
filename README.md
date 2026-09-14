@@ -23,7 +23,7 @@ pip install zarrmony
 
 Zarrmony dispatches to a reader plugin per input format. They come in three tiers:
 
-- **Built-in** (bundled by default): CZI, LIF, ND2.
+- **Built-in** (bundled by default): CZI, LIF, ND2. CZI is bundled on every platform except Linux arm64, where it is opt-in via the [`czi` extra](#czi-on-linux-arm64).
 - **Optional extras** in this repo (opt-in via `pip install "zarrmony[<extra>]"`): OME-TIFF via the `ome-tiff` extra, and ~150 vendor formats via the [`bioformats` extra](#bio-formats-backed-vendor-formats) (GPL-3.0 — see below).
 - **External plugins** (separate PyPI distributions, entry-point registered):
   - [`zarrmony-phenix`](https://github.com/ferrinm/zarrmony-phenix) — Opera Phenix (wraps `pyphenix.OperaPhenixReader`) — `pip install zarrmony-phenix`
@@ -39,9 +39,24 @@ Zarrmony dispatches to a reader plugin per input format. They come in three tier
 | `s3`         | `s3fs`                                   | Writing output to `s3://` URIs                    |
 | `ome-tiff`   | `bioio-ome-tiff`                         | Reading OME-TIFF input                            |
 | `validate`   | `ome-zarr-models`                        | Post-conversion OME-NGFF validation               |
+| `czi`        | `bioio-czi`                              | Reading CZI input **on non-x86-64 Linux** (below) |
 | `bioformats` | `bioio-bioformats`                       | Reading Bio-Formats-only vendor formats (GPL-3.0) |
-| `all`        | All of the above **except `bioformats`** |                                                   |
+| `all`        | All of the above **except `bioformats`** | Includes `czi`, so see the note below on arm64    |
 | `dev`        | pytest, ruff, pre-commit                 | Contributing                                      |
+
+### CZI on Linux arm64
+
+`bioio-czi` is a default dependency on every platform except Linux on a non-x86-64 machine — arm64 in practice. On those machines it is opt-in:
+
+```bash
+pip install "zarrmony[czi]"
+```
+
+**Why.** `bioio-czi` hard-depends on `aicspylibczi`, which ships exactly one Linux wheel family: manylinux x86-64. Pip therefore builds it from C++ source on any other Linux machine, which needs `cmake` and a compiler that a slim base image does not carry. Zarrmony never calls `aicspylibczi` — the CZI plugin uses the default `pylibczirw` backend, and only `bioio-czi`'s own module-scope import pulls `aicspylibczi` in. Keeping it out of the default set lets `pip install zarrmony` succeed on AWS Graviton, Ampere, an arm64 CI runner, and any `linux/arm64` container image.
+
+**What you see without it.** Nothing changes at import time, and the CZI plugin stays registered. Open a `.czi` file and zarrmony names this extra and the install command. Apple Silicon is unaffected natively, because `aicspylibczi` does ship a macOS arm64 wheel; you meet this only inside a Linux arm64 container.
+
+**If you do want CZI there.** Install `cmake` and a C++ toolchain first, then take the extra. Expect the source build. The same applies to `pip install "zarrmony[all]"`, which includes `czi` — on Linux arm64, `all` needs that toolchain and plain `zarrmony` does not.
 
 ### Bio-Formats-backed vendor formats
 

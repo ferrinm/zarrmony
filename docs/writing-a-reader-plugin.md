@@ -321,50 +321,50 @@ print([p.name for p in list_plugins()])
 # -> ['bioio', 'bioio-czi', 'bioio-lif', 'bioio-nd2', 'zarrmony-myformat']
 ```
 
-## 6. Worked example: the built-in CZI plugin
+## 6. Worked example: the built-in ND2 plugin
 
-The CZI plugin (`src/zarrmony/readers/czi.py`) is the smallest end-to-end
-example in the tree. It pins the `bioio_czi.Reader` backend rather than
+The ND2 plugin (`src/zarrmony/readers/nd2.py`) is the smallest end-to-end
+example in the tree. It pins the `bioio_nd2.Reader` backend rather than
 letting bioio's discovery pick one, so audit records always name the same
-backend and CZI input fails fast at import time if the plugin isn't
+backend and ND2 input fails fast at import time if the plugin isn't
 installed.
 
 ```python
-"""CZI reader plugin."""
+"""ND2 reader plugin."""
 
 from pathlib import Path
 from typing import Any
 
-from bioio_czi import Reader
+from bioio_nd2 import Reader
 
 from zarrmony.readers.plugin import ReaderPlugin
 
 
-def _match_czi(path: Path) -> int | None:
-    return 100 if path.suffix.lower() == ".czi" else None
+def _match_nd2(path: Path) -> int | None:
+    return 100 if path.suffix.lower() == ".nd2" else None
 
 
-def _open_czi(path: Path) -> Any:
+def _open_nd2(path: Path) -> Any:
     return Reader(str(path))
 
 
-czi_plugin = ReaderPlugin(
-    name="bioio-czi",
-    match=_match_czi,
-    open=_open_czi,
-    distribution="bioio-czi",
+nd2_plugin = ReaderPlugin(
+    name="bioio-nd2",
+    match=_match_nd2,
+    open=_open_nd2,
+    distribution="bioio-nd2",
     source="builtin",
 )
 ```
 
 Walking it line by line:
 
-- **`_match_czi`** — extension check, returns `100` or `None`. No I/O.
-- **`_open_czi`** — single-line factory. `bioio_czi.Reader` already
+- **`_match_nd2`** — extension check, returns `100` or `None`. No I/O.
+- **`_open_nd2`** — single-line factory. `bioio_nd2.Reader` already
   satisfies the Reader Protocol (it exposes `scenes`, `set_scene`,
   `xarray_dask_data`, `physical_pixel_sizes`, `channel_names`,
   `ome_metadata`, and `metadata`), so no adapter is needed.
-- **`distribution="bioio-czi"`** — the PyPI package name that this plugin
+- **`distribution="bioio-nd2"`** — the PyPI package name that this plugin
   is shipped from. Surfaces in the audit record so a converted dataset can
   always be traced back to the package that produced it.
 - **`source="builtin"`** — set explicitly so the audit record can
@@ -372,8 +372,32 @@ Walking it line by line:
   should set `source="entry_point"`; runtime-registered plugins (typically
   in tests) leave it as the default `"runtime"`.
 
-The CZI plugin is registered in `src/zarrmony/readers/__init__.py`; your
+The ND2 plugin is registered in `src/zarrmony/readers/__init__.py`; your
 plugin reaches the registry via the entry point declared in §5 instead.
+
+### Variant: a backend that may not be installed
+
+The CZI plugin (`src/zarrmony/readers/czi.py`) is the same shape with one
+difference worth copying. Its backend is not in the default dependency set
+on every platform, so a module-scope `from bioio_czi import Reader` would
+make `import zarrmony` fail wherever the backend is absent. It imports the
+backend inside `_open_czi` instead, and translates the `ModuleNotFoundError`
+into a `zarrmony.errors.UnsupportedFormatError` that names the extra to
+install:
+
+```python
+def _open_czi(path: Path) -> Any:
+    try:
+        from bioio_czi import Reader
+    except ModuleNotFoundError as exc:
+        raise _missing_backend_error(path, exc) from exc
+    return Reader(str(path))
+```
+
+Two rules go with it. Register the plugin unconditionally, with its usual
+match score — a plugin that deregisters itself hands its inputs to the
+`bioio` catch-all, whose hint names the wrong extra. And chain the original
+`ModuleNotFoundError` as the cause, so a broken install is still debuggable.
 
 ## 7. Distribution naming convention
 

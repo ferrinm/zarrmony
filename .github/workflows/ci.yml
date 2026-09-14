@@ -34,6 +34,61 @@ jobs:
       - name: Test
         run: uv run pytest
 
+  # Not a second test run — an install gate. bioio-czi is out of the default
+  # dependency set on this platform (issue #142) and the package must still
+  # install, import and dispatch a .czi input to a message about the `czi`
+  # extra. A slim base image with no C++ toolchain is the point: if the marker
+  # regresses, pip tries to build aicspylibczi here and the job fails.
+  install-linux-aarch64:
+    name: Install (linux/aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install the package
+        run: pip install .
+
+      - name: Confirm that bioio-czi is absent
+        run: |
+          if pip show bioio-czi > /dev/null 2>&1; then
+            echo "bioio-czi resolved on linux/aarch64; the marker regressed" >&2
+            exit 1
+          fi
+
+      - name: Import zarrmony
+        run: python -c "import zarrmony; print(zarrmony.__name__)"
+
+      - name: Run the CLI
+        run: zarrmony --help
+
+      - name: Confirm the CZI hint
+        run: |
+          touch sample.czi
+          python - <<'PY'
+          from pathlib import Path
+
+          from zarrmony.errors import UnsupportedFormatError
+          from zarrmony.readers.plugin import get_reader
+
+          try:
+              get_reader(Path("sample.czi"))
+          except UnsupportedFormatError as exc:
+              message = str(exc)
+          else:
+              raise SystemExit("expected UnsupportedFormatError for a .czi input")
+
+          assert 'zarrmony[czi]' in message, message
+          assert 'bioformats' not in message, message
+          print(message)
+          PY
+
   format:
     name: Format check
     runs-on: ubuntu-latest
