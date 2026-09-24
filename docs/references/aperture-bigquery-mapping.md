@@ -1,6 +1,6 @@
 # Aperture BigQuery ↔ zarrmony field mapping
 
-Reference table for the `calico_aperture.zarrmony_metadata` BigQuery table (schema defined in [`iac-aperture/deploy/arch/bigquery.tf`](https://github.com/calico/iac-aperture/blob/main/deploy/arch/bigquery.tf)). Every column is tagged with one of three owners:
+Reference table for the `calico_aperture.zarrmony_metadata` BigQuery table (schema defined in `iac-aperture/deploy/arch/bigquery.tf`). Every column is tagged with one of three owners:
 
 - **user-supplied** — the Aperture ingest form is the source of record; zarrmony does not attempt extraction.
 - **zarrmony-supplied** — extracted from the source file into `attrs.zarrmony` by a reader plugin; ingest reads the named audit path.
@@ -130,4 +130,4 @@ The BigQuery schema defines two adjacent tables that zarrmony does not touch —
 
 ## Updating this document
 
-The source of truth is [`iac-aperture/deploy/arch/bigquery.tf`](https://github.com/calico/iac-aperture/blob/main/deploy/arch/bigquery.tf). When that schema gains or drops a column, update the ownership table and (if the column is `zarrmony-supplied`) the extractability matrix. Audit-shape changes stay under ADR governance — extend [ADR-0008](../adr/0008-aperture-bigquery-mapping.md) or land a new ADR rather than editing this reference doc silently.
+The source of truth is `iac-aperture/deploy/arch/bigquery.tf`. When that schema gains or drops a column, update the ownership table and (if the column is `zarrmony-supplied`) the extractability matrix. Audit-shape changes stay under ADR governance — extend [ADR-0008](../adr/0008-aperture-bigquery-mapping.md) or land a new ADR rather than editing this reference doc silently.

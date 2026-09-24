@@ -37,6 +37,11 @@ CAUGHT = [
     pytest.param("scenes: ('label', '20x_AAA_B_CCC_01')", id="scene-name-underscores"),
     pytest.param("scene '20x_AAA_B, CCC, DDD, EEE_01'", id="scene-name-comma-list"),
     pytest.param("40X_AAA_BBB_CCC_02.ome.zarr", id="scene-name-uppercase-mag"),
+    pytest.param(
+        "schema at https://github.com/calico/example-repo/blob/main/x.tf",
+        id="internal-org-url",
+    ),
+    pytest.param("git@github.com:calico/example-repo.git", id="internal-org-ssh"),
 ]
 
 
@@ -59,6 +64,15 @@ ALLOWED = [
     pytest.param("store = f'{OUT}/slide-B/<main-scene>.ome.zarr'", id="placeholder"),
     pytest.param("Set $SRC to the reference dataset's path.", id="env-placeholder"),
     pytest.param("metadata_<dataset>.json", id="dataset-placeholder"),
+    pytest.param(
+        "owned by https://github.com/calicolabs/aperture-backend, which ingests.",
+        id="public-calicolabs-org",
+    ),
+    pytest.param(
+        "The source of truth is `iac-aperture/deploy/arch/bigquery.tf`.",
+        id="bare-internal-repo-path",
+    ),
+    pytest.param("Reviewers are `@calico/sweng-dev`.", id="codeowners-team"),
 ]
 
 
@@ -77,10 +91,12 @@ def test_unscanned_suffixes_are_skipped(tmp_path: Path) -> None:
 
 
 def test_the_sanitized_docs_stay_clean() -> None:
-    """The two files that carried a real scene name before it was replaced."""
+    """Files that carried a real scene name or an internal org URL before."""
     root = Path(__file__).resolve().parent.parent
     for rel in (
         "docs/references/vsi-acceptance-run.md",
         "docs/adr/0011-bioformats-backed-formats.md",
+        "docs/references/aperture-bigquery-mapping.md",
+        "docs/adr/0008-aperture-bigquery-mapping.md",
     ):
         assert check.scan(root / rel, check.RULES) == [], rel

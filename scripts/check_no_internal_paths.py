@@ -44,6 +44,14 @@ RULES: list[tuple[re.Pattern[str], str]] = [
         "trial number identifying a specific experiment",
     ),
     (
+        # Links into the internal GitHub org. Naming the org here is safe: the
+        # company name is already public in LICENSE, and the README links the
+        # separate public `calicolabs` org. What leaks is the repo under it, so
+        # the trailing slash is required — it keeps `calicolabs/` from matching.
+        re.compile(r"github\.com[/:]calico/", re.IGNORECASE),
+        "link into the internal GitHub org; name the file, drop the URL",
+    ),
+    (
         # Slide-scanner scene names: a magnification bolted straight onto the
         # filter panel and an acquisition index, `20x_A_B_C_01`. Structural,
         # not a blocklist — what it keys on is the `<mag>x_` prefix followed by
